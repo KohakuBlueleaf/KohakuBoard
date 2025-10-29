@@ -425,6 +425,10 @@ async function initializeProject() {
       if (savedLayout.customRunColors) {
         customRunColors.value = savedLayout.customRunColors;
       }
+
+      if (savedLayout.sidebarWidth) {
+        sidebarWidth.value = savedLayout.sidebarWidth;
+      }
     }
 
     // Build default cards if no saved layout
@@ -787,6 +791,7 @@ function saveLayout() {
     nextCardId: nextCardId.value,
     globalSettings: globalSettings.value,
     customRunColors: customRunColors.value, // Save custom color mappings
+    sidebarWidth: sidebarWidth.value, // Save sidebar width
   };
   localStorage.setItem(storageKey.value, JSON.stringify(layout));
 }
@@ -1081,6 +1086,8 @@ function startResizeSidebar(e) {
     isResizingSidebar.value = false;
     document.removeEventListener("mousemove", onMove);
     document.removeEventListener("mouseup", onUp);
+    // Save sidebar width
+    saveLayout();
   };
 
   document.addEventListener("mousemove", onMove);
