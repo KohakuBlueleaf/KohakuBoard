@@ -1,10 +1,10 @@
 """Background writer process for non-blocking logging
 
-NEW ARCHITECTURE:
-- Main dispatcher thread: reads mp.Queue, routes to per-DB queues
-- 4 worker threads: one per DuckDB file, processes independently
-- Each worker has persistent connection (released only on shutdown)
-- Parallel processing: histogram computation doesn't block scalar writes
+v0.2.0+ ARCHITECTURE:
+- Single writer process with multiprocessing queue
+- SQLite + Lance storage backends only
+- Immediate media inserts (for ID return)
+- Batched metric/table writes
 """
 
 import multiprocessing as mp
@@ -18,7 +18,8 @@ from typing import Any
 from loguru import logger
 
 from kohakuboard.client.types.media_handler import MediaHandler
-from kohakuboard.client.storage import DuckDBStorage, HybridStorage, ParquetStorage
+from kohakuboard.client.storage.hybrid import HybridStorage
+from kohakuboard.client.storage.sqlite import SQLiteMetadataStorage
 
 
 class LogWriter:
