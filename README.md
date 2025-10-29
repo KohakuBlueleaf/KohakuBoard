@@ -12,7 +12,10 @@ Local-first ML experiment tracking system with **zero training overhead**. Track
 
 > **Status:** Core features are complete and functional. Ready for production use. Remote server mode is under active development.
 
-</div>
+
+|![1761752427584](image/README/1761752427584.png)|![1761752450957](image/README/1761752450957.png)|
+|-|-|
+
 
 **Join our community:** https://discord.gg/xWYrkyvJ2s
 
