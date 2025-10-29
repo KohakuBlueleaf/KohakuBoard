@@ -4,7 +4,7 @@
 
 ---
 
-[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/KohakuBlueleaf/KohakuHub)
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/KohakuBlueleaf/KohakuBoard)
 
 **🚀 Production Ready - Non-Blocking Experiment Tracking**
 
