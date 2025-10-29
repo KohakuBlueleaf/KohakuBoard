@@ -1,0 +1,52 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kohaku-board"
+version = "0.0.1"
+description = "High efficiency Local/self-hosted ML Experiment Tracking System"
+authors = [
+    { name = "Shih-Ying Yeh(KohakuBlueLeaf)", email = "apolloyeh0123@gmail.com" },
+]
+license = { text = "Apache-2.0" }
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "aiofiles",
+    "aiohttp",
+    "bcrypt",
+    "boto3",
+    "cachetools",
+    "click>=8.0",
+    "click-completion",
+    "cryptography>=42.0",
+    "duckdb",
+    "fastapi",
+    "fsspec",
+    "httpx",
+    "loguru",
+    "numpy",
+    "pandas",
+    "peewee",
+    "psycopg2-binary",
+    "pyarrow",
+    "pydantic[email]",
+    "python-multipart",
+    "pytz",
+    "pyyaml",
+    "questionary",
+    "requests",
+    "rich",
+    "toml",
+    "uvicorn",
+    "pillow",
+]
+urls = { "Homepage" = "https://github.com/KohakuBlueleaf/KohakuBoard" }
+
+
+[project.scripts]
+kobo = "kobo.cli:cli"
+
+[tool.setuptools]
+package-dir = {"" = "src"}

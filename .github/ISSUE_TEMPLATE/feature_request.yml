@@ -1,0 +1,41 @@
+name: Feature Request
+description: Suggest a feature
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Have an idea? We'd love to hear it!
+
+  - type: textarea
+    id: feature
+    attributes:
+      label: What feature do you want?
+      placeholder: Describe what you'd like to see
+    validations:
+      required: true
+
+  - type: textarea
+    id: why
+    attributes:
+      label: Why do you need it?
+      placeholder: What problem does it solve? Who benefits?
+    validations:
+      required: true
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context
+      placeholder: Examples, mockups, links to similar features, etc.
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing issues
+          required: true
+        - label: I checked the roadmap in CONTRIBUTING.md
+          required: false

@@ -1,0 +1,50 @@
+name: Bug Report
+description: Report a bug
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! Please provide details so we can help.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What's wrong?
+      description: Describe the bug and how to reproduce it
+      placeholder: |
+        What happened:
+
+        Steps to reproduce:
+        1.
+        2.
+        3.
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      placeholder: |
+        - OS:
+        - Deployment: Docker / Local
+        - Component: Backend / Frontend / CLI
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs (if available)
+      placeholder: Paste relevant error messages or logs
+      render: shell
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing issues
+          required: true

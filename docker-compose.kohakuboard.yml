@@ -1,0 +1,79 @@
+# docker-compose.kohakuboard.yml - Standalone KohakuBoard deployment
+# Copy to docker-compose.yml and customize for your deployment
+
+services:
+  board-ui:
+    image: nginx:alpine
+    container_name: board-ui
+    restart: always
+    ports:
+      - "28081:80"
+    volumes:
+      - ./src/kohaku-board-ui/dist:/usr/share/nginx/html
+      - ./docker/kohakuboard/nginx.conf:/etc/nginx/conf.d/default.conf
+    depends_on:
+      - board-api
+
+  board-api:
+    build:
+      context: .
+      dockerfile: docker/kohakuboard/Dockerfile
+    container_name: board-api
+    restart: always
+    ports:
+      - "48889:48889"  # Optional: for debugging
+    environment:
+      ## ===== Mode Configuration =====
+      - KOHAKU_BOARD_MODE=remote  # local or remote
+      - KOHAKU_BOARD_BASE_URL=http://localhost:28081
+
+      ## ===== Database Configuration =====
+      # Option 1: SQLite (default, for testing)
+      - KOHAKU_BOARD_DB_BACKEND=sqlite
+      - KOHAKU_BOARD_DATABASE_URL=sqlite:///data/kohakuboard.db
+
+      # Option 2: PostgreSQL (uncomment for production)
+      # - KOHAKU_BOARD_DB_BACKEND=postgres
+      # - KOHAKU_BOARD_DATABASE_URL=postgresql://<user>:<password>@postgres-board:5432/kohakuboard
+
+      ## ===== Authentication Configuration =====
+      - KOHAKU_BOARD_AUTH_SESSION_SECRET=change-me-in-production
+      - KOHAKU_BOARD_AUTH_REQUIRE_EMAIL_VERIFICATION=false
+      - KOHAKU_BOARD_AUTH_INVITATION_ONLY=false
+      - KOHAKU_BOARD_AUTH_SESSION_EXPIRE_HOURS=168  # 7 days
+      - KOHAKU_BOARD_AUTH_TOKEN_EXPIRE_DAYS=365
+
+      ## ===== SMTP Configuration (Optional) =====
+      - KOHAKU_BOARD_SMTP_ENABLED=false
+      - KOHAKU_BOARD_SMTP_HOST=smtp.gmail.com
+      - KOHAKU_BOARD_SMTP_PORT=587
+      - KOHAKU_BOARD_SMTP_USERNAME=
+      - KOHAKU_BOARD_SMTP_PASSWORD=
+      - KOHAKU_BOARD_SMTP_FROM=noreply@kohakuboard.local
+      - KOHAKU_BOARD_SMTP_TLS=true
+
+      ## ===== Application Configuration =====
+      - KOHAKU_BOARD_BOARD_DATA_DIR=/app/kohakuboard
+    volumes:
+      - ./board-data:/app/kohakuboard
+      - ./board-meta:/data
+    # depends_on:
+    #   - postgres-board  # Uncomment if using PostgreSQL
+
+  # Uncomment for PostgreSQL mode
+  # postgres-board:
+  #   image: postgres:15
+  #   container_name: postgres-board
+  #   restart: always
+  #   environment:
+  #     - POSTGRES_USER=<user>
+  #     - POSTGRES_PASSWORD=<password>
+  #     - POSTGRES_DB=kohakuboard
+  #   ports:
+  #     - "25433:5432"  # Optional: for external access
+  #   volumes:
+  #     - ./board-meta/postgres:/var/lib/postgresql/data
+
+networks:
+  default:
+    name: board-net

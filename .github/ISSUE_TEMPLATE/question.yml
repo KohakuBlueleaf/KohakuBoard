@@ -1,0 +1,35 @@
+name: Question
+description: Ask for help
+title: "[Question]: "
+labels: ["question"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Need help? Ask away!
+
+        💡 For quick answers, join our [Discord](https://discord.gg/xWYrkyvJ2s)
+
+  - type: textarea
+    id: question
+    attributes:
+      label: Your question
+      placeholder: What would you like to know?
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Context (optional)
+      placeholder: |
+        What are you trying to do?
+        What have you tried?
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: I checked the docs
+          required: false

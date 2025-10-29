@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Discord Community
+    url: https://discord.gg/xWYrkyvJ2s
+    about: Join our Discord server for quick help and discussions
+  - name: Documentation
+    url: https://github.com/KohakuBlueleaf/KohakuHub/tree/main/docs
+    about: Read the documentation for setup guides and API reference
