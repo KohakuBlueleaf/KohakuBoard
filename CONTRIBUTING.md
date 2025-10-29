@@ -39,10 +39,10 @@ from fastapi import APIRouter, HTTPException
 from peewee import fn
 
 # 3. Our packages (shorter paths first, then alphabetical)
-from kobo.client import Board
-from kobo.client.storage import HybridStorage
-from kobo.client.types import Media, Table, Histogram
-from kobo.client.writer import LogWriter
+from kohakuboard.client import Board
+from kohakuboard.client.storage import HybridStorage
+from kohakuboard.client.types import Media, Table, Histogram
+from kohakuboard.client.writer import LogWriter
 
 # Within each group:
 # - `import xxx` comes before `from xxx import`
@@ -95,7 +95,7 @@ def get_board(board_id: str) -> Optional[Board]:
 **No imports in functions** (except to avoid circular imports):
 ```python
 # ✅ Good - imports at top
-from kobo.client.storage import HybridStorage
+from kohakuboard.client.storage import HybridStorage
 
 def create_storage(base_dir: Path):
     storage = HybridStorage(base_dir)
@@ -103,7 +103,7 @@ def create_storage(base_dir: Path):
 
 # ❌ Avoid - imports in function
 def create_storage(base_dir: Path):
-    from kobo.client.storage import HybridStorage
+    from kohakuboard.client.storage import HybridStorage
     storage = HybridStorage(base_dir)
     return storage
 ```
@@ -290,10 +290,13 @@ ls -la ./kohakuboard/
 The backend serves visualization data read-only:
 
 ```bash
-# Start backend server
-python -m kobo.main
+# Start backend server to use local dir
+kobo open ./kohakuboard
 # Or with live reload
-uvicorn kobo.main:app --reload --port 48889
+kobo open ./kohakuboard --reload
+
+# For remote mode:
+kobo serve
 
 # Backend available at:
 # http://localhost:48889
@@ -446,7 +449,7 @@ class Audio:
 
 **Required Methods:**
 ```python
-from kobo.client.storage.base import BaseStorage
+from kohakuboard.client.storage.base import BaseStorage
 
 class MyStorage(BaseStorage):
     def write_scalars(self, step: int, global_step: int, metrics: dict):

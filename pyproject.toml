@@ -39,6 +39,7 @@ dependencies = [
     "requests",
     "rich",
     "toml",
+    "tqdm",
     "uvicorn",
     "pillow",
 ]
@@ -46,7 +47,7 @@ urls = { "Homepage" = "https://github.com/KohakuBlueleaf/KohakuBoard" }
 
 
 [project.scripts]
-kobo = "kobo.cli:cli"
+kobo = "kohakuboard.cli:cli"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
