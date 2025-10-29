@@ -35,6 +35,7 @@ dependencies = [
     "python-multipart",
     "pytz",
     "pyyaml",
+    "pylance",
     "questionary",
     "requests",
     "rich",
