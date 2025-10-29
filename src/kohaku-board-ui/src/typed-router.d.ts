@@ -26,7 +26,6 @@ declare module 'vue-router/auto-routes' {
     '/projects/': RouteRecordInfo<'/projects/', '/projects', Record<never, never>, Record<never, never>>,
     '/projects/[project]/': RouteRecordInfo<'/projects/[project]/', '/projects/:project', { project: ParamValue<true> }, { project: ParamValue<false> }>,
     '/projects/[project]/[id]': RouteRecordInfo<'/projects/[project]/[id]', '/projects/:project/:id', { project: ParamValue<true>, id: ParamValue<true> }, { project: ParamValue<false>, id: ParamValue<false> }>,
-    '/projects/[project]/runs': RouteRecordInfo<'/projects/[project]/runs', '/projects/:project/runs', { project: ParamValue<true> }, { project: ParamValue<false> }>,
     '/register': RouteRecordInfo<'/register', '/register', Record<never, never>, Record<never, never>>,
   }
 
@@ -71,10 +70,6 @@ declare module 'vue-router/auto-routes' {
     }
     'src/pages/projects/[project]/[id].vue': {
       routes: '/projects/[project]/[id]'
-      views: never
-    }
-    'src/pages/projects/[project]/runs.vue': {
-      routes: '/projects/[project]/runs'
       views: never
     }
     'src/pages/register.vue': {

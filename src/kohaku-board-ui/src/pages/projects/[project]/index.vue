@@ -20,7 +20,7 @@ const currentPage = ref(1);
 const runsPerPage = 20;
 const loading = ref(false);
 
-// Color palette for runs
+// Base color palette for runs
 const RUN_COLORS = [
   "#FF6B6B",
   "#4ECDC4",
@@ -32,7 +32,109 @@ const RUN_COLORS = [
   "#85C1E2",
   "#F8B88B",
   "#52BE80",
+  "#E74C3C",
+  "#3498DB",
+  "#9B59B6",
+  "#1ABC9C",
+  "#F39C12",
+  "#E67E22",
+  "#95A5A6",
+  "#34495E",
+  "#16A085",
+  "#27AE60",
 ];
+
+/**
+ * Get deterministic color for a run
+ * Strategy: Use run index in sorted list + run_id hash jittering
+ *
+ * - Base color from index (stable as long as run exists)
+ * - Slight HSL jitter based on run_id hash (makes each run unique)
+ * - Same run_id always gets same jittered color
+ */
+function getRunColor(runId, runIndex) {
+  // Get base color from palette using index
+  const baseColor = RUN_COLORS[runIndex % RUN_COLORS.length];
+
+  // Generate deterministic jitter from run_id hash
+  let hash = 0;
+  for (let i = 0; i < runId.length; i++) {
+    const char = runId.charCodeAt(i);
+    hash = (hash << 5) - hash + char;
+    hash = hash & hash;
+  }
+
+  // Convert hash to jitter values (-15 to +15 for hue, -10% to +10% for saturation/lightness)
+  const hueJitter = (hash % 30) - 15;
+  const satJitter = (((hash >> 8) % 20) - 10) / 100;
+  const lightJitter = (((hash >> 16) % 20) - 10) / 100;
+
+  // Parse base color to RGB
+  const hex = baseColor.replace("#", "");
+  const r = parseInt(hex.substr(0, 2), 16) / 255;
+  const g = parseInt(hex.substr(2, 2), 16) / 255;
+  const b = parseInt(hex.substr(4, 2), 16) / 255;
+
+  // Convert RGB to HSL
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  let h,
+    s,
+    l = (max + min) / 2;
+
+  if (max === min) {
+    h = s = 0;
+  } else {
+    const d = max - min;
+    s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+
+    switch (max) {
+      case r:
+        h = ((g - b) / d + (g < b ? 6 : 0)) / 6;
+        break;
+      case g:
+        h = ((b - r) / d + 2) / 6;
+        break;
+      case b:
+        h = ((r - g) / d + 4) / 6;
+        break;
+    }
+  }
+
+  // Apply jitter
+  h = (h * 360 + hueJitter) % 360;
+  s = Math.max(0, Math.min(1, s + satJitter));
+  l = Math.max(0, Math.min(1, l + lightJitter));
+
+  // Convert HSL back to RGB
+  const hue2rgb = (p, q, t) => {
+    if (t < 0) t += 1;
+    if (t > 1) t -= 1;
+    if (t < 1 / 6) return p + (q - p) * 6 * t;
+    if (t < 1 / 2) return q;
+    if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
+    return p;
+  };
+
+  let r2, g2, b2;
+  if (s === 0) {
+    r2 = g2 = b2 = l;
+  } else {
+    const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+    const p = 2 * l - q;
+    r2 = hue2rgb(p, q, h / 360 + 1 / 3);
+    g2 = hue2rgb(p, q, h / 360);
+    b2 = hue2rgb(p, q, h / 360 - 1 / 3);
+  }
+
+  // Convert back to hex
+  const toHex = (x) => {
+    const hex = Math.round(x * 255).toString(16);
+    return hex.length === 1 ? "0" + hex : hex;
+  };
+
+  return `#${toHex(r2)}${toHex(g2)}${toHex(b2)}`;
+}
 
 // Multi-run data cache (run_id -> metric -> sparse array)
 const multiRunDataCache = ref({});
@@ -96,38 +198,19 @@ const globalSettings = ref({
 
 const storageKey = computed(() => `project-layout-${route.params.project}`);
 
-// Custom run colors (saved by user)
+// Custom run colors (saved by user, overrides hash-based defaults)
+// Now saved with layout instead of separate storage
 const customRunColors = ref({});
 
-// Load saved colors from localStorage
-const colorStorageKey = computed(
-  () => `project-run-colors-${projectName.value}`,
-);
-
-watch(
-  () => projectName.value,
-  () => {
-    const saved = localStorage.getItem(colorStorageKey.value);
-    if (saved) {
-      try {
-        customRunColors.value = JSON.parse(saved);
-      } catch (e) {
-        console.error("Failed to parse saved colors:", e);
-      }
-    }
-  },
-  { immediate: true },
-);
-
-// Run colors map - assign colors to ALL runs, not just displayed
+// Run colors map - stable index + deterministic jittering
 // Map by both run_id AND run name for easy lookup
 const runColors = computed(() => {
   const colors = {};
   allRuns.value.forEach((run, index) => {
-    // Use custom color if set, otherwise use default from palette
+    // Use custom color if set, otherwise use index + hash jittering
     const color =
-      customRunColors.value[run.run_id] ||
-      RUN_COLORS[index % RUN_COLORS.length];
+      customRunColors.value[run.run_id] || getRunColor(run.run_id, index);
+
     colors[run.run_id] = color;
     // Also map by name for LinePlot lookup
     if (run.name) {
@@ -170,6 +253,8 @@ const paginatedRuns = computed(() => {
 const totalRuns = computed(() => allRuns.value.length);
 const totalPages = computed(() => Math.ceil(totalRuns.value / runsPerPage));
 
+let pollInterval = null;
+
 // Fetch all runs for this project
 async function fetchRuns() {
   loading.value = true;
@@ -201,6 +286,34 @@ async function fetchRuns() {
   }
 }
 
+// Poll for new runs in background
+async function pollRuns() {
+  try {
+    const response = await fetch(`/api/projects/${projectName.value}/runs`);
+    if (!response.ok) return;
+
+    const data = await response.json();
+    const newRuns = (data.runs || []).sort((a, b) => {
+      const dateA = new Date(a.created_at || 0);
+      const dateB = new Date(b.created_at || 0);
+      return dateB - dateA;
+    });
+
+    // Check if there are new runs
+    const oldRunIds = new Set(allRuns.value.map((r) => r.run_id));
+    const hasNewRuns = newRuns.some((r) => !oldRunIds.has(r.run_id));
+
+    if (hasNewRuns) {
+      console.log("New runs detected, updating list");
+      allRuns.value = newRuns;
+      // Auto-select new runs
+      selectedRunIds.value = new Set(allRuns.value.map((r) => r.run_id));
+    }
+  } catch (error) {
+    console.error("Failed to poll runs:", error);
+  }
+}
+
 function toggleRunSelection(runId) {
   if (selectedRunIds.value.has(runId)) {
     selectedRunIds.value.delete(runId);
@@ -214,13 +327,10 @@ function toggleRunSelection(runId) {
 
 function updateRunColor(runId, color) {
   customRunColors.value[runId] = color;
-  // Save to localStorage
-  localStorage.setItem(
-    colorStorageKey.value,
-    JSON.stringify(customRunColors.value),
-  );
   // Force reactivity
   customRunColors.value = { ...customRunColors.value };
+  // Save with layout (includes custom colors)
+  saveLayout();
 }
 
 function selectAllOnPage() {
@@ -310,6 +420,10 @@ async function initializeProject() {
 
       if (savedLayout.globalSettings) {
         globalSettings.value = savedLayout.globalSettings;
+      }
+
+      if (savedLayout.customRunColors) {
+        customRunColors.value = savedLayout.customRunColors;
       }
     }
 
@@ -672,6 +786,7 @@ function saveLayout() {
     activeTab: activeTab.value,
     nextCardId: nextCardId.value,
     globalSettings: globalSettings.value,
+    customRunColors: customRunColors.value, // Save custom color mappings
   };
   localStorage.setItem(storageKey.value, JSON.stringify(layout));
 }
@@ -991,10 +1106,20 @@ watch(
 
 onMounted(() => {
   fetchRuns();
+
+  // Start polling for new runs every 5 seconds
+  pollInterval = setInterval(() => {
+    pollRuns();
+  }, 5000);
 });
 
 onUnmounted(() => {
   window.__projectSidebarState = null;
+
+  // Cleanup polling
+  if (pollInterval) {
+    clearInterval(pollInterval);
+  }
 });
 </script>
 

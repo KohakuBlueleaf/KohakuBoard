@@ -8,19 +8,15 @@ const props = defineProps({
 });
 
 const emit = defineEmits(["toggle", "update-color"]);
-const router = useRouter();
 
 function toggleVisibility(runId, event) {
+  event.preventDefault();
   event.stopPropagation();
   emit("toggle", runId);
 }
 
 function isDisplayed(runId) {
   return props.displayedRunIds.includes(runId);
-}
-
-function goToRun(run) {
-  router.push(`/projects/${props.project}/${run.run_id}`);
 }
 
 function handleColorChange(runId, event) {
@@ -32,11 +28,11 @@ function handleColorChange(runId, event) {
 
 <template>
   <div class="run-selection-list">
-    <div
+    <router-link
       v-for="run in runs"
       :key="run.run_id"
-      class="run-item px-2 py-1 hover:bg-gray-100 dark:hover:bg-gray-800 border-b border-gray-200 dark:border-gray-700 cursor-pointer"
-      @click="goToRun(run)"
+      :to="`/projects/${project}/${run.run_id}`"
+      class="run-item block px-2 py-1 hover:bg-gray-100 dark:hover:bg-gray-800 border-b border-gray-200 dark:border-gray-700 no-underline"
     >
       <div class="flex items-center justify-between gap-2">
         <div class="flex items-center gap-2 flex-1 min-w-0">
@@ -55,7 +51,9 @@ function handleColorChange(runId, event) {
               :title="'Click to change color'"
             ></span>
           </div>
-          <span class="text-sm truncate">{{ run.name || run.run_id }}</span>
+          <span class="text-sm truncate text-gray-900 dark:text-gray-100">
+            {{ run.name || run.run_id }}
+          </span>
         </div>
 
         <el-button
@@ -74,7 +72,7 @@ function handleColorChange(runId, event) {
           ></i>
         </el-button>
       </div>
-    </div>
+    </router-link>
   </div>
 </template>
 

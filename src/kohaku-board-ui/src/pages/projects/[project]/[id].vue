@@ -59,9 +59,8 @@ const globalSettings = ref({
   downsampleRate: -1, // -1 = adaptive
 });
 
-const storageKey = computed(
-  () => `experiment-layout-${route.params.project}-${route.params.id}`,
-);
+// Use project-level storage key (same layout shared across all runs in project)
+const storageKey = computed(() => `project-layout-${route.params.project}`);
 
 // Extracted initialization logic for reuse
 async function initializeExperiment() {

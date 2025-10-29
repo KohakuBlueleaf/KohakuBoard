@@ -7,11 +7,7 @@ import { useHoverSync } from "@/composables/useHoverSync";
 const { animationsEnabled } = useAnimationPreference();
 const { registerChart, unregisterChart } = useHoverSync();
 
-const emit = defineEmits([
-  "update:smoothingMode",
-  "update:smoothingValue",
-  "update:downsampleRate",
-]);
+// No emits needed - parent watches plotConfig directly via ref
 
 const props = defineProps({
   data: {
@@ -52,6 +48,26 @@ const props = defineProps({
     type: Number,
     default: undefined,
   },
+  showOriginal: {
+    type: Boolean,
+    default: undefined,
+  },
+  lineWidth: {
+    type: Number,
+    default: undefined,
+  },
+  showMarkers: {
+    type: Boolean,
+    default: undefined,
+  },
+  xRange: {
+    type: Object,
+    default: undefined,
+  },
+  yRange: {
+    type: Object,
+    default: undefined,
+  },
   // Hover sync props
   tabName: {
     type: String,
@@ -88,14 +104,14 @@ const modalMouseDownTarget = ref(null);
 
 // Internal config (can be overridden by props)
 const config = reactive({
-  xRange: { auto: true, min: null, max: null },
-  yRange: { auto: true, min: null, max: null },
+  xRange: props.xRange ?? { auto: true, min: null, max: null },
+  yRange: props.yRange ?? { auto: true, min: null, max: null },
   smoothingMode: props.smoothingMode ?? "disabled",
   smoothingValue: props.smoothingValue ?? 0.9,
   downsampleRate: props.downsampleRate ?? -1, // -1 = adaptive
-  showOriginal: true,
-  showMarkers: false,
-  lineWidth: 1.5,
+  showOriginal: props.showOriginal ?? true,
+  showMarkers: props.showMarkers ?? false,
+  lineWidth: props.lineWidth ?? 1.5,
 });
 
 // Watch for prop changes and update internal config
@@ -116,6 +132,38 @@ watch(
   (val) => {
     if (val !== undefined) config.downsampleRate = val;
   },
+);
+watch(
+  () => props.showOriginal,
+  (val) => {
+    if (val !== undefined) config.showOriginal = val;
+  },
+);
+watch(
+  () => props.lineWidth,
+  (val) => {
+    if (val !== undefined) config.lineWidth = val;
+  },
+);
+watch(
+  () => props.showMarkers,
+  (val) => {
+    if (val !== undefined) config.showMarkers = val;
+  },
+);
+watch(
+  () => props.xRange,
+  (val) => {
+    if (val !== undefined) config.xRange = val;
+  },
+  { deep: true },
+);
+watch(
+  () => props.yRange,
+  (val) => {
+    if (val !== undefined) config.yRange = val;
+  },
+  { deep: true },
 );
 
 onMounted(() => {
@@ -166,23 +214,8 @@ watch(
   },
 );
 
-watch(
-  config,
-  (newConfig, oldConfig) => {
-    // Emit changes to parent for persistence
-    if (newConfig.smoothingMode !== oldConfig?.smoothingMode) {
-      emit("update:smoothingMode", newConfig.smoothingMode);
-    }
-    if (newConfig.smoothingValue !== oldConfig?.smoothingValue) {
-      emit("update:smoothingValue", newConfig.smoothingValue);
-    }
-    if (newConfig.downsampleRate !== oldConfig?.downsampleRate) {
-      emit("update:downsampleRate", newConfig.downsampleRate);
-    }
-    createPlot();
-  },
-  { deep: true },
-);
+// Recreate plot when config changes (parent saves via ref watcher)
+watch(config, () => createPlot(), { deep: true });
 
 function applySmoothing(y, mode, value) {
   if (mode === "disabled") return y;
@@ -454,7 +487,18 @@ function createPlot() {
     "#17becf",
   ];
 
-  const traces = [];
+  // Helper to convert hex to RGBA
+  const hexToRgba = (hex, alpha) => {
+    const r = parseInt(hex.slice(1, 3), 16);
+    const g = parseInt(hex.slice(3, 5), 16);
+    const b = parseInt(hex.slice(5, 7), 16);
+    return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+  };
+
+  // Collect traces in two groups: original first, then smoothed (so smoothed renders on top)
+  const originalTraces = [];
+  const smoothedTraces = [];
+  const specialMarkerTraces = [];
 
   data.forEach((series, index) => {
     console.log(
@@ -464,7 +508,6 @@ function createPlot() {
     // In multi-run mode, use the stored run_id to look up color
     let baseColor = plotlyColors[index % plotlyColors.length];
     if (props.multiRunMode && series.runId) {
-      // Use the original run_id stored in processedData
       const runId = series.runId;
       if (props.runColors[runId]) {
         baseColor = props.runColors[runId];
@@ -479,44 +522,39 @@ function createPlot() {
       }
     }
 
-    // Render original (smoothed) segments if enabled
-    if (series.originalSegments && series.originalSegments.length > 0) {
-      // Convert to dimmer color (not opacity) - blend with gray
-      let dimmerColor = baseColor;
-      if (baseColor.startsWith("#")) {
-        const r = parseInt(baseColor.slice(1, 3), 16);
-        const g = parseInt(baseColor.slice(3, 5), 16);
-        const b = parseInt(baseColor.slice(5, 7), 16);
-        const isDark = document.documentElement.classList.contains("dark");
-        const blend = isDark ? 80 : 200;
-        const dimR = Math.floor(r * 0.4 + blend * 0.6);
-        const dimG = Math.floor(g * 0.4 + blend * 0.6);
-        const dimB = Math.floor(b * 0.4 + blend * 0.6);
-        dimmerColor = `rgb(${dimR}, ${dimG}, ${dimB})`;
-      }
+    // Store original data for hover template
+    const hasSmoothing = config.smoothingMode !== "disabled";
+    const originalSegments = series.originalSegments || [];
 
-      // Add each original segment as a separate trace
-      series.originalSegments.forEach((seg, segIdx) => {
-        traces.push({
+    // Render original segments if enabled (pushed first, renders below)
+    if (originalSegments.length > 0 && config.showOriginal) {
+      // Dimmer color for original data
+      const dimmerColor = hexToRgba(baseColor, 0.3); // Lower opacity for original
+
+      originalSegments.forEach((seg, segIdx) => {
+        originalTraces.push({
           type: "scattergl",
           mode: "lines",
-          name: `${series.name} (original)`,
+          name: series.name, // Same name, no "(original)" suffix
           x: seg.x,
           y: seg.y,
           line: {
             width: config.lineWidth * 0.5,
             color: dimmerColor,
           },
-          showlegend: segIdx === 0, // Only first segment shows in legend
-          legendgroup: series.name + "_original",
-          hoverinfo: "skip",
+          showlegend: false, // Hide from legend
+          legendgroup: series.name,
+          hoverinfo: "skip", // Don't show in hover
         });
       });
     }
 
-    // Render main line segments
+    // Render smoothed/main line segments (pushed last, renders on top)
     if (series.segments && series.segments.length > 0) {
       series.segments.forEach((seg, segIdx) => {
+        const useTransparency = processedData.length > 1;
+        const lineOpacity = useTransparency ? 0.6 : 1.0;
+
         const trace = {
           type: "scattergl",
           mode: config.showMarkers ? "lines+markers" : "lines",
@@ -525,31 +563,63 @@ function createPlot() {
           y: seg.y,
           line: {
             width: config.lineWidth,
-            color: baseColor,
+            color: hexToRgba(baseColor, lineOpacity),
           },
           marker: {
             size: 3,
             color: baseColor,
+            opacity: 1,
           },
-          showlegend: segIdx === 0, // Only first segment shows in legend
+          showlegend: segIdx === 0, // Only first segment in legend
           legendgroup: series.name,
         };
 
-        // Custom hover template for relative_walltime
-        if (props.xaxis === "relative_walltime") {
-          trace.customdata = seg.x.map((xVal, idx) => ({
-            duration: formatDuration(xVal),
-          }));
-          trace.hovertemplate =
-            "<b>%{fullData.name}</b><br>" +
-            "Time: %{customdata.duration}<br>" +
-            "Value: %{y:.4f}<extra></extra>";
+        // Custom hover template showing smoothed(original) if smoothing enabled
+        if (hasSmoothing && originalSegments.length > 0) {
+          // Build customdata with original values for hover
+          trace.customdata = seg.x.map((xVal, idx) => {
+            // Find original y value at this x position
+            let originalY = null;
+            for (const origSeg of originalSegments) {
+              const origIdx = origSeg.x.indexOf(xVal);
+              if (origIdx !== -1) {
+                originalY = origSeg.y[origIdx];
+                break;
+              }
+            }
+            return { originalY };
+          });
+
+          if (props.xaxis === "relative_walltime") {
+            trace.customdata = seg.x.map((xVal, idx) => ({
+              duration: formatDuration(xVal),
+              originalY: trace.customdata[idx]?.originalY,
+            }));
+            trace.hovertemplate =
+              "<b>%{fullData.name}</b><br>" +
+              "Time: %{customdata.duration}<br>" +
+              "Value: %{y:.4f} (%{customdata.originalY:.4f})<extra></extra>";
+          } else {
+            trace.hovertemplate =
+              "<b>%{fullData.name}</b>: %{y:.4f} (%{customdata.originalY:.4f})<extra></extra>";
+          }
         } else {
-          trace.hovertemplate =
-            "<b>%{fullData.name}</b>: %{y:.4f}<extra></extra>";
+          // No smoothing - simple hover
+          if (props.xaxis === "relative_walltime") {
+            trace.customdata = seg.x.map((xVal) => ({
+              duration: formatDuration(xVal),
+            }));
+            trace.hovertemplate =
+              "<b>%{fullData.name}</b><br>" +
+              "Time: %{customdata.duration}<br>" +
+              "Value: %{y:.4f}<extra></extra>";
+          } else {
+            trace.hovertemplate =
+              "<b>%{fullData.name}</b>: %{y:.4f}<extra></extra>";
+          }
         }
 
-        traces.push(trace);
+        smoothedTraces.push(trace);
       });
     }
 
@@ -571,23 +641,22 @@ function createPlot() {
           `[LinePlot] Adding NaN markers for ${series.name}:`,
           series.nanX,
         );
-        traces.push({
+        specialMarkerTraces.push({
           type: "scattergl",
           mode: "markers",
           name: `${series.name} (NaN)`,
           x: series.nanX,
-          y: series.nanX.map(() => 1), // Will be positioned at top via yaxis2
+          y: series.nanX.map(() => 1),
           marker: {
             symbol: "circle",
             size: 8,
             color: baseColor,
             line: { color: "white", width: 1.5 },
           },
-          yaxis: "y2", // Use secondary y-axis fixed at [0, 1]
+          yaxis: "y2",
           showlegend: false,
           legendgroup: series.name,
-          hoverinfo: "skip", // CRITICAL: Don't show in unified hover tooltip
-          // Individual hover still works when directly hovering the marker
+          hoverinfo: "skip",
           text: series.nanX.map(() => `${series.name}: NaN`),
         });
       }
@@ -598,12 +667,12 @@ function createPlot() {
           `[LinePlot] Adding +inf markers for ${series.name}:`,
           series.infX,
         );
-        traces.push({
+        specialMarkerTraces.push({
           type: "scattergl",
           mode: "markers",
           name: `${series.name} (+inf)`,
           x: series.infX,
-          y: series.infX.map(() => 0.95), // Slightly below top
+          y: series.infX.map(() => 0.95),
           marker: {
             symbol: "triangle-up",
             size: 10,
@@ -613,7 +682,7 @@ function createPlot() {
           yaxis: "y2",
           showlegend: false,
           legendgroup: series.name,
-          hoverinfo: "skip", // CRITICAL: Don't show in unified hover tooltip
+          hoverinfo: "skip",
           text: series.infX.map(() => `${series.name}: +inf`),
         });
       }
@@ -624,12 +693,12 @@ function createPlot() {
           `[LinePlot] Adding -inf markers for ${series.name}:`,
           series.negInfX,
         );
-        traces.push({
+        specialMarkerTraces.push({
           type: "scattergl",
           mode: "markers",
           name: `${series.name} (-inf)`,
           x: series.negInfX,
-          y: series.negInfX.map(() => 0.05), // Slightly above bottom
+          y: series.negInfX.map(() => 0.05),
           marker: {
             symbol: "triangle-down",
             size: 10,
@@ -639,12 +708,15 @@ function createPlot() {
           yaxis: "y2",
           showlegend: false,
           legendgroup: series.name,
-          hoverinfo: "skip", // CRITICAL: Don't show in unified hover tooltip
+          hoverinfo: "skip",
           text: series.negInfX.map(() => `${series.name}: -inf`),
         });
       }
     }
   });
+
+  // Combine traces in order: original (bottom), smoothed (top), special markers (overlay)
+  const traces = [...originalTraces, ...smoothedTraces, ...specialMarkerTraces];
 
   const xAxisConfig = config.xRange.auto
     ? { autorange: true }

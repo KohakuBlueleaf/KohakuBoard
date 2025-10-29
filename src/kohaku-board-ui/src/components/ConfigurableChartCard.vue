@@ -376,6 +376,27 @@ function exportPNG() {
 
 const plotConfig = computed(() => plotRef.value?.plotConfig || null);
 
+// Watch plotConfig and save entire config immediately when ANY setting changes
+watch(
+  plotConfig,
+  (newConfig) => {
+    if (!newConfig) return;
+
+    // Save entire config whenever anything changes
+    emitConfig({
+      smoothingMode: newConfig.smoothingMode,
+      smoothingValue: newConfig.smoothingValue,
+      downsampleRate: newConfig.downsampleRate,
+      showOriginal: newConfig.showOriginal,
+      lineWidth: newConfig.lineWidth,
+      showMarkers: newConfig.showMarkers,
+      xRange: newConfig.xRange,
+      yRange: newConfig.yRange,
+    });
+  },
+  { deep: true },
+);
+
 function startResizeBottom(e) {
   e.preventDefault();
   e.stopPropagation();
@@ -661,15 +682,17 @@ function startResizeRight(e) {
           :smoothing-mode="props.initialConfig.smoothingMode"
           :smoothing-value="props.initialConfig.smoothingValue"
           :downsample-rate="props.initialConfig.downsampleRate"
+          :show-original="props.initialConfig.showOriginal"
+          :line-width="props.initialConfig.lineWidth"
+          :show-markers="props.initialConfig.showMarkers"
+          :x-range="props.initialConfig.xRange"
+          :y-range="props.initialConfig.yRange"
           :tab-name="props.tabName"
           :chart-id="props.cardId"
           :hover-sync-enabled="props.hoverSyncEnabled"
           :multi-run-mode="props.multiRunMode"
           :run-colors="props.runColors"
           :run-names="props.runNames"
-          @update:smoothing-mode="(v) => emitConfig({ smoothingMode: v })"
-          @update:smoothing-value="(v) => emitConfig({ smoothingValue: v })"
-          @update:downsample-rate="(v) => emitConfig({ downsampleRate: v })"
         />
         <MediaViewer
           v-else-if="cardType === 'media' && mediaData"
