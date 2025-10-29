@@ -446,13 +446,13 @@ function startResizeRight(e) {
 
     const snaps = [
       { p: 12.5, l: "1/8" },
-      { p: 16, l: "1/6" },
-      { p: 20, l: "1/5" },
-      { p: 25, l: "1/4" },
-      { p: 33, l: "1/3" },
-      { p: 50, l: "1/2" },
-      { p: 66, l: "2/3" },
-      { p: 100, l: "Full" },
+      { p: 16.666666666666666666666666666, l: "1/6" },
+      { p: 20.0, l: "1/5" },
+      { p: 25.0, l: "1/4" },
+      { p: 33.333333333333333333333333333, l: "1/3" },
+      { p: 50.0, l: "1/2" },
+      { p: 66.666666666666666666666666666, l: "2/3" },
+      { p: 100.0, l: "Full" },
     ];
 
     let closest = snaps[0];
@@ -536,17 +536,17 @@ function startResizeRight(e) {
         {{
           previewWidth === 100
             ? "Full"
-            : previewWidth === 66
+            : previewWidth === 66.666666666666666666666666666
               ? "2/3"
               : previewWidth === 50
                 ? "1/2"
-                : previewWidth === 33
+                : previewWidth === 33.333333333333333333333333333
                   ? "1/3"
                   : previewWidth === 25
                     ? "1/4"
                     : previewWidth === 20
                       ? "1/5"
-                      : previewWidth === 16
+                      : previewWidth === 16.666666666666666666666666666
                         ? "1/6"
                         : previewWidth === 12.5
                           ? "1/8"
