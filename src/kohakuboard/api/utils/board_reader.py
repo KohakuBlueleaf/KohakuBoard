@@ -296,6 +296,7 @@ class DuckDBBoardReader:
 
         Returns:
             List of dicts with step, global_step, caption, media metadata
+            (filename is derived as {media_hash}.{format})
         """
         conn = self._get_media_connection()
         try:
@@ -308,8 +309,17 @@ class DuckDBBoardReader:
             # Get column names
             columns = [desc[0] for desc in conn.description]
 
-            # Convert to list of dicts
-            return [dict(zip(columns, row)) for row in result]
+            # Convert to list of dicts and derive filename
+            media_list = []
+            for row in result:
+                media_dict = dict(zip(columns, row))
+                # Derive filename from hash + format (v0.2.0+)
+                media_dict["filename"] = (
+                    f"{media_dict['media_hash']}.{media_dict['format']}"
+                )
+                media_list.append(media_dict)
+
+            return media_list
         finally:
             conn.close()
 
@@ -444,6 +454,37 @@ class DuckDBBoardReader:
         if media_path.exists():
             return media_path
         return None
+
+    def get_media_by_id(self, media_id: int) -> Optional[Dict[str, Any]]:
+        """Get media metadata by database ID
+
+        NEW in v0.2.0: Resolves <media id=123> tags to media metadata.
+        Filename is derived as {media_hash}.{format}.
+
+        Args:
+            media_id: Media database ID (SQLite auto-increment ID)
+
+        Returns:
+            Media metadata dict with derived 'filename' field, or None if not found
+        """
+        conn = self._get_media_connection()
+        try:
+            query = "SELECT * FROM media WHERE id = ? LIMIT 1"
+            cursor = conn.execute(query, (media_id,))
+            columns = [desc[0] for desc in cursor.description]
+            row = cursor.fetchone()
+
+            if row:
+                media_dict = dict(zip(columns, row))
+                # Derive filename from hash + format
+                media_dict["filename"] = (
+                    f"{media_dict['media_hash']}.{media_dict['format']}"
+                )
+                return media_dict
+            return None
+
+        finally:
+            conn.close()
 
     def get_summary(self) -> Dict[str, Any]:
         """Get board summary with available data

@@ -108,19 +108,20 @@ const processedTableData = computed(() => {
       if (colType === "media" || colType === "image") {
         // Try multiple patterns for media tags
         if (typeof cell === "string") {
-          // Pattern 1: <media id=xxx>
-          let match = cell.match(/<media id=([^>]+)>/);
+          // Pattern 1: <media id=xxx> (v0.2.0+ uses database ID)
+          let match = cell.match(/<media id=(\d+)>/);
           // Pattern 2: &lt;media id=xxx&gt; (HTML escaped)
           if (!match) {
-            match = cell.match(/&lt;media id=([^&]+)&gt;/);
+            match = cell.match(/&lt;media id=(\d+)&gt;/);
           }
 
           if (match) {
-            const mediaId = match[1];
-            const hash8 = mediaId.substring(0, 8);
-            const filename = `${tableName}_r${rowIdx}_c${colIdx}_${String(step).padStart(8, "0")}_${hash8}.png`;
-            const url = `/api/boards/${experimentId.value}/media/files/${filename}`;
-            console.log(`✅ Converted media tag to URL: ${url}`);
+            const mediaId = match[1]; // Database ID (integer)
+            // NEW: Use media ID resolution endpoint
+            const url = `/api/boards/${experimentId.value}/media/by-id/${mediaId}`;
+            console.log(
+              `✅ Converted media tag to URL: ${url} (ID: ${mediaId})`,
+            );
             return url;
           } else {
             console.log(`❌ No media tag match for: ${cell.substring(0, 50)}`);

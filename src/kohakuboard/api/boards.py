@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException, Query
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 
 from kohakuboard.api.utils.board_reader import BoardReader, list_boards
 from kohakuboard.config import cfg
@@ -298,4 +298,82 @@ async def get_media_file(board_id: str, filename: str):
         raise
     except Exception as e:
         logger_api.error(f"Failed to serve media file {board_id}/{filename}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/boards/{board_id}/media/by-id/{media_id}")
+async def get_media_by_id(board_id: str, media_id: int):
+    """Get media file by database ID
+
+    Used to resolve <media id=123> tags from tables.
+    Serves the actual media file content.
+
+    Args:
+        board_id: Board identifier
+        media_id: Media database ID (SQLite auto-increment ID)
+
+    Returns:
+        Media file response (image/video/audio)
+    """
+    logger_api.info(f"Resolving media ID {media_id} for board {board_id}")
+
+    try:
+        board_dir = Path(cfg.app.board_data_dir) / board_id
+
+        if not board_dir.exists():
+            raise HTTPException(status_code=404, detail=f"Board '{board_id}' not found")
+
+        # Initialize board reader
+        reader = BoardReader(board_dir)
+
+        # Query database for media ID
+        media_info = reader.get_media_by_id(media_id)
+
+        if not media_info:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Media ID {media_id} not found in board '{board_id}'",
+            )
+
+        # Get filename and file path
+        filename = media_info["filename"]
+        file_path = reader.get_media_file_path(filename)
+
+        if not file_path or not file_path.exists():
+            raise HTTPException(
+                status_code=404, detail=f"Media file not found: {filename}"
+            )
+
+        # Determine media type from format
+        format_ext = media_info["format"]
+        media_types = {
+            "png": "image/png",
+            "jpg": "image/jpeg",
+            "jpeg": "image/jpeg",
+            "gif": "image/gif",
+            "webp": "image/webp",
+            "bmp": "image/bmp",
+            "mp4": "video/mp4",
+            "webm": "video/webm",
+            "avi": "video/avi",
+            "mov": "video/quicktime",
+            "wav": "audio/wav",
+            "mp3": "audio/mpeg",
+            "ogg": "audio/ogg",
+            "flac": "audio/flac",
+        }
+
+        media_type = media_types.get(format_ext, "application/octet-stream")
+
+        # Serve the actual file
+        return FileResponse(
+            path=file_path,
+            media_type=media_type,
+            filename=filename,
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger_api.error(f"Error fetching media by ID {media_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))

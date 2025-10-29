@@ -84,21 +84,29 @@ class HybridStorage:
         name: str,
         media_list: List[Dict[str, Any]],
         caption: Optional[str] = None,
-    ):
-        """Append media log entry
+    ) -> List[int]:
+        """Append media log entry with deduplication
+
+        NEW in v0.2.0: Returns list of media IDs for reference in tables.
 
         Args:
             step: Auto-increment step
             global_step: Explicit global step
             name: Media log name
-            media_list: List of media metadata dicts
+            media_list: List of media metadata dicts (from media_handler.process_media())
             caption: Optional caption
+
+        Returns:
+            List of media IDs (SQLite auto-increment IDs)
         """
         # Record step info (use current timestamp)
         timestamp_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
         self.metadata_storage.append_step_info(step, global_step, timestamp_ms)
 
-        self.metadata_storage.append_media(step, global_step, name, media_list, caption)
+        # Delegate to SQLite metadata storage (now returns IDs)
+        return self.metadata_storage.append_media(
+            step, global_step, name, media_list, caption
+        )
 
     def append_table(
         self,

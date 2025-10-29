@@ -1,6 +1,5 @@
 """Media handling utilities for images, videos, and audio"""
 
-import hashlib
 import io
 import shutil
 from pathlib import Path
@@ -8,6 +7,8 @@ from typing import Any, List, Union
 
 import numpy as np
 from loguru import logger
+
+from kohakuboard.client.utils.media_hash import generate_media_hash
 
 
 class MediaHandler:
@@ -36,16 +37,28 @@ class MediaHandler:
     def process_media(
         self, media: Any, name: str, step: int, media_type: str = "image"
     ) -> dict:
-        """Process and save media (image/video/audio)
+        """Process and save media with content-addressable storage
+
+        New behavior (v0.2.0+):
+        - Filename: {hash}.{ext} (no step, no name)
+        - Deduplication: Check if file exists before writing
+        - Returns metadata dict with hash and filename (media_id assigned by DB)
 
         Args:
             media: Media data (PIL Image, numpy array, torch Tensor, or file path)
-            name: Name for this media log
-            step: Step number
+            name: Name for this media log (for metadata only, not in filename)
+            step: Step number (for metadata only, not in filename)
             media_type: Type of media ("image", "video", "audio", "auto")
 
         Returns:
-            dict with media metadata
+            dict with media metadata:
+                - media_hash: 22-char base-36 hash
+                - format: file extension (e.g., "png", "mp4", "wav")
+                - type: "image", "video", or "audio"
+                - size_bytes: file size
+                - width, height: image dimensions (if applicable)
+                - deduplicated: True if file already existed
+            Note: Filename is derived as {media_hash}.{format}, not returned here
         """
         # Auto-detect type from file extension if type is "auto"
         if media_type == "auto" and isinstance(media, (str, Path)):
@@ -57,14 +70,55 @@ class MediaHandler:
             elif ext in self.AUDIO_EXTS:
                 media_type = "audio"
 
+        # Convert media to bytes and determine format
         if media_type == "image":
-            return self._process_image(media, name, step)
+            content_bytes, ext = self._prepare_image(media)
         elif media_type == "video":
-            return self._process_video(media, name, step)
+            content_bytes, ext = self._prepare_video(media)
         elif media_type == "audio":
-            return self._process_audio(media, name, step)
+            content_bytes, ext = self._prepare_audio(media)
         else:
             raise ValueError(f"Unsupported media type: {media_type}")
+
+        # Generate content hash for filename
+        media_hash = generate_media_hash(content_bytes)
+        filename = f"{media_hash}.{ext}"
+        filepath = self.media_dir / filename
+
+        # Deduplication: Only write if file doesn't exist
+        file_exists = filepath.exists()
+        if not file_exists:
+            with open(filepath, "wb") as f:
+                f.write(content_bytes)
+            logger.debug(f"Saved new {media_type}: {filename}")
+        else:
+            logger.debug(f"Deduplicated {media_type}: {filename} (already exists)")
+
+        # Get file metadata
+        file_size = filepath.stat().st_size
+
+        # Get dimensions for images
+        width, height = None, None
+        if media_type == "image":
+            try:
+                from PIL import Image
+
+                with Image.open(filepath) as img:
+                    width, height = img.size
+            except Exception:
+                pass  # Skip if we can't read dimensions
+
+        # Return metadata (media_id will be assigned by database)
+        # Filename and path are not stored - derived from hash + format
+        return {
+            "media_hash": media_hash,
+            "format": ext,
+            "type": media_type,
+            "size_bytes": file_size,
+            "width": width,
+            "height": height,
+            "deduplicated": file_exists,
+        }
 
     def process_images(self, images: List[Any], name: str, step: int) -> List[dict]:
         """Process multiple images
@@ -83,119 +137,90 @@ class MediaHandler:
             results.append(metadata)
         return results
 
-    def _process_image(self, image: Any, name: str, step: int) -> dict:
-        """Process and save image
+    def _prepare_image(self, image: Any) -> tuple[bytes, str]:
+        """Prepare image data for storage
 
-        Supports: PIL Image, numpy array, torch Tensor, file path (any image format)
+        Args:
+            image: PIL Image, numpy array, torch Tensor, or file path
+
+        Returns:
+            tuple of (content_bytes, extension)
         """
         try:
-            # If it's a file path, copy it directly (preserves GIF animation, etc.)
+            # If it's a file path, read the file directly
             if isinstance(image, (str, Path)):
-                return self._copy_file(image, name, step, "image")
+                source_path = Path(image)
+                if not source_path.exists():
+                    raise FileNotFoundError(f"Image file not found: {source_path}")
+
+                with open(source_path, "rb") as f:
+                    content_bytes = f.read()
+
+                ext = source_path.suffix.lstrip(".").lower()
+                if not ext:
+                    ext = "png"
+
+                return content_bytes, ext
 
             # Otherwise convert to PIL and save as PNG
             pil_image = self._to_pil(image)
 
-            # Generate filename and hash
-            # Replace "/" with "__" in name to avoid subdirectory issues
-            safe_name = name.replace("/", "__")
-            image_hash = self._hash_media(pil_image)
-            ext = "png"
-            filename = f"{safe_name}_{step:08d}_{image_hash[:8]}.{ext}"
-            filepath = self.media_dir / filename
+            # Convert to bytes
+            buf = io.BytesIO()
+            pil_image.save(buf, format="PNG", optimize=True)
+            content_bytes = buf.getvalue()
 
-            # Save image
-            pil_image.save(filepath, format="PNG", optimize=True)
-
-            logger.debug(f"Saved image: {filepath}")
-
-            return {
-                "media_id": image_hash,
-                "type": "image",
-                "filename": filename,
-                "path": str(filepath),
-                "width": pil_image.width,
-                "height": pil_image.height,
-            }
+            return content_bytes, "png"
 
         except Exception as e:
-            logger.error(f"Failed to process image: {e}")
+            logger.error(f"Failed to prepare image: {e}")
             raise
 
-    def _process_video(self, video: Union[str, Path], name: str, step: int) -> dict:
-        """Process and save video
-
-        Only supports file paths (videos must already be encoded)
-        """
-        return self._copy_file(video, name, step, "video")
-
-    def _process_audio(self, audio: Union[str, Path], name: str, step: int) -> dict:
-        """Process and save audio
-
-        Only supports file paths (audio must already be encoded)
-        """
-        return self._copy_file(audio, name, step, "audio")
-
-    def _copy_file(
-        self, source: Union[str, Path], name: str, step: int, media_type: str
-    ) -> dict:
-        """Copy media file to storage
+    def _prepare_video(self, video: Union[str, Path]) -> tuple[bytes, str]:
+        """Prepare video data for storage
 
         Args:
-            source: Source file path
-            name: Name for this media log
-            step: Step number
-            media_type: Type of media
+            video: Video file path
 
         Returns:
-            dict with media metadata
+            tuple of (content_bytes, extension)
         """
-        source_path = Path(source)
+        source_path = Path(video)
 
         if not source_path.exists():
-            raise FileNotFoundError(f"Media file not found: {source}")
+            raise FileNotFoundError(f"Video file not found: {video}")
 
-        # Calculate hash for deduplication
-        media_hash = self._hash_file(source_path)
+        with open(source_path, "rb") as f:
+            content_bytes = f.read()
 
-        # Preserve original extension
-        # Replace "/" with "__" in name to avoid subdirectory issues
-        safe_name = name.replace("/", "__")
-        ext = source_path.suffix.lstrip(".")
-        filename = f"{safe_name}_{step:08d}_{media_hash[:8]}.{ext}"
-        dest_path = self.media_dir / filename
+        ext = source_path.suffix.lstrip(".").lower()
+        if not ext:
+            ext = "mp4"
 
-        # Copy file if it doesn't exist (deduplication)
-        if not dest_path.exists():
-            shutil.copy2(source_path, dest_path)
-            logger.debug(f"Copied {media_type}: {dest_path}")
-        else:
-            logger.debug(f"Deduplicated {media_type}: {dest_path}")
+        return content_bytes, ext
 
-        # Get file size and metadata
-        file_size = dest_path.stat().st_size
+    def _prepare_audio(self, audio: Union[str, Path]) -> tuple[bytes, str]:
+        """Prepare audio data for storage
 
-        metadata = {
-            "media_id": media_hash,
-            "type": media_type,
-            "filename": filename,
-            "path": str(dest_path),
-            "size_bytes": file_size,
-            "format": ext,
-        }
+        Args:
+            audio: Audio file path
 
-        # Add dimensions for images (if we can read them)
-        if media_type == "image":
-            try:
-                from PIL import Image
+        Returns:
+            tuple of (content_bytes, extension)
+        """
+        source_path = Path(audio)
 
-                with Image.open(dest_path) as img:
-                    metadata["width"] = img.width
-                    metadata["height"] = img.height
-            except Exception:
-                pass  # Skip if we can't read dimensions
+        if not source_path.exists():
+            raise FileNotFoundError(f"Audio file not found: {audio}")
 
-        return metadata
+        with open(source_path, "rb") as f:
+            content_bytes = f.read()
+
+        ext = source_path.suffix.lstrip(".").lower()
+        if not ext:
+            ext = "wav"
+
+        return content_bytes, ext
 
     def _to_pil(self, image: Any):
         """Convert various image formats to PIL Image"""
@@ -240,24 +265,3 @@ class MediaHandler:
             pass
 
         raise ValueError(f"Unsupported image type: {type(image)}")
-
-    def _hash_media(self, pil_image) -> str:
-        """Generate hash for image deduplication (also used as media ID)"""
-        # Convert to bytes
-        buf = io.BytesIO()
-        pil_image.save(buf, format="PNG")
-        image_bytes = buf.getvalue()
-
-        # Generate hash (this becomes the media_id)
-        return hashlib.sha256(image_bytes).hexdigest()
-
-    def _hash_file(self, filepath: Path) -> str:
-        """Generate hash for file deduplication (also used as media ID)"""
-        sha256 = hashlib.sha256()
-
-        with open(filepath, "rb") as f:
-            # Read in chunks for large files
-            for chunk in iter(lambda: f.read(8192), b""):
-                sha256.update(chunk)
-
-        return sha256.hexdigest()

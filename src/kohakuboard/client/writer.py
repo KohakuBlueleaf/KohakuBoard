@@ -40,13 +40,18 @@ class LogWriter:
         self.stop_event = stop_event
         self.backend = backend
 
-        # Initialize storage backend based on selection
+        # Initialize storage backend based on selection (v0.2.0+: sqlite or hybrid only)
         if backend == "hybrid":
             self.storage = HybridStorage(board_dir / "data")
-        elif backend == "duckdb":
-            self.storage = DuckDBStorage(board_dir / "data")
-        else:  # parquet
-            self.storage = ParquetStorage(board_dir / "data")
+        elif backend == "sqlite":
+            from kohakuboard.client.storage.sqlite import SQLiteMetadataStorage
+
+            self.storage = SQLiteMetadataStorage(board_dir / "data")
+        else:
+            raise ValueError(
+                f"Unsupported backend: '{backend}'. "
+                f"Only 'sqlite' and 'hybrid' are supported in v0.2.0+."
+            )
 
         self.media_handler = MediaHandler(board_dir / "media")
 
@@ -162,33 +167,33 @@ class LogWriter:
         self.storage.append_metrics(step, global_step, metrics, timestamp)
 
     def _handle_media(self, message: dict):
-        """Handle media logging (images/video/audio)"""
+        """Handle direct media logging (images/video/audio)"""
         step = message["step"]
         global_step = message.get("global_step")
         name = message["name"]
         caption = message.get("caption")
+        media_type = message.get("media_type", "image")
+        media_data = message["media_data"]
 
-        # Check if old format (images list) or new format (single media)
-        if "images" in message:
-            # Old format: list of images
-            images = message["images"]
-            media_list = self.media_handler.process_images(images, name, step)
-        else:
-            # New format: single media with type
-            media_type = message.get("media_type", "image")
-            media_data = message["media_data"]
-
-            # Process single media
+        try:
+            # Process single media (saves to disk)
             media_meta = self.media_handler.process_media(
                 media_data, name, step, media_type
             )
-            media_list = [media_meta]
 
-        # Store metadata
-        self.storage.append_media(step, global_step, name, media_list, caption)
+            # Store metadata in database (returns media_id list)
+            media_ids = self.storage.append_media(
+                step, global_step, name, [media_meta], caption
+            )
+
+            logger.debug(f"Logged media '{name}' at step {step} (ID: {media_ids[0]})")
+
+        except Exception as e:
+            logger.error(f"Error handling media '{name}': {e}")
+            raise
 
     def _handle_table(self, message: dict):
-        """Handle table logging"""
+        """Handle table logging with embedded media"""
         step = message["step"]
         global_step = message.get("global_step")
         name = message["name"]
@@ -197,23 +202,51 @@ class LogWriter:
         # Process any media objects in the table
         media_objects = table_data.pop("media_objects", {})
         if media_objects:
-            # Process each media object and save to disk
             for row_idx, col_dict in media_objects.items():
                 for col_idx, media_obj in col_dict.items():
-                    # Save media to disk
-                    media_meta = self.media_handler.process_media(
-                        media_obj.data,
-                        f"{name}_r{row_idx}_c{col_idx}",
-                        step,
-                        media_type=media_obj.media_type,
-                    )
-                    # Replace placeholder with media reference: <media id=...>
-                    media_id = media_meta["media_id"]
-                    table_data["rows"][int(row_idx)][
-                        int(col_idx)
-                    ] = f"<media id={media_id}>"
+                    try:
+                        # Process media (saves to disk)
+                        media_meta = self.media_handler.process_media(
+                            media_obj.data,
+                            f"{name}_r{row_idx}_c{col_idx}",
+                            step,
+                            media_type=media_obj.media_type,
+                        )
 
-        self.storage.append_table(step, global_step, name, table_data)
+                        # **FIX (v0.2.0): Store metadata in database**
+                        # This was missing in v0.1 - table media was never registered in DB
+                        media_ids = self.storage.append_media(
+                            step,
+                            global_step,
+                            f"{name}_r{row_idx}_c{col_idx}",
+                            [media_meta],
+                            caption=media_obj.caption,
+                        )
+
+                        # Replace placeholder with database ID tag
+                        media_id = media_ids[0]
+                        table_data["rows"][int(row_idx)][
+                            int(col_idx)
+                        ] = f"<media id={media_id}>"
+
+                        logger.debug(
+                            f"Logged table media at ({row_idx},{col_idx}), ID: {media_id}"
+                        )
+
+                    except Exception as e:
+                        logger.error(
+                            f"Error processing table media at ({row_idx},{col_idx}): {e}"
+                        )
+                        # Replace with error marker
+                        table_data["rows"][int(row_idx)][int(col_idx)] = "<media error>"
+
+        # Store table with media ID references
+        try:
+            self.storage.append_table(step, global_step, name, table_data)
+            logger.debug(f"Logged table '{name}' at step {step}")
+        except Exception as e:
+            logger.error(f"Error storing table: {e}")
+            raise
 
     def _handle_histogram(self, message: dict):
         """Handle histogram logging"""

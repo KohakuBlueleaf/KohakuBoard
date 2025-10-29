@@ -1,6 +1,22 @@
 """Storage backend using DuckDB for true incremental appends
 
-NEW ARCHITECTURE (Multi-File + Short-Lived Connections):
+⚠️ DEPRECATED in v0.2.0 ⚠️
+
+This backend is no longer maintained. Only SQLite and Hybrid (Lance+SQLite)
+backends are supported in v0.2.0+.
+
+Reason: DuckDB backend does not support the new content-addressable media
+storage system with deduplication introduced in v0.2.0.
+
+Please use:
+- backend="sqlite" - Pure SQLite storage (simple, reliable)
+- backend="hybrid" - Lance + SQLite (recommended, best performance)
+
+This file will be removed in a future release.
+
+---
+
+OLD ARCHITECTURE (Multi-File + Short-Lived Connections):
 - 4 separate DuckDB files (metrics, media, tables, histograms)
 - Connection-per-operation pattern (open → write → close)
 - Enables concurrent read/write (connections released between batches)

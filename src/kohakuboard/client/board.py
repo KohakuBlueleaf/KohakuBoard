@@ -71,12 +71,17 @@ class Board:
             config: Configuration dict for this run (hyperparameters, etc.)
             base_dir: Base directory for boards (default: ./kohakuboard)
             capture_output: Whether to capture stdout/stderr to log file
-            backend: Storage backend ("hybrid", "duckdb", or "parquet", default: "hybrid")
+            backend: Storage backend ("sqlite" or "hybrid", default: "hybrid")
+                - "sqlite": Pure SQLite storage (simple, reliable)
+                - "hybrid": Lance + SQLite (recommended, best performance)
+                Note: DuckDB and Parquet backends are deprecated in v0.2.0+
         """
-        # Validate backend
-        if backend not in ("hybrid", "duckdb", "parquet"):
+        # Validate backend (v0.2.0+: only sqlite and hybrid are supported)
+        if backend not in ("sqlite", "hybrid"):
             raise ValueError(
-                f"Invalid backend: {backend}. Must be 'hybrid', 'duckdb', or 'parquet'"
+                f"Unsupported backend: '{backend}'. "
+                f"Only 'sqlite' and 'hybrid' are supported in v0.2.0+. "
+                f"DuckDB and Parquet backends have been deprecated."
             )
 
         # Board metadata

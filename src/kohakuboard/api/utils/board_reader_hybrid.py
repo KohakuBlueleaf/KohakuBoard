@@ -307,7 +307,7 @@ class HybridBoardReader:
             limit: Optional limit
 
         Returns:
-            List of media entries
+            List of media entries (filename derived as {media_hash}.{format})
         """
         if not self.sqlite_db.exists():
             return []
@@ -321,7 +321,17 @@ class HybridBoardReader:
             cursor = conn.execute(query, (name,))
             columns = [desc[0] for desc in cursor.description]
 
-            return [dict(zip(columns, row)) for row in cursor.fetchall()]
+            # Convert to list of dicts and derive filename
+            media_list = []
+            for row in cursor.fetchall():
+                media_dict = dict(zip(columns, row))
+                # Derive filename from hash + format (v0.2.0+)
+                media_dict["filename"] = (
+                    f"{media_dict['media_hash']}.{media_dict['format']}"
+                )
+                media_list.append(media_dict)
+
+            return media_list
         finally:
             conn.close()
 
@@ -486,6 +496,42 @@ class HybridBoardReader:
         """
         media_path = self.media_dir / filename
         return media_path if media_path.exists() else None
+
+    def get_media_by_id(self, media_id: int) -> Optional[Dict[str, Any]]:
+        """Get media metadata by ID from SQLite metadata DB
+
+        NEW in v0.2.0: Resolves <media id=123> tags to media metadata.
+        Filename is derived as {media_hash}.{format}.
+
+        Args:
+            media_id: Media database ID (SQLite auto-increment ID)
+
+        Returns:
+            Media metadata dict with derived 'filename' field, or None if not found
+        """
+        if not self.sqlite_db.exists():
+            return None
+
+        conn = self._get_sqlite_connection()
+
+        try:
+            query = "SELECT * FROM media WHERE id = ? LIMIT 1"
+            cursor = conn.execute(query, (media_id,))
+            columns = [desc[0] for desc in cursor.description]
+            row = cursor.fetchone()
+
+            if row:
+                # Convert row tuple to dict using column names
+                media_dict = dict(zip(columns, row))
+                # Derive filename from hash + format
+                media_dict["filename"] = (
+                    f"{media_dict['media_hash']}.{media_dict['format']}"
+                )
+                return media_dict
+            return None
+
+        finally:
+            conn.close()
 
     def get_summary(self) -> Dict[str, Any]:
         """Get board summary
