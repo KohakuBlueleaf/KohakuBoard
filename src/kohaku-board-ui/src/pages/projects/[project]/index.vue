@@ -46,17 +46,14 @@ const RUN_COLORS = [
 
 /**
  * Get deterministic color for a run
- * Strategy: Use run index in sorted list + run_id hash jittering
+ * Strategy: Use ONLY run_id hash for full determinism
  *
- * - Base color from index (stable as long as run exists)
+ * - Base color selected from palette using run_id hash (always stable)
  * - Slight HSL jitter based on run_id hash (makes each run unique)
- * - Same run_id always gets same jittered color
+ * - Same run_id ALWAYS gets same color, regardless of run order/deletion
  */
-function getRunColor(runId, runIndex) {
-  // Get base color from palette using index
-  const baseColor = RUN_COLORS[runIndex % RUN_COLORS.length];
-
-  // Generate deterministic jitter from run_id hash
+function getRunColor(runId) {
+  // Generate hash from run_id for palette selection
   let hash = 0;
   for (let i = 0; i < runId.length; i++) {
     const char = runId.charCodeAt(i);
@@ -64,7 +61,11 @@ function getRunColor(runId, runIndex) {
     hash = hash & hash;
   }
 
-  // Convert hash to jitter values (-15 to +15 for hue, -10% to +10% for saturation/lightness)
+  // Use hash to select base color from palette (deterministic)
+  const paletteIndex = Math.abs(hash) % RUN_COLORS.length;
+  const baseColor = RUN_COLORS[paletteIndex];
+
+  // Use the same hash to generate jitter values (-15 to +15 for hue, -10% to +10% for saturation/lightness)
   const hueJitter = (hash % 30) - 15;
   const satJitter = (((hash >> 8) % 20) - 10) / 100;
   const lightJitter = (((hash >> 16) % 20) - 10) / 100;
@@ -202,14 +203,13 @@ const storageKey = computed(() => `project-layout-${route.params.project}`);
 // Now saved with layout instead of separate storage
 const customRunColors = ref({});
 
-// Run colors map - stable index + deterministic jittering
+// Run colors map - fully deterministic hash-based colors
 // Map by both run_id AND run name for easy lookup
 const runColors = computed(() => {
   const colors = {};
-  allRuns.value.forEach((run, index) => {
-    // Use custom color if set, otherwise use index + hash jittering
-    const color =
-      customRunColors.value[run.run_id] || getRunColor(run.run_id, index);
+  allRuns.value.forEach((run) => {
+    // Use custom color if set, otherwise use deterministic hash-based color
+    const color = customRunColors.value[run.run_id] || getRunColor(run.run_id);
 
     colors[run.run_id] = color;
     // Also map by name for LinePlot lookup
@@ -273,8 +273,19 @@ async function fetchRuns() {
       return dateB - dateA; // Latest first
     });
 
-    // Default: select all runs (use run_id field)
-    selectedRunIds.value = new Set(allRuns.value.map((r) => r.run_id));
+    // Load saved hidden runs, default to all visible
+    const saved = localStorage.getItem(storageKey.value);
+    let hiddenRunIds = [];
+    if (saved) {
+      const savedLayout = JSON.parse(saved);
+      hiddenRunIds = savedLayout.hiddenRunIds || [];
+    }
+
+    // Select all runs except hidden ones
+    const allRunIds = allRuns.value.map((r) => r.run_id);
+    selectedRunIds.value = new Set(
+      allRunIds.filter((runId) => !hiddenRunIds.includes(runId)),
+    );
 
     // Initialize project view
     await initializeProject();
@@ -286,11 +297,15 @@ async function fetchRuns() {
   }
 }
 
-// Poll for new runs in background
+// Poll for new runs and run updates in background
 async function pollRuns() {
   try {
+    console.log("[Polling] Starting poll check...");
     const response = await fetch(`/api/projects/${projectName.value}/runs`);
-    if (!response.ok) return;
+    if (!response.ok) {
+      console.log(`[Polling] Failed to fetch runs: ${response.status}`);
+      return;
+    }
 
     const data = await response.json();
     const newRuns = (data.runs || []).sort((a, b) => {
@@ -299,23 +314,185 @@ async function pollRuns() {
       return dateB - dateA;
     });
 
-    // Check if there are new runs
-    const oldRunIds = new Set(allRuns.value.map((r) => r.run_id));
-    const hasNewRuns = newRuns.some((r) => !oldRunIds.has(r.run_id));
+    console.log(`[Polling] Fetched ${newRuns.length} runs from server`);
+    console.log(`[Polling] Current allRuns count:`, allRuns.value.length);
+    console.log(
+      `[Polling] Current visible runs:`,
+      Array.from(selectedRunIds.value),
+    );
 
-    if (hasNewRuns) {
-      console.log("New runs detected, updating list");
-      allRuns.value = newRuns;
-      // Auto-select new runs
-      selectedRunIds.value = new Set(allRuns.value.map((r) => r.run_id));
+    // Check if there are new runs OR if any VISIBLE run has been updated
+    const oldRunIds = new Set(allRuns.value.map((r) => r.run_id));
+    const oldRunMap = new Map(
+      allRuns.value.map((r) => [r.run_id, r.updated_at]),
+    );
+
+    console.log(`[Polling] Old runs map:`, Object.fromEntries(oldRunMap));
+    console.log(
+      `[Polling] New runs updated_at:`,
+      newRuns.map((r) => ({ id: r.run_id, updated_at: r.updated_at })),
+    );
+
+    const hasNewRuns = newRuns.some((r) => !oldRunIds.has(r.run_id));
+    console.log(`[Polling] Has new runs: ${hasNewRuns}`);
+
+    // Check for deleted runs (runs that existed before but not in new list)
+    const newRunIds = new Set(newRuns.map((r) => r.run_id));
+    const deletedRuns = allRuns.value.filter((r) => !newRunIds.has(r.run_id));
+    const hasDeletedRuns = deletedRuns.length > 0;
+    console.log(`[Polling] Has deleted runs: ${hasDeletedRuns}`);
+    if (hasDeletedRuns) {
+      console.log(
+        `[Polling] Deleted runs:`,
+        deletedRuns.map((r) => r.run_id),
+      );
+    }
+
+    // Only check updates for visible (selected) runs
+    const updatedRunsList = [];
+    for (const r of newRuns) {
+      // Skip if run is not visible
+      if (!selectedRunIds.value.has(r.run_id)) {
+        console.log(`[Polling] Skipping hidden run: ${r.run_id}`);
+        continue;
+      }
+
+      const oldUpdatedAt = oldRunMap.get(r.run_id);
+      console.log(`[Polling] Checking run ${r.run_id}:`);
+      console.log(
+        `[Polling]   - Old updated_at: ${oldUpdatedAt} (type: ${typeof oldUpdatedAt})`,
+      );
+      console.log(
+        `[Polling]   - New updated_at: ${r.updated_at} (type: ${typeof r.updated_at})`,
+      );
+      console.log(`[Polling]   - Are equal: ${oldUpdatedAt === r.updated_at}`);
+
+      // Check if updated_at changed (including first time when old is null)
+      // If old is null/undefined, it's the first poll after page load - treat as update if new exists
+      // If both exist and are different, it's an update
+      if (r.updated_at && oldUpdatedAt !== r.updated_at) {
+        console.log(`[Polling]   - UPDATE DETECTED!`);
+        updatedRunsList.push({
+          run_id: r.run_id,
+          old: oldUpdatedAt,
+          new: r.updated_at,
+        });
+      } else {
+        console.log(`[Polling]   - No change detected`);
+      }
+    }
+
+    const hasUpdatedRuns = updatedRunsList.length > 0;
+    console.log(`[Polling] Has updated visible runs: ${hasUpdatedRuns}`);
+    if (hasUpdatedRuns) {
+      console.log("[Polling] Updated runs:", updatedRunsList);
+    }
+
+    if (hasNewRuns || hasDeletedRuns || hasUpdatedRuns) {
+      if (hasNewRuns || hasDeletedRuns) {
+        console.log(
+          "[Polling] Runs added/deleted, updating list and chart data",
+        );
+        allRuns.value = newRuns;
+
+        // Load saved hidden runs
+        const saved = localStorage.getItem(storageKey.value);
+        let hiddenRunIds = [];
+        if (saved) {
+          const savedLayout = JSON.parse(saved);
+          hiddenRunIds = savedLayout.hiddenRunIds || [];
+        }
+
+        // Select all runs except hidden ones (new runs default to visible)
+        const allRunIds = allRuns.value.map((r) => r.run_id);
+        selectedRunIds.value = new Set(
+          allRunIds.filter((runId) => !hiddenRunIds.includes(runId)),
+        );
+
+        // Full re-initialization for new/deleted runs
+        console.log("[Polling] Calling initializeProject()");
+        await initializeProject();
+        console.log("[Polling] initializeProject() completed");
+      } else if (hasUpdatedRuns) {
+        console.log("[Polling] Existing runs updated, refreshing chart data");
+        allRuns.value = newRuns;
+        // Just refresh metric data, don't rebuild UI
+        console.log("[Polling] Calling refreshMetricData()");
+        await refreshMetricData();
+        console.log("[Polling] refreshMetricData() completed");
+      }
+    } else {
+      console.log("[Polling] No changes detected, skipping refresh");
     }
   } catch (error) {
-    console.error("Failed to poll runs:", error);
+    console.error("[Polling] Error:", error);
   }
 }
 
-function toggleRunSelection(runId) {
-  if (selectedRunIds.value.has(runId)) {
+// Refresh metric data without rebuilding UI (for polling updates)
+async function refreshMetricData() {
+  try {
+    console.log("[Refresh] Refreshing metric data for updated runs");
+
+    if (displayedRuns.value.length === 0) {
+      console.log("[Refresh] No displayed runs, skipping");
+      return;
+    }
+
+    // Fetch batch summaries to check for new metrics
+    const runIds = displayedRuns.value.map((r) => r.run_id);
+    console.log("[Refresh] Fetching summaries for runs:", runIds);
+
+    const response = await fetch(
+      `/api/projects/${projectName.value}/runs/batch/summary`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ run_ids: runIds }),
+      },
+    );
+
+    if (!response.ok) {
+      throw new Error(`Failed to fetch summaries: ${response.status}`);
+    }
+
+    runSummaries.value = await response.json();
+    console.log("[Refresh] Received summaries:", runSummaries.value);
+
+    // Check if there are new metrics
+    const allMetricsSet = new Set();
+    for (const runId of runIds) {
+      const summary = runSummaries.value[runId];
+      if (summary?.available_data?.scalars) {
+        for (const metric of summary.available_data.scalars) {
+          allMetricsSet.add(metric);
+        }
+      }
+    }
+
+    const newMetrics = Array.from(allMetricsSet).sort();
+    if (availableMetrics.value.includes("timestamp")) {
+      newMetrics.push("walltime");
+      newMetrics.push("relative_walltime");
+    }
+
+    console.log("[Refresh] Available metrics:", newMetrics);
+    availableMetrics.value = newMetrics;
+
+    // Refetch all metrics for current tab with force refresh
+    console.log("[Refresh] Calling fetchMetricsForTab(true)");
+    await fetchMetricsForTab(true);
+
+    console.log("[Refresh] Metric data refreshed successfully");
+  } catch (error) {
+    console.error("[Refresh] Failed to refresh metric data:", error);
+  }
+}
+
+async function toggleRunSelection(runId) {
+  const wasVisible = selectedRunIds.value.has(runId);
+
+  if (wasVisible) {
     selectedRunIds.value.delete(runId);
   } else {
     selectedRunIds.value.add(runId);
@@ -323,6 +500,17 @@ function toggleRunSelection(runId) {
 
   // Trigger reactivity
   selectedRunIds.value = new Set(selectedRunIds.value);
+
+  // If making visible, trigger immediate poll + refresh
+  if (!wasVisible) {
+    console.log(`Run ${runId} made visible, triggering refresh`);
+    // Poll to get latest updated_at
+    await pollRuns();
+    // If pollRuns didn't trigger refresh (no updates detected), manually refresh
+    if (displayedRuns.value.some((r) => r.run_id === runId)) {
+      await refreshMetricData();
+    }
+  }
 }
 
 function updateRunColor(runId, color) {
@@ -556,8 +744,11 @@ function buildDefaultTabs() {
 }
 
 // Fetch metrics for current tab (multi-run version)
-async function fetchMetricsForTab() {
+async function fetchMetricsForTab(forceRefresh = false) {
   try {
+    console.log(
+      `[fetchMetricsForTab] Starting fetch, forceRefresh: ${forceRefresh}`,
+    );
     const tab = tabs.value.find((t) => t.name === activeTab.value);
     if (!tab) return;
 
@@ -586,36 +777,65 @@ async function fetchMetricsForTab() {
     }
 
     console.log(
-      `Needed metrics for tab ${activeTab.value}:`,
+      `[fetchMetricsForTab] Needed metrics for tab ${activeTab.value}:`,
       Array.from(neededMetrics),
     );
 
-    if (neededMetrics.size === 0) return;
+    if (neededMetrics.size === 0) {
+      console.log("[fetchMetricsForTab] No metrics needed, returning");
+      return;
+    }
 
     // Fetch batch scalar data
     const runIds = displayedRuns.value.map((r) => r.run_id);
+    console.log(`[fetchMetricsForTab] Fetching scalars for runs:`, runIds);
+    console.log(
+      `[fetchMetricsForTab] Requesting metrics:`,
+      Array.from(neededMetrics),
+    );
+
+    const requestBody = {
+      run_ids: runIds,
+      metrics: Array.from(neededMetrics),
+    };
+    console.log(`[fetchMetricsForTab] Request body:`, requestBody);
+
     const response = await fetch(
       `/api/projects/${projectName.value}/runs/batch/scalars`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          run_ids: runIds,
-          metrics: Array.from(neededMetrics),
-        }),
+        body: JSON.stringify(requestBody),
       },
     );
 
     if (!response.ok) {
+      console.error(
+        `[fetchMetricsForTab] Failed to fetch scalars: ${response.status}`,
+      );
       throw new Error(`Failed to fetch scalars: ${response.status}`);
     }
 
     const batchData = await response.json();
 
-    console.log("Batch data received:", batchData);
+    console.log("[fetchMetricsForTab] Batch data received:", batchData);
+    // Log data sizes
+    for (const [runId, runData] of Object.entries(batchData)) {
+      console.log(
+        `[fetchMetricsForTab] Run ${runId}:`,
+        Object.keys(runData).length,
+        "metrics",
+      );
+      for (const [metric, data] of Object.entries(runData)) {
+        console.log(
+          `[fetchMetricsForTab]   - ${metric}: ${data.steps?.length || 0} steps`,
+        );
+      }
+    }
 
     // Convert to sparse data format for each run
-    multiRunDataCache.value = {};
+    // Create new object to force reactivity
+    const newCache = {};
 
     for (const run of displayedRuns.value) {
       const runId = run.run_id;
@@ -626,7 +846,7 @@ async function fetchMetricsForTab() {
         continue;
       }
 
-      multiRunDataCache.value[runId] = {};
+      newCache[runId] = {};
 
       for (const [metric, data] of Object.entries(runData)) {
         console.log(`Processing ${runId}/${metric}:`, data);
@@ -639,7 +859,7 @@ async function fetchMetricsForTab() {
         if (data.steps.length === 0) {
           console.warn(`Empty steps for ${runId}/${metric}`);
           // Store empty array for metrics with no data
-          multiRunDataCache.value[runId][metric] = [];
+          newCache[runId][metric] = [];
           continue;
         }
 
@@ -667,16 +887,24 @@ async function fetchMetricsForTab() {
           sparseArray[step] = value;
         }
 
-        multiRunDataCache.value[runId][metric] = sparseArray;
+        newCache[runId][metric] = sparseArray;
         console.log(
           `Stored ${runId}/${metric}: ${sparseArray.length} slots, ${sparseArray.filter((v) => v !== null).length} values`,
         );
       }
     }
 
-    console.log("multiRunDataCache:", multiRunDataCache.value);
+    // Assign new object to trigger reactivity
+    multiRunDataCache.value = newCache;
+    console.log(
+      "[fetchMetricsForTab] multiRunDataCache updated with",
+      Object.keys(newCache).length,
+      "runs",
+    );
+    console.log("[fetchMetricsForTab] Full cache:", multiRunDataCache.value);
+    console.log("[fetchMetricsForTab] Fetch completed successfully");
   } catch (error) {
-    console.error("Failed to fetch metrics:", error);
+    console.error("[fetchMetricsForTab] Error:", error);
   }
 }
 
@@ -785,6 +1013,12 @@ watch(activeTab, () => {
 });
 
 function saveLayout() {
+  // Save hidden runs (inverse of selected)
+  const allRunIds = new Set(allRuns.value.map((r) => r.run_id));
+  const hiddenRunIds = Array.from(allRunIds).filter(
+    (runId) => !selectedRunIds.value.has(runId),
+  );
+
   const layout = {
     tabs: tabs.value,
     activeTab: activeTab.value,
@@ -792,6 +1026,7 @@ function saveLayout() {
     globalSettings: globalSettings.value,
     customRunColors: customRunColors.value, // Save custom color mappings
     sidebarWidth: sidebarWidth.value, // Save sidebar width
+    hiddenRunIds: hiddenRunIds, // Save which runs are hidden
   };
   localStorage.setItem(storageKey.value, JSON.stringify(layout));
 }

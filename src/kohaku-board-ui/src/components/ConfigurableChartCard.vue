@@ -724,7 +724,7 @@ function startResizeRight(e) {
           @update:x-axis="(x) => emitConfig({ histogramXAxis: x })"
         />
         <TableViewer
-          v-else-if="cardType === 'table' && tableData"
+          v-else-if="cardType === 'table' && tableData && !props.multiRunMode"
           :table-data="tableData"
           :height="localHeight"
           :current-step="
@@ -738,6 +738,19 @@ function startResizeRight(e) {
           @update:current-step="(s) => emitConfig({ currentStep: s })"
           @update:auto-advance="(v) => emitConfig({ autoAdvanceToLatest: v })"
         />
+        <div
+          v-else-if="cardType === 'table' && props.multiRunMode"
+          class="absolute inset-0 flex items-center justify-center bg-white dark:bg-gray-900"
+        >
+          <div class="text-center">
+            <div class="text-gray-500 dark:text-gray-400 mb-2">
+              Table view not supported in multi-run mode
+            </div>
+            <div class="text-xs text-gray-400 dark:text-gray-500">
+              Please view individual runs to see table data
+            </div>
+          </div>
+        </div>
         <el-empty v-else description="Select metrics" />
       </div>
     </el-card>

@@ -62,13 +62,27 @@ def fetchProjectRuns(project_name: str, current_user: User | None):
 
         runs = []
         for run in runs_query:
+            # Get actual updated_at from latest step in board storage
+            updated_at = safe_isoformat(run.updated_at)
+            try:
+                board_path = Path(cfg.app.board_data_dir) / run.storage_path
+                if board_path.exists():
+                    from kohakuboard.api.utils.board_reader import BoardReader
+
+                    reader = BoardReader(board_path)
+                    latest_step = reader.get_latest_step()
+                    if latest_step and latest_step.get("timestamp"):
+                        updated_at = latest_step["timestamp"]
+            except Exception as e:
+                logger_api.debug(f"Failed to get latest step for {run.run_id}: {e}")
+
             runs.append(
                 {
                     "run_id": run.run_id,
                     "name": run.name,
                     "private": run.private,
                     "created_at": safe_isoformat(run.created_at),
-                    "updated_at": safe_isoformat(run.updated_at),
+                    "updated_at": updated_at,
                     "last_synced_at": safe_isoformat(run.last_synced_at),
                     "total_size": run.total_size_bytes,
                     "config": json.loads(run.config) if run.config else {},

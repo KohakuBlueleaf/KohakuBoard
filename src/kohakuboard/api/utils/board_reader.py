@@ -78,12 +78,22 @@ def list_boards(base_dir: Path) -> List[Dict[str, Any]]:
             with open(metadata_path, "r") as f:
                 metadata = json.load(f)
 
+            # Get updated_at from latest step in the database
+            updated_at = None
+            try:
+                reader = BoardReader(board_dir)
+                latest_step = reader.get_latest_step()
+                if latest_step and latest_step.get("timestamp"):
+                    updated_at = latest_step["timestamp"]
+            except Exception as e:
+                logger.debug(f"Failed to get latest step for {board_dir.name}: {e}")
+
             boards.append(
                 {
                     "board_id": board_dir.name,
                     "name": metadata.get("name", board_dir.name),
                     "created_at": metadata.get("created_at"),
-                    "updated_at": metadata.get("updated_at"),
+                    "updated_at": updated_at,
                     "config": metadata.get("config", {}),
                 }
             )
