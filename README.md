@@ -23,15 +23,6 @@ Local-first ML experiment tracking system with **zero training overhead**. Track
 
 ## Why KohakuBoard?
 
-<!-- ### The Problem with Existing Tools
-
-| Tool | Latency | Offline | File-Based | Non-Blocking | Self-Hosted |
-|------|---------|---------|------------|--------------|-------------|
-| **WandB** | ~10ms | ❌ No | ❌ No | ❌ No | Limited |
-| **TensorBoard** | ~1ms | ✅ Yes | ✅ Yes | ❌ No | ✅ Yes |
-| **MLflow** | ~5ms | ✅ Yes | ❌ No | ❌ No | ✅ Yes |
-| **KohakuBoard** | **<0.1ms** | **✅ Yes** | **✅ Yes** | **✅ Yes** | **✅ Yes** | -->
-
 ### KohakuBoard's Advantages
 
 - **Zero Training Overhead** - Non-blocking logging returns in <0.1ms
@@ -54,7 +45,7 @@ Training Script          Background Process
      │                          │
      ├─ board.log(loss=0.5)     │
      │  └─> Queue.put()         │
-     │      (<0.1s return!)      │
+     │      (<0.1s return!)     │
      │                          ├─ Queue.get()
      ├─ Continue training...    ├─ Batch write
      │                          └─ Flush to disk
@@ -101,10 +92,6 @@ Lance (Columnar)              SQLite (Row-Oriented)
 - Metrics are read as columns → Lance excels (non-blocking incremental writes)
 - Metadata needs row access → SQLite excels (WAL mode for concurrency)
 - Both support non-blocking concurrent reads
-
-**Alternative Backends:**
-- DuckDB (NaN/inf preservation, SQL queries)
-- Parquet (maximum compatibility)
 
 ### Advanced Visualization
 
