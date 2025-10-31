@@ -28,9 +28,9 @@ from kohakuboard.client import Board, Media, Histogram
 
 def benchmark_media_logging(board: Board, num_images: int = 100):
     """Benchmark SQLite KV media storage"""
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print(f"Benchmark 1: SQLite KV Media Storage ({num_images} images)")
-    print("="*60)
+    print("=" * 60)
 
     # Generate test images
     images = [
@@ -66,9 +66,9 @@ def benchmark_media_logging(board: Board, num_images: int = 100):
 
 def benchmark_histogram_logging(board: Board, num_histograms: int = 100):
     """Benchmark SharedMemory histogram transfer"""
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print(f"Benchmark 2: SharedMemory Histograms ({num_histograms} large histograms)")
-    print("="*60)
+    print("=" * 60)
 
     # Test with different sizes
     sizes = [10_000, 100_000, 1_000_000]
@@ -84,7 +84,11 @@ def benchmark_histogram_logging(board: Board, num_histograms: int = 100):
         for i, values in enumerate(histograms):
             board.step()
             board.log(
-                **{f"large_data/hist_{i}": Histogram(values, num_bins=128, precision="exact")}
+                **{
+                    f"large_data/hist_{i}": Histogram(
+                        values, num_bins=128, precision="exact"
+                    )
+                }
             )
 
         elapsed = time.time() - start_time
@@ -107,9 +111,9 @@ def benchmark_histogram_logging(board: Board, num_histograms: int = 100):
 
 def benchmark_mixed_workload(board: Board, num_iterations: int = 50):
     """Benchmark realistic mixed workload"""
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print(f"Benchmark 3: Mixed Workload ({num_iterations} iterations)")
-    print("="*60)
+    print("=" * 60)
     print("Each iteration logs:")
     print("  • 5 scalar metrics")
     print("  • 2 images (128x128)")
@@ -124,7 +128,7 @@ def benchmark_mixed_workload(board: Board, num_iterations: int = 50):
         scalars = {
             "loss": 1.0 / (i + 1),
             "accuracy": 0.5 + i * 0.01,
-            "learning_rate": 0.001 * (0.95 ** i),
+            "learning_rate": 0.001 * (0.95**i),
             "grad_norm": np.random.random(),
             "batch_time": 0.1 + np.random.random() * 0.05,
         }
@@ -167,9 +171,9 @@ def benchmark_mixed_workload(board: Board, num_iterations: int = 50):
 
 def stress_test_queue(board: Board, num_messages: int = 1000):
     """Stress test mp.Queue performance"""
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print(f"Benchmark 4: Queue Performance ({num_messages} messages)")
-    print("="*60)
+    print("=" * 60)
 
     start_time = time.time()
 
@@ -234,9 +238,9 @@ def main():
     # Enable sync if remote URL is provided
     sync_enabled = args.remote_url is not None
 
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("KohakuBoard Performance Showcase")
-    print("="*60)
+    print("=" * 60)
     print("\nTesting v0.3.0 improvements:")
     print("  1. SQLite KV media storage")
     print("  2. SharedMemory histogram transfer")
@@ -276,9 +280,9 @@ def main():
         stress_test_queue(board, num_messages=1000)
 
         # Summary
-        print("\n" + "="*60)
+        print("\n" + "=" * 60)
         print("Benchmarks Complete!")
-        print("="*60)
+        print("=" * 60)
         print(f"\nKey Improvements in v0.3.0:")
         print(f"  ✓ SQLite KV: Single database file replaces thousands of media files")
         print(f"  ✓ SQLite KV: Dynamic size with incremental BLOB I/O")

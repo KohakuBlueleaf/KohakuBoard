@@ -61,9 +61,9 @@ def generate_sample_audio(duration_sec=1.0, sample_rate=44100):
 
 def demo_scalars(board: Board):
     """Demo 1: Basic scalar logging"""
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("DEMO 1: Scalar Logging")
-    print("="*60)
+    print("=" * 60)
 
     for i in range(10):
         board.step()  # Increment global step
@@ -75,7 +75,7 @@ def demo_scalars(board: Board):
         board.log(
             loss=loss,
             accuracy=accuracy,
-            learning_rate=0.001 * (0.95 ** i),  # Decaying LR
+            learning_rate=0.001 * (0.95**i),  # Decaying LR
         )
 
         print(f"Step {board._global_step}: loss={loss:.4f}, acc={accuracy:.4f}")
@@ -86,9 +86,9 @@ def demo_scalars(board: Board):
 
 def demo_namespace_scalars(board: Board):
     """Demo 2: Namespace-based organization"""
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("DEMO 2: Namespace-based Scalars (train/ and val/ tabs)")
-    print("="*60)
+    print("=" * 60)
 
     for i in range(5):
         board.step()
@@ -102,14 +102,18 @@ def demo_namespace_scalars(board: Board):
         val_acc = train_acc * 1.1
 
         # Log all at once - they'll be grouped by namespace prefix
-        board.log(**{
-            "train/loss": train_loss,
-            "train/accuracy": train_acc,
-            "val/loss": val_loss,
-            "val/accuracy": val_acc,
-        })
+        board.log(
+            **{
+                "train/loss": train_loss,
+                "train/accuracy": train_acc,
+                "val/loss": val_loss,
+                "val/accuracy": val_acc,
+            }
+        )
 
-        print(f"Step {board._global_step}: train_loss={train_loss:.4f}, val_loss={val_loss:.4f}")
+        print(
+            f"Step {board._global_step}: train_loss={train_loss:.4f}, val_loss={val_loss:.4f}"
+        )
         time.sleep(0.05)
 
     print("✓ Logged metrics with namespace organization (train/, val/)")
@@ -117,9 +121,9 @@ def demo_namespace_scalars(board: Board):
 
 def demo_media_images(board: Board):
     """Demo 3: Image logging"""
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("DEMO 3: Image Logging (SQLite KV storage)")
-    print("="*60)
+    print("=" * 60)
 
     for i in range(3):
         board.step()
@@ -129,7 +133,9 @@ def demo_media_images(board: Board):
 
         # Log single image
         board.log(
-            sample_image=Media(img, media_type="image", caption=f"Step {i} visualization")
+            sample_image=Media(
+                img, media_type="image", caption=f"Step {i} visualization"
+            )
         )
 
         print(f"Step {board._global_step}: Logged image to SQLite KV (128x128x3)")
@@ -140,9 +146,9 @@ def demo_media_images(board: Board):
 
 def demo_media_multiple(board: Board):
     """Demo 4: Multiple images in one log call"""
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("DEMO 4: Multiple Images (Grid/Gallery)")
-    print("="*60)
+    print("=" * 60)
 
     board.step()
 
@@ -151,9 +157,7 @@ def demo_media_multiple(board: Board):
 
     # Log multiple images at once
     for idx, img in enumerate(images):
-        board.log(**{
-            f"gallery/image_{idx}": Media(img, media_type="image")
-        })
+        board.log(**{f"gallery/image_{idx}": Media(img, media_type="image")})
         time.sleep(0.05)
 
     print(f"Step {board._global_step}: Logged 8 images in gallery/ namespace")
@@ -162,9 +166,9 @@ def demo_media_multiple(board: Board):
 
 def demo_tables_basic(board: Board):
     """Demo 5: Basic table logging"""
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("DEMO 5: Basic Table Logging")
-    print("="*60)
+    print("=" * 60)
 
     board.step()
 
@@ -177,20 +181,20 @@ def demo_tables_basic(board: Board):
     ]
 
     # Log table
-    board.log(
-        model_comparison=Table(experiment_results)
-    )
+    board.log(model_comparison=Table(experiment_results))
 
-    print(f"Step {board._global_step}: Logged table with {len(experiment_results)} rows")
+    print(
+        f"Step {board._global_step}: Logged table with {len(experiment_results)} rows"
+    )
     print("✓ Table columns: model, params, accuracy, time")
     time.sleep(0.05)
 
 
 def demo_tables_with_media(board: Board):
     """Demo 6: Tables with embedded media"""
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("DEMO 6: Tables with Embedded Media")
-    print("="*60)
+    print("=" * 60)
 
     board.step()
 
@@ -198,28 +202,32 @@ def demo_tables_with_media(board: Board):
     predictions_table = []
     for i in range(4):
         img = generate_sample_image(i, size=(32, 32, 3))
-        predictions_table.append({
-            "sample_id": i,
-            "image": Media(img, media_type="image"),
-            "ground_truth": f"class_{i % 3}",
-            "prediction": f"class_{(i + 1) % 3}",
-            "confidence": 0.8 + np.random.random() * 0.2,
-            "correct": "✓" if i % 2 == 0 else "✗",
-        })
+        predictions_table.append(
+            {
+                "sample_id": i,
+                "image": Media(img, media_type="image"),
+                "ground_truth": f"class_{i % 3}",
+                "prediction": f"class_{(i + 1) % 3}",
+                "confidence": 0.8 + np.random.random() * 0.2,
+                "correct": "✓" if i % 2 == 0 else "✗",
+            }
+        )
 
     # Log table with embedded media
     board.log_table("predictions", Table(predictions_table))
 
-    print(f"Step {board._global_step}: Logged table with {len(predictions_table)} embedded images")
+    print(
+        f"Step {board._global_step}: Logged table with {len(predictions_table)} embedded images"
+    )
     print("✓ Media stored in SQLite KV, referenced by ID in table")
     time.sleep(0.05)
 
 
 def demo_histograms_raw(board: Board):
     """Demo 7: Histogram logging (raw values)"""
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("DEMO 7: Histogram Logging - Raw Values (SharedMemory)")
-    print("="*60)
+    print("=" * 60)
 
     for i in range(3):
         board.step()
@@ -230,19 +238,25 @@ def demo_histograms_raw(board: Board):
         # Log histogram - will be computed on writer side
         # Data transferred via SharedMemory (zero-copy)
         board.log(
-            **{"weights/distribution": Histogram(values, num_bins=64, precision="exact")}
+            **{
+                "weights/distribution": Histogram(
+                    values, num_bins=64, precision="exact"
+                )
+            }
         )
 
-        print(f"Step {board._global_step}: Logged histogram (10k values via SharedMemory)")
+        print(
+            f"Step {board._global_step}: Logged histogram (10k values via SharedMemory)"
+        )
 
     print("✓ Raw values sent via SharedMemory, computed in writer process")
 
 
 def demo_histograms_precomputed(board: Board):
     """Demo 8: Precomputed histograms"""
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("DEMO 8: Precomputed Histograms (SharedMemory)")
-    print("="*60)
+    print("=" * 60)
 
     for i in range(3):
         board.step()
@@ -256,20 +270,20 @@ def demo_histograms_precomputed(board: Board):
 
         # Log precomputed histogram
         # Bins and counts arrays transferred via SharedMemory
-        board.log(
-            **{"gradients/layer1": hist}
-        )
+        board.log(**{"gradients/layer1": hist})
 
-        print(f"Step {board._global_step}: Logged precomputed histogram (bins+counts via SharedMemory)")
+        print(
+            f"Step {board._global_step}: Logged precomputed histogram (bins+counts via SharedMemory)"
+        )
 
     print("✓ Precomputed bins/counts sent via SharedMemory")
 
 
 def demo_histograms_multi(board: Board):
     """Demo 9: Multiple histograms in one call"""
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("DEMO 9: Multiple Histograms (Batch Logging)")
-    print("="*60)
+    print("=" * 60)
 
     board.step()
 
@@ -295,9 +309,9 @@ def demo_histograms_multi(board: Board):
 
 def demo_unified_logging(board: Board):
     """Demo 10: Unified API - Mix all data types"""
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("DEMO 10: Unified Logging - Mix All Data Types")
-    print("="*60)
+    print("=" * 60)
 
     for i in range(3):
         board.step()
@@ -317,13 +331,10 @@ def demo_unified_logging(board: Board):
             # Scalars
             loss=1.0 / (i + 1),
             accuracy=0.7 + i * 0.1,
-
             # Media
             visualization=Media(img, media_type="image"),
-
             # Histogram
             **{"weights/dist": Histogram(values, num_bins=32)},
-
             # Table
             metrics_summary=Table(metrics_table),
         )
@@ -335,9 +346,9 @@ def demo_unified_logging(board: Board):
 
 def demo_performance_large_histograms(board: Board):
     """Demo 11: Performance test with large histograms"""
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("DEMO 11: Performance - Large Histograms (1M values)")
-    print("="*60)
+    print("=" * 60)
 
     for i in range(3):
         board.step()
@@ -349,12 +360,18 @@ def demo_performance_large_histograms(board: Board):
 
         # Log large histogram - SharedMemory makes this fast!
         board.log(
-            **{"large_data/histogram": Histogram(values, num_bins=256, precision="exact")}
+            **{
+                "large_data/histogram": Histogram(
+                    values, num_bins=256, precision="exact"
+                )
+            }
         )
 
         elapsed = time.time() - start_time
 
-        print(f"Step {board._global_step}: Logged 1M value histogram in {elapsed*1000:.2f}ms (SharedMemory)")
+        print(
+            f"Step {board._global_step}: Logged 1M value histogram in {elapsed*1000:.2f}ms (SharedMemory)"
+        )
 
     print("✓ SharedMemory enables zero-copy transfer of large arrays")
 
@@ -392,9 +409,9 @@ def main():
     # Enable sync if remote URL is provided
     sync_enabled = args.remote_url is not None
 
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("KohakuBoard All Features Demo")
-    print("="*60)
+    print("=" * 60)
     print("\nThis demo showcases:")
     print("  • SQLite KV media storage (replaces filesystem)")
     print("  • SharedMemory histogram transfer (zero-copy)")
@@ -444,9 +461,9 @@ def main():
     demo_performance_large_histograms(board)
 
     # Summary
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("Demo Complete!")
-    print("="*60)
+    print("=" * 60)
     print(f"\nLocal storage: {board.board_dir}")
     print(f"Total steps: {board._global_step}")
     print("\nLogged data:")

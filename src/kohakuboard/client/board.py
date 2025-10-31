@@ -34,7 +34,7 @@ def _cleanup_all_boards():
     """Cleanup all boards at exit - uses weakrefs so doesn't prevent GC"""
     for board_ref in _active_boards_weakrefs:
         board = board_ref()
-        if board is not None and hasattr(board, 'finish'):
+        if board is not None and hasattr(board, "finish"):
             try:
                 board.finish()
             except:
@@ -370,7 +370,7 @@ class Board:
         shm_name = f"{name_prefix}_{uuid.uuid4().hex[:16]}"
 
         # Ensure array is contiguous
-        if not array.flags['C_CONTIGUOUS']:
+        if not array.flags["C_CONTIGUOUS"]:
             array = np.ascontiguousarray(array)
 
         # Create shared memory block
@@ -394,8 +394,12 @@ class Board:
             bins_array = np.array(hist_data["bins"], dtype=np.float32)
             counts_array = np.array(hist_data["counts"], dtype=np.int32)
 
-            bins_shm_name, bins_size, bins_dtype = self._create_shared_memory(bins_array, "hist_bins")
-            counts_shm_name, counts_size, counts_dtype = self._create_shared_memory(counts_array, "hist_counts")
+            bins_shm_name, bins_size, bins_dtype = self._create_shared_memory(
+                bins_array, "hist_bins"
+            )
+            counts_shm_name, counts_size, counts_dtype = self._create_shared_memory(
+                counts_array, "hist_counts"
+            )
 
             message = {
                 "type": "histogram",
@@ -419,7 +423,9 @@ class Board:
             # Raw values - send to writer for computation via SharedMemory
             values_array = np.array(hist_data["values"], dtype=np.float32)
 
-            values_shm_name, values_size, values_dtype = self._create_shared_memory(values_array, "hist_values")
+            values_shm_name, values_size, values_dtype = self._create_shared_memory(
+                values_array, "hist_values"
+            )
 
             message = {
                 "type": "histogram",
@@ -777,7 +783,9 @@ class Board:
 
         # Clean up SharedMemory blocks
         if hasattr(self, "_shared_memory_blocks"):
-            self.logger.debug(f"Cleaning up {len(self._shared_memory_blocks)} SharedMemory blocks...")
+            self.logger.debug(
+                f"Cleaning up {len(self._shared_memory_blocks)} SharedMemory blocks..."
+            )
             for shm in self._shared_memory_blocks:
                 try:
                     shm.close()
@@ -814,8 +822,12 @@ class Board:
             interrupt_count[0] += 1
 
             if interrupt_count[0] == 1:
-                board.logger.warning(f"Received {sig_name}, shutting down gracefully...")
-                board.logger.warning("Press Ctrl+C again within 3 seconds to FORCE EXIT")
+                board.logger.warning(
+                    f"Received {sig_name}, shutting down gracefully..."
+                )
+                board.logger.warning(
+                    "Press Ctrl+C again within 3 seconds to FORCE EXIT"
+                )
                 try:
                     board.finish()
                 except Exception as e:
@@ -835,6 +847,7 @@ class Board:
             else:
                 # Third+ interrupt - nuclear option
                 import os
+
                 os._exit(1)
 
         # Register signal handlers (Ctrl+C, kill)
@@ -848,7 +861,9 @@ class Board:
             """Handle uncaught exceptions"""
             board = weak_self()
             if board is not None:
-                board.logger.error(f"Uncaught exception: {exc_type.__name__}: {exc_value}")
+                board.logger.error(
+                    f"Uncaught exception: {exc_type.__name__}: {exc_value}"
+                )
                 board.logger.error("Attempting graceful shutdown...")
                 try:
                     board.finish()

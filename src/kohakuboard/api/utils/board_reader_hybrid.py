@@ -519,7 +519,9 @@ class HybridBoardReader:
             Binary media data or None if not found
         """
         if self.media_kv is None:
-            logger.warning(f"SQLite KV not initialized, cannot retrieve media: {filename}")
+            logger.warning(
+                f"SQLite KV not initialized, cannot retrieve media: {filename}"
+            )
             return None
 
         try:

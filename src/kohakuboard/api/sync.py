@@ -542,7 +542,9 @@ async def upload_media_files(
             media_kv.put(key, content)
 
             uploaded_hashes.append(media_hash)
-            logger_api.debug(f"Uploaded media to SQLite KV: {file.filename} ({len(content)} bytes)")
+            logger_api.debug(
+                f"Uploaded media to SQLite KV: {file.filename} ({len(content)} bytes)"
+            )
     finally:
         # Close SQLite KV connection
         media_kv.close()

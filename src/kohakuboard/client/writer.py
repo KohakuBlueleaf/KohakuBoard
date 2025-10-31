@@ -282,13 +282,21 @@ class LogWriter:
                     # Attach to bins SharedMemory
                     bins_shm = shared_memory.SharedMemory(name=shm_info["bins_name"])
                     bins_dtype = np.dtype(shm_info["bins_dtype"])
-                    bins_array = np.ndarray(shm_info["bins_shape"], dtype=bins_dtype, buffer=bins_shm.buf)
+                    bins_array = np.ndarray(
+                        shm_info["bins_shape"], dtype=bins_dtype, buffer=bins_shm.buf
+                    )
                     bins = bins_array.copy().tolist()  # Copy to local memory
 
                     # Attach to counts SharedMemory
-                    counts_shm = shared_memory.SharedMemory(name=shm_info["counts_name"])
+                    counts_shm = shared_memory.SharedMemory(
+                        name=shm_info["counts_name"]
+                    )
                     counts_dtype = np.dtype(shm_info["counts_dtype"])
-                    counts_array = np.ndarray(shm_info["counts_shape"], dtype=counts_dtype, buffer=counts_shm.buf)
+                    counts_array = np.ndarray(
+                        shm_info["counts_shape"],
+                        dtype=counts_dtype,
+                        buffer=counts_shm.buf,
+                    )
                     counts = counts_array.copy().tolist()  # Copy to local memory
 
                     precision = message.get("precision", "exact")
@@ -311,23 +319,33 @@ class LogWriter:
                             bins_shm.close()
                             bins_shm.unlink()
                         except Exception as e:
-                            self.logger.warning(f"Error cleaning up bins SharedMemory: {e}")
+                            self.logger.warning(
+                                f"Error cleaning up bins SharedMemory: {e}"
+                            )
 
                     if counts_shm:
                         try:
                             counts_shm.close()
                             counts_shm.unlink()
                         except Exception as e:
-                            self.logger.warning(f"Error cleaning up counts SharedMemory: {e}")
+                            self.logger.warning(
+                                f"Error cleaning up counts SharedMemory: {e}"
+                            )
 
             else:
                 # Raw values from SharedMemory
                 values_shm = None
                 try:
                     # Attach to values SharedMemory
-                    values_shm = shared_memory.SharedMemory(name=shm_info["values_name"])
+                    values_shm = shared_memory.SharedMemory(
+                        name=shm_info["values_name"]
+                    )
                     values_dtype = np.dtype(shm_info["values_dtype"])
-                    values_array = np.ndarray(shm_info["values_shape"], dtype=values_dtype, buffer=values_shm.buf)
+                    values_array = np.ndarray(
+                        shm_info["values_shape"],
+                        dtype=values_dtype,
+                        buffer=values_shm.buf,
+                    )
                     values = values_array.copy().tolist()  # Copy to local memory
 
                     num_bins = message.get("num_bins", 64)
@@ -345,7 +363,9 @@ class LogWriter:
                             values_shm.close()
                             values_shm.unlink()
                         except Exception as e:
-                            self.logger.warning(f"Error cleaning up values SharedMemory: {e}")
+                            self.logger.warning(
+                                f"Error cleaning up values SharedMemory: {e}"
+                            )
 
         else:
             # Legacy path (no SharedMemory) - for backward compatibility

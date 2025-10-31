@@ -96,7 +96,9 @@ class MediaHandler:
             self.kv_storage.put(key, content_bytes)
             self.logger.debug(f"Saved new {media_type} to SQLite KV: {key}")
         else:
-            self.logger.debug(f"Deduplicated {media_type}: {key} (already exists in SQLite KV)")
+            self.logger.debug(
+                f"Deduplicated {media_type}: {key} (already exists in SQLite KV)"
+            )
 
         # Get file metadata
         file_size = len(content_bytes)
@@ -137,7 +139,9 @@ class MediaHandler:
         """
         results = []
         for idx, img in enumerate(images):
-            metadata = self.process_media(img, f"{name}_{idx}", step, media_type="image")
+            metadata = self.process_media(
+                img, f"{name}_{idx}", step, media_type="image"
+            )
             results.append(metadata)
         return results
 

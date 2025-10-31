@@ -92,23 +92,23 @@ def main():
             board.log(
                 loss=loss,
                 accuracy=accuracy,
-                learning_rate=0.001 * (0.95 ** epoch),
+                learning_rate=0.001 * (0.95**epoch),
             )
 
         # End of epoch: log validation metrics and extra data
         board.step()
 
         # Validation metrics (with namespace)
-        board.log(**{
-            "val/loss": loss * 0.8,
-            "val/accuracy": accuracy * 1.1,
-        })
+        board.log(
+            **{
+                "val/loss": loss * 0.8,
+                "val/accuracy": accuracy * 1.1,
+            }
+        )
 
         # Log a sample image (SQLite KV storage)
         sample_img = np.random.randint(0, 256, (64, 64, 3), dtype=np.uint8)
-        board.log(
-            sample_visualization=Media(sample_img, media_type="image")
-        )
+        board.log(sample_visualization=Media(sample_img, media_type="image"))
 
         # Log parameter histogram (SharedMemory transfer)
         weights = np.random.randn(10000) * 0.01

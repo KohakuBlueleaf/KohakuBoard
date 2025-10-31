@@ -115,7 +115,7 @@ class SQLiteKVStorage:
         """Close the KohakuVault (flushes any cached data)."""
         try:
             # KohakuVault doesn't have explicit close, but let's flush cache if enabled
-            if hasattr(self.vault, 'flush_cache'):
+            if hasattr(self.vault, "flush_cache"):
                 self.vault.flush_cache()
             self.logger.debug(f"Closed KohakuVault at {self.db_path}")
         except Exception as e:
@@ -130,7 +130,7 @@ class SQLiteKVStorage:
         """
         try:
             # Flush cache if it's enabled
-            if hasattr(self.vault, 'flush_cache'):
+            if hasattr(self.vault, "flush_cache"):
                 self.vault.flush_cache()
             self.logger.debug("Synced KohakuVault to disk")
         except Exception as e:
