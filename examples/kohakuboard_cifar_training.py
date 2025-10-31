@@ -7,8 +7,24 @@ Features:
 - Full KohakuBoard logging (scalars, histograms, tables)
 - Namespace organization (train/, val/, gradients/, params/)
 - AnySchedule LR scheduling
+
+Usage:
+    # Default: syncs to local server (localhost:48889)
+    python kohakuboard_cifar_training.py
+
+    # Local only (no sync)
+    python kohakuboard_cifar_training.py --remote-url ""
+
+    # Custom training settings
+    python kohakuboard_cifar_training.py --epochs 25 --batch-size 256 --lr 3e-3
+
+    # Production server
+    python kohakuboard_cifar_training.py --remote-url https://board.example.com \
+                                         --remote-token YOUR_TOKEN \
+                                         --remote-project cifar10_training
 """
 
+import argparse
 import numpy as np
 import torch
 import torch.nn as nn
@@ -94,16 +110,85 @@ class ConvNeXtCIFAR(nn.Module):
 
 
 def main():
+    # Parse command-line arguments
+    parser = argparse.ArgumentParser(description="CIFAR-10 Training with KohakuBoard")
+    parser.add_argument(
+        "--epochs",
+        type=int,
+        default=3,
+        help="Number of training epochs (default: 10)",
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=128,
+        help="Training batch size (default: 128)",
+    )
+    parser.add_argument(
+        "--lr",
+        type=float,
+        default=2e-3,
+        help="Learning rate (default: 2e-3)",
+    )
+    parser.add_argument(
+        "--warmup-ratio",
+        type=float,
+        default=0.1,
+        help="Warmup ratio (default: 0.1)",
+    )
+    parser.add_argument(
+        "--remote-url",
+        type=str,
+        default="http://127.0.0.1:48889",
+        help="Remote server URL (default: http://127.0.0.1:48889)",
+    )
+    parser.add_argument(
+        "--remote-token",
+        type=str,
+        default="no-auth-mode",
+        help="Authentication token (default: no-auth-mode for development)",
+    )
+    parser.add_argument(
+        "--remote-project",
+        type=str,
+        default="cifar10_training",
+        help="Project name on remote server (default: cifar10_training)",
+    )
+    parser.add_argument(
+        "--sync-interval",
+        type=int,
+        default=5,
+        help="Sync interval in seconds (default: 5)",
+    )
+    args = parser.parse_args()
+
+    # Enable sync if remote URL is provided
+    sync_enabled = args.remote_url is not None
+
     device = "cuda" if torch.cuda.is_available() else "cpu"
     device = "mps" if torch.mps.is_available() else device
     device = torch.device(device)
     print(f"Using device: {device}")
 
-    # Config
-    batch_size = 128
-    warmup_ratio = 0.1
-    epochs = 10
-    lr = 2e-3
+    # Config from args
+    batch_size = args.batch_size
+    warmup_ratio = args.warmup_ratio
+    epochs = args.epochs
+    lr = args.lr
+
+    print(f"\nTraining config:")
+    print(f"  Epochs: {epochs}")
+    print(f"  Batch size: {batch_size}")
+    print(f"  Learning rate: {lr}")
+    print(f"  Warmup ratio: {warmup_ratio}")
+
+    if sync_enabled:
+        print(f"\nRemote sync enabled:")
+        print(f"  URL: {args.remote_url}")
+        print(f"  Project: {args.remote_project}")
+        print(f"  Sync interval: {args.sync_interval}s")
+    else:
+        print("\nLocal logging only (use --remote-url to enable sync)")
 
     # Create board
     board = Board(
@@ -112,9 +197,15 @@ def main():
             "lr": lr,
             "batch_size": batch_size,
             "epochs": epochs,
+            "warmup_ratio": warmup_ratio,
             "model": "ConvNeXt-Tiny",
             "dataset": "CIFAR-10",
         },
+        remote_url=args.remote_url,
+        remote_token=args.remote_token,
+        remote_project=args.remote_project,
+        sync_enabled=sync_enabled,
+        sync_interval=args.sync_interval,
     )
 
     # CIFAR-10 dataset
@@ -373,14 +464,17 @@ def main():
 
     print(f"\n{'='*60}")
     print("Training complete!")
-    print(f"Board saved to: {board.board_dir}")
+    print(f"Local storage: {board.board_dir}")
     print(f"\nLogged data (namespace-based tabs):")
     print("  Main: epoch, epoch_train_loss, epoch_val_loss, epoch_val_acc")
     print("  train/: loss, lr")
     print("  val/: loss, acc, class_metrics, sample_predictions")
     print("  gradients/: per-layer gradient histograms")
     print("  params/: per-layer parameter histograms")
-    print(f"\nView: python -m kohakuboard.main → http://localhost:48889")
+    print(f"\nView results:")
+    print(f"  Local: python -m kohakuboard.main → http://localhost:48889")
+    if sync_enabled:
+        print(f"  Remote: {args.remote_url}/projects/{args.remote_project}")
 
 
 if __name__ == "__main__":
