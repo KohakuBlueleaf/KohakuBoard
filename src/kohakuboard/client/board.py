@@ -17,6 +17,7 @@ from kohakuboard.client.capture import OutputCapture
 from kohakuboard.client.types import Media, Table, Histogram
 from kohakuboard.client.types.media import is_media
 from kohakuboard.client.writer import writer_process_main
+from kohakuboard.client.sync_worker import SyncWorker
 
 
 class Board:
@@ -62,6 +63,11 @@ class Board:
         base_dir: Optional[Union[str, Path]] = None,
         capture_output: bool = True,
         backend: str = "hybrid",
+        remote_url: Optional[str] = None,
+        remote_token: Optional[str] = None,
+        remote_project: Optional[str] = None,
+        sync_enabled: bool = False,
+        sync_interval: int = 10,
     ):
         """Create a new Board for logging
 
@@ -75,6 +81,11 @@ class Board:
                 - "sqlite": Pure SQLite storage (simple, reliable)
                 - "hybrid": Lance + SQLite (recommended, best performance)
                 Note: DuckDB and Parquet backends are deprecated in v0.2.0+
+            remote_url: Remote server base URL for sync (e.g., https://board.example.com)
+            remote_token: Authentication token for remote server
+            remote_project: Project name on remote server (default: "local")
+            sync_enabled: Whether to enable real-time sync to remote server
+            sync_interval: Sync check interval in seconds (default: 10)
         """
         # Validate backend (v0.2.0+: only sqlite and hybrid are supported)
         if backend not in ("sqlite", "hybrid"):
@@ -118,14 +129,39 @@ class Board:
         self.stop_event = mp.Event()
 
         # Start single writer process
-        from kohakuboard.client.writer import writer_process_main
-
         self.writer_process = mp.Process(
             target=writer_process_main,
             args=(self.board_dir, self.queue, self.stop_event, self.backend),
             daemon=False,
         )
         self.writer_process.start()
+
+        # Initialize sync worker if enabled
+        self.sync_worker = None
+        if sync_enabled and remote_url and remote_token:
+            try:
+                self.sync_worker = SyncWorker(
+                    board_dir=self.board_dir,
+                    remote_url=remote_url,
+                    remote_token=remote_token,
+                    project=remote_project or "local",
+                    run_id=self.board_id,
+                    sync_interval=sync_interval,
+                )
+                self.sync_worker.start()
+                logger.info(
+                    f"Sync worker started (remote: {remote_url}, "
+                    f"project: {remote_project or 'local'}, "
+                    f"interval: {sync_interval}s)"
+                )
+            except Exception as e:
+                logger.warning(f"Failed to start sync worker: {e}")
+                self.sync_worker = None
+        elif sync_enabled:
+            logger.warning(
+                "Sync enabled but missing remote_url or remote_token, "
+                "sync worker not started"
+            )
 
         # Output capture
         self.capture_output = capture_output
@@ -585,6 +621,11 @@ class Board:
         # Stop output capture
         if self.output_capture:
             self.output_capture.stop()
+
+        # Stop sync worker (do this before stopping writer to ensure final sync)
+        if self.sync_worker:
+            logger.info("Stopping sync worker...")
+            self.sync_worker.stop(timeout=30)
 
         # Signal workers to stop
         self.stop_event.set()

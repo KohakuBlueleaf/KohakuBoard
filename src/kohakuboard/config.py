@@ -51,6 +51,16 @@ class SMTPConfig(BaseModel):
     use_tls: bool = True
 
 
+class SyncConfig(BaseModel):
+    """Sync configuration for client-side remote sync"""
+
+    enabled: bool = False
+    remote_url: str = ""
+    remote_token: str = ""
+    remote_project: str = "local"
+    sync_interval: int = 10  # seconds
+
+
 class Config(BaseModel):
     """Main configuration"""
 
@@ -58,6 +68,7 @@ class Config(BaseModel):
     mock: MockDataConfig
     auth: AuthConfig = AuthConfig()
     smtp: SMTPConfig = SMTPConfig()
+    sync: SyncConfig = SyncConfig()
 
     @classmethod
     def from_env(cls):
@@ -112,6 +123,13 @@ class Config(BaseModel):
                 password=os.getenv("KOHAKU_BOARD_SMTP_PASSWORD", ""),
                 from_email=os.getenv("KOHAKU_BOARD_SMTP_FROM", "noreply@localhost"),
                 use_tls=os.getenv("KOHAKU_BOARD_SMTP_TLS", "true").lower() == "true",
+            ),
+            sync=SyncConfig(
+                enabled=os.getenv("KOHAKU_SYNC_ENABLED", "false").lower() == "true",
+                remote_url=os.getenv("KOHAKU_SYNC_REMOTE_URL", ""),
+                remote_token=os.getenv("KOHAKU_SYNC_REMOTE_TOKEN", ""),
+                remote_project=os.getenv("KOHAKU_SYNC_REMOTE_PROJECT", "local"),
+                sync_interval=int(os.getenv("KOHAKU_SYNC_INTERVAL", "10")),
             ),
         )
 

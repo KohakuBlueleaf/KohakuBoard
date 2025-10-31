@@ -27,6 +27,7 @@ dependencies = [
     "httpx",
     "loguru",
     "numpy",
+    "orjson",
     "pandas",
     "peewee",
     "psycopg2-binary",
