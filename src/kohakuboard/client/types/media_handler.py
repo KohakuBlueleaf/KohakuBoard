@@ -9,6 +9,7 @@ import numpy as np
 from kohakuboard.logger import get_logger
 
 from kohakuboard.client.utils.media_hash import generate_media_hash
+from kohakuboard.client.storage.sqlite_kv import SQLiteKVStorage
 
 
 class MediaHandler:
@@ -25,14 +26,15 @@ class MediaHandler:
     VIDEO_EXTS = {".mp4", ".avi", ".mov", ".mkv", ".webm", ".flv", ".wmv", ".m4v"}
     AUDIO_EXTS = {".mp3", ".wav", ".flac", ".ogg", ".m4a", ".aac", ".wma"}
 
-    def __init__(self, media_dir: Path):
+    def __init__(self, media_dir: Path, kv_storage: SQLiteKVStorage):
         """Initialize media handler
 
         Args:
-            media_dir: Directory to store media files
+            media_dir: Directory to store media files (deprecated, kept for logging path)
+            kv_storage: SQLite KV storage instance for media binary data
         """
         self.media_dir = media_dir
-        self.media_dir.mkdir(parents=True, exist_ok=True)
+        self.kv_storage = kv_storage
 
         # Setup file-only logger for media
         log_file = media_dir.parent / "logs" / "media.log"
@@ -84,22 +86,20 @@ class MediaHandler:
         else:
             raise ValueError(f"Unsupported media type: {media_type}")
 
-        # Generate content hash for filename
+        # Generate content hash for key
         media_hash = generate_media_hash(content_bytes)
-        filename = f"{media_hash}.{ext}"
-        filepath = self.media_dir / filename
+        key = f"{media_hash}.{ext}"
 
-        # Deduplication: Only write if file doesn't exist
-        file_exists = filepath.exists()
-        if not file_exists:
-            with open(filepath, "wb") as f:
-                f.write(content_bytes)
-            self.logger.debug(f"Saved new {media_type}: {filename}")
+        # Deduplication: Only write if key doesn't exist in SQLite KV
+        already_exists = self.kv_storage.exists(key)
+        if not already_exists:
+            self.kv_storage.put(key, content_bytes)
+            self.logger.debug(f"Saved new {media_type} to SQLite KV: {key}")
         else:
-            self.logger.debug(f"Deduplicated {media_type}: {filename} (already exists)")
+            self.logger.debug(f"Deduplicated {media_type}: {key} (already exists in SQLite KV)")
 
         # Get file metadata
-        file_size = filepath.stat().st_size
+        file_size = len(content_bytes)
 
         # Get dimensions for images
         width, height = None, None
@@ -107,13 +107,13 @@ class MediaHandler:
             try:
                 from PIL import Image
 
-                with Image.open(filepath) as img:
+                with Image.open(io.BytesIO(content_bytes)) as img:
                     width, height = img.size
             except Exception:
                 pass  # Skip if we can't read dimensions
 
         # Return metadata (media_id will be assigned by database)
-        # Filename and path are not stored - derived from hash + format
+        # Key is stored in SQLite KV as {media_hash}.{format}
         return {
             "media_hash": media_hash,
             "format": ext,
@@ -121,7 +121,7 @@ class MediaHandler:
             "size_bytes": file_size,
             "width": width,
             "height": height,
-            "deduplicated": file_exists,
+            "deduplicated": already_exists,
         }
 
     def process_images(self, images: List[Any], name: str, step: int) -> List[dict]:
@@ -137,7 +137,7 @@ class MediaHandler:
         """
         results = []
         for idx, img in enumerate(images):
-            metadata = self._process_image(img, f"{name}_{idx}", step)
+            metadata = self.process_media(img, f"{name}_{idx}", step, media_type="image")
             results.append(metadata)
         return results
 

@@ -15,15 +15,15 @@ from typing import Any, Dict, List, Optional, Set
 import numpy as np
 import orjson
 import requests
-from loguru import logger
 
+from kohakuboard.client.storage.sqlite_kv import SQLiteKVStorage
 try:
     from lance.dataset import LanceDataset
 
     LANCE_AVAILABLE = True
 except ImportError:
     LANCE_AVAILABLE = False
-    logger.warning("Lance not available, scalar and histogram sync will be skipped")
+    # Note: Lance not available warning will be logged by SyncWorker if needed
 
 
 class SyncWorker:
@@ -72,6 +72,12 @@ class SyncWorker:
         self.metrics_dir = self.board_dir / "data" / "metrics"
         self.histograms_dir = self.board_dir / "data" / "histograms"
         self.media_dir = self.board_dir / "media"
+        self.media_kv_path = self.board_dir / "media" / "blobs.db"
+
+        # Initialize SQLite KV storage for reading media (readonly)
+        self.media_kv = None
+        if self.media_kv_path.exists():
+            self.media_kv = SQLiteKVStorage(self.media_kv_path, readonly=True)
 
         # Sync state
         self.state = self._load_state()
@@ -99,6 +105,12 @@ class SyncWorker:
             f"(interval: {sync_interval}s)"
         )
 
+        # Warn if Lance is not available
+        if not LANCE_AVAILABLE:
+            self.logger.warning(
+                "Lance not available - scalar and histogram sync will be skipped"
+            )
+
     def _setup_logger(self):
         """Setup dedicated logger for sync worker that writes to file ONLY"""
         from kohakuboard.logger import get_logger
@@ -118,6 +130,10 @@ class SyncWorker:
 
         self.running = True
         self.stop_event.clear()
+
+        # Perform initial sync immediately to create remote board
+        self._initial_sync()
+
         self.thread = threading.Thread(target=self._sync_loop, daemon=False)
         self.thread.start()
         self.logger.info("SyncWorker thread started")
@@ -142,7 +158,62 @@ class SyncWorker:
             else:
                 self.logger.info("SyncWorker stopped")
 
+        # Clean up SQLite KV connection
+        if self.media_kv is not None:
+            try:
+                self.logger.debug("Closing SQLite KV connection...")
+                self.media_kv.close()
+                self.media_kv = None
+                self.logger.debug("SQLite KV connection closed")
+            except Exception as e:
+                self.logger.warning(f"Error closing SQLite KV: {e}")
+
         self.running = False
+
+    def _initial_sync(self):
+        """Perform initial sync to create remote board immediately
+
+        This uploads metadata.json to create the board on the remote server
+        as soon as the Board is initialized, without waiting for first log.
+        """
+        try:
+            # Check if metadata already synced
+            if self.state.get("metadata_synced", False):
+                self.logger.debug("Metadata already synced, skipping initial sync")
+                return
+
+            # Collect metadata
+            metadata = self._collect_metadata()
+            if not metadata:
+                self.logger.warning("No metadata.json found, skipping initial sync")
+                return
+
+            # Create minimal payload with just metadata (no data yet)
+            payload = {
+                "sync_range": {"start_step": 0, "end_step": -1},
+                "steps": [],
+                "scalars": {},
+                "media": [],
+                "tables": [],
+                "histograms": [],
+                "metadata": metadata,
+                "log_lines": [],
+            }
+
+            # Send to remote server
+            self.logger.info("Performing initial sync to create remote board...")
+            response = self._sync_logs(payload)
+
+            # Mark metadata as synced
+            self.state["metadata_synced"] = True
+            self.state["last_sync_at"] = datetime.now(timezone.utc).isoformat()
+            self._save_state()
+
+            self.logger.info("Initial sync completed - remote board created")
+
+        except Exception as e:
+            self.logger.warning(f"Initial sync failed (will retry later): {e}")
+            # Don't raise - sync worker should still start even if initial sync fails
 
     def _sync_loop(self):
         """Main sync loop (runs in background thread)"""
@@ -547,7 +618,7 @@ class SyncWorker:
         return response.json()
 
     def _sync_media(self, missing_hashes: List[str]):
-        """Upload missing media files to remote server
+        """Upload missing media files to remote server (from SQLite KV)
 
         Args:
             missing_hashes: List of media hashes to upload
@@ -555,36 +626,65 @@ class SyncWorker:
         if not missing_hashes:
             return
 
+        # Check if SQLite KV is available
+        if self.media_kv is None:
+            # Try to initialize if file exists now
+            if self.media_kv_path.exists():
+                self.media_kv = SQLiteKVStorage(self.media_kv_path, readonly=True)
+            else:
+                self.logger.warning("SQLite KV not available, cannot upload media")
+                return
+
         url = f"{self.remote_url}/api/projects/{self.project}/runs/{self.run_id}/media"
 
-        # Collect files to upload
-        files_to_upload = []
-        for media_hash in missing_hashes:
-            # Find file with this hash (may have different extensions)
-            matching_files = list(self.media_dir.glob(f"{media_hash}.*"))
+        # Query SQLite metadata to get format for each hash
+        conn = sqlite3.connect(str(self.sqlite_db))
+        media_info = {}
+        try:
+            placeholders = ",".join("?" * len(missing_hashes))
+            cursor = conn.execute(
+                f"SELECT DISTINCT media_hash, format FROM media WHERE media_hash IN ({placeholders})",
+                missing_hashes,
+            )
+            for row in cursor.fetchall():
+                media_hash, format = row
+                media_info[media_hash] = format
+        finally:
+            conn.close()
 
-            if not matching_files:
-                self.logger.warning(f"Media file not found for hash: {media_hash}")
+        # Collect media data from SQLite KV
+        files_data = []
+        for media_hash in missing_hashes:
+            if media_hash not in media_info:
+                self.logger.warning(f"Media metadata not found for hash: {media_hash}")
                 continue
 
-            # Use first match
-            media_file = matching_files[0]
-            files_to_upload.append(media_file)
+            format = media_info[media_hash]
+            key = f"{media_hash}.{format}"
 
-        if not files_to_upload:
-            self.logger.warning("No media files to upload")
+            # Read from SQLite KV
+            data = self.media_kv.get(key)
+            if data is None:
+                self.logger.warning(f"Media data not found in SQLite KV: {key}")
+                continue
+
+            files_data.append((key, data))
+
+        if not files_data:
+            self.logger.warning("No media data to upload")
             return
 
-        # Prepare multipart upload
-        files = []
-        handles = []
+        # Prepare multipart upload with in-memory files
+        import io
 
+        files = []
         try:
-            for media_file in files_to_upload:
-                handle = open(media_file, "rb")
-                handles.append(handle)
+            for filename, data in files_data:
+                # Create in-memory file object
+                file_obj = io.BytesIO(data)
+                file_obj.seek(0)  # Ensure we're at the start
                 files.append(
-                    ("files", (media_file.name, handle, "application/octet-stream"))
+                    ("files", (filename, file_obj, "application/octet-stream"))
                 )
 
             # Upload with custom headers (remove JSON Content-Type for multipart)
@@ -599,12 +699,11 @@ class SyncWorker:
             )
 
             response.raise_for_status()
-            self.logger.info(f"Uploaded {len(files_to_upload)} media files")
+            self.logger.info(f"Uploaded {len(files_data)} media files from SQLite KV")
 
-        finally:
-            # Close all handles
-            for handle in handles:
-                handle.close()
+        except Exception as e:
+            self.logger.error(f"Failed to upload media: {e}")
+            raise
 
     def _get_latest_local_step(self) -> Optional[int]:
         """Get latest step from local SQLite

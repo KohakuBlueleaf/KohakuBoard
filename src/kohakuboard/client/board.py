@@ -3,13 +3,17 @@
 import atexit
 import json
 import multiprocessing as mp
+from multiprocessing import shared_memory
 import signal
 import sys
 import time
 import uuid
+import weakref
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
+
+import numpy as np
 
 from kohakuboard.client.capture import OutputCapture
 from kohakuboard.client.types import Media, Table, Histogram
@@ -19,6 +23,22 @@ from kohakuboard.client.sync_worker import SyncWorker
 
 # Get logger for Board
 from kohakuboard.logger import get_logger
+
+
+# Global weakref registry - doesn't prevent GC
+_active_boards_weakrefs = []
+_cleanup_registered = False
+
+
+def _cleanup_all_boards():
+    """Cleanup all boards at exit - uses weakrefs so doesn't prevent GC"""
+    for board_ref in _active_boards_weakrefs:
+        board = board_ref()
+        if board is not None and hasattr(board, 'finish'):
+            try:
+                board.finish()
+            except:
+                pass
 
 
 class Board:
@@ -125,9 +145,11 @@ class Board:
 
         # Multiprocessing setup - use Manager.Queue to avoid Windows deadlock
         # See: https://bugs.python.org/issue29797
-        manager = mp.Manager()
-        self.queue = manager.Queue(maxsize=50000)
+        self.queue = mp.Queue(maxsize=50000)
         self.stop_event = mp.Event()
+
+        # Track active SharedMemory blocks for cleanup
+        self._shared_memory_blocks = []
 
         # Setup board logger FIRST (stdout + file)
         self.logger = get_logger("BOARD")
@@ -191,8 +213,16 @@ class Board:
         # Save board metadata
         self._save_metadata()
 
-        # Register cleanup hooks
-        atexit.register(self.finish)
+        # Register in global weakref list (doesn't prevent GC)
+        global _active_boards_weakrefs, _cleanup_registered
+        _active_boards_weakrefs.append(weakref.ref(self))
+
+        # Register global atexit handler once
+        if not _cleanup_registered:
+            atexit.register(_cleanup_all_boards)
+            _cleanup_registered = True
+
+        # Register signal handlers with weakref (doesn't prevent GC)
         self._register_signal_handlers()
 
         self.logger.info(f"Board created: {self.name} (ID: {self.board_id})")
@@ -326,33 +356,85 @@ class Board:
         }
         self.queue.put(message)
 
+    def _create_shared_memory(self, array: np.ndarray, name_prefix: str) -> tuple:
+        """Create SharedMemory from numpy array
+
+        Args:
+            array: numpy array to store in shared memory
+            name_prefix: prefix for shared memory name
+
+        Returns:
+            tuple of (shm_name, size, dtype_str)
+        """
+        # Create unique name for this shared memory block
+        shm_name = f"{name_prefix}_{uuid.uuid4().hex[:16]}"
+
+        # Ensure array is contiguous
+        if not array.flags['C_CONTIGUOUS']:
+            array = np.ascontiguousarray(array)
+
+        # Create shared memory block
+        shm = shared_memory.SharedMemory(create=True, size=array.nbytes, name=shm_name)
+
+        # Copy data to shared memory
+        shm_array = np.ndarray(array.shape, dtype=array.dtype, buffer=shm.buf)
+        shm_array[:] = array[:]
+
+        # Track this block for cleanup (keep reference to prevent premature GC)
+        self._shared_memory_blocks.append(shm)
+
+        return shm_name, array.nbytes, str(array.dtype)
+
     def _send_histogram_message(self, name: str, hist_obj: Histogram):
-        """Send single histogram message"""
+        """Send single histogram message using SharedMemory for data transfer"""
         hist_data = hist_obj.to_dict()
 
         if hist_data.get("computed", False):
-            # Precomputed histogram - send bins/counts
+            # Precomputed histogram - send bins/counts via SharedMemory
+            bins_array = np.array(hist_data["bins"], dtype=np.float32)
+            counts_array = np.array(hist_data["counts"], dtype=np.int32)
+
+            bins_shm_name, bins_size, bins_dtype = self._create_shared_memory(bins_array, "hist_bins")
+            counts_shm_name, counts_size, counts_dtype = self._create_shared_memory(counts_array, "hist_counts")
+
             message = {
                 "type": "histogram",
                 "step": self._step,
                 "global_step": self._global_step,
                 "name": name,
-                "bins": hist_data["bins"],
-                "counts": hist_data["counts"],
                 "precision": hist_data["precision"],
                 "precomputed": True,
+                "shared_memory": {
+                    "bins_name": bins_shm_name,
+                    "bins_size": bins_size,
+                    "bins_dtype": bins_dtype,
+                    "bins_shape": bins_array.shape,
+                    "counts_name": counts_shm_name,
+                    "counts_size": counts_size,
+                    "counts_dtype": counts_dtype,
+                    "counts_shape": counts_array.shape,
+                },
             }
         else:
-            # Raw values - send to writer for computation
+            # Raw values - send to writer for computation via SharedMemory
+            values_array = np.array(hist_data["values"], dtype=np.float32)
+
+            values_shm_name, values_size, values_dtype = self._create_shared_memory(values_array, "hist_values")
+
             message = {
                 "type": "histogram",
                 "step": self._step,
                 "global_step": self._global_step,
                 "name": name,
-                "values": hist_data["values"],
                 "num_bins": hist_data["num_bins"],
                 "precision": hist_data["precision"],
                 "precomputed": False,
+                "shared_memory": {
+                    "values_name": values_shm_name,
+                    "values_size": values_size,
+                    "values_dtype": values_dtype,
+                    "values_shape": values_array.shape,
+                },
             }
         self.queue.put(message)
 
@@ -693,66 +775,85 @@ class Board:
             self.logger.warning("Writer still alive after 2s, killing...")
             self.writer_process.kill()
 
+        # Clean up SharedMemory blocks
+        if hasattr(self, "_shared_memory_blocks"):
+            self.logger.debug(f"Cleaning up {len(self._shared_memory_blocks)} SharedMemory blocks...")
+            for shm in self._shared_memory_blocks:
+                try:
+                    shm.close()
+                    shm.unlink()
+                except Exception as e:
+                    self.logger.warning(f"Error cleaning up SharedMemory: {e}")
+            self._shared_memory_blocks.clear()
+
         self.logger.info(f"Board finished: {self.name}")
 
         # Remove to prevent double-call
         delattr(self, "writer_process")
 
     def _register_signal_handlers(self):
-        """Register signal handlers for graceful shutdown
+        """Register signal handlers for graceful shutdown using weakref
 
+        Uses weakref to avoid circular references that prevent GC.
         Handles:
         - SIGINT (Ctrl+C)
         - SIGTERM (kill command)
         - Uncaught exceptions
         """
+        # Use weakref to avoid keeping Board alive
+        weak_self = weakref.ref(self)
+        interrupt_count = [0]  # Use list to allow modification in closure
 
         def signal_handler(signum, frame):
             """Handle termination signals (double Ctrl+C for force exit)"""
-            sig_name = signal.Signals(signum).name
-            self._interrupt_count += 1
+            board = weak_self()
+            if board is None:
+                return  # Board was garbage collected
 
-            if self._interrupt_count == 1:
-                self.logger.warning(f"Received {sig_name}, shutting down gracefully...")
-                self.logger.warning("Press Ctrl+C again within 3 seconds to FORCE EXIT")
+            sig_name = signal.Signals(signum).name
+            interrupt_count[0] += 1
+
+            if interrupt_count[0] == 1:
+                board.logger.warning(f"Received {sig_name}, shutting down gracefully...")
+                board.logger.warning("Press Ctrl+C again within 3 seconds to FORCE EXIT")
                 try:
-                    self.finish()
+                    board.finish()
                 except Exception as e:
-                    self.logger.error(f"Error during graceful shutdown: {e}")
+                    board.logger.error(f"Error during graceful shutdown: {e}")
                 finally:
-                    self.logger.info("Shutdown complete")
+                    board.logger.info("Shutdown complete")
                     sys.exit(0)
-            elif self._interrupt_count == 2:
-                self.logger.error(
+            elif interrupt_count[0] == 2:
+                board.logger.error(
                     "Second Ctrl+C - KILLING writer process (data will be lost!)"
                 )
-                if hasattr(self, "writer_process") and self.writer_process.is_alive():
-                    self.writer_process.kill()
+                if hasattr(board, "writer_process") and board.writer_process.is_alive():
+                    board.writer_process.kill()
                     time.sleep(0.5)
-                self.logger.error("Force exit")
+                board.logger.error("Force exit")
                 sys.exit(1)
             else:
                 # Third+ interrupt - nuclear option
-                self.logger.error("THIRD Ctrl+C - IMMEDIATE EXIT")
                 import os
-
                 os._exit(1)
 
         # Register signal handlers (Ctrl+C, kill)
         signal.signal(signal.SIGINT, signal_handler)
         signal.signal(signal.SIGTERM, signal_handler)
 
-        # Hook into sys.excepthook for uncaught exceptions
+        # Hook into sys.excepthook for uncaught exceptions using weakref
         original_excepthook = sys.excepthook
 
         def exception_handler(exc_type, exc_value, exc_traceback):
             """Handle uncaught exceptions"""
-            self.logger.error(f"Uncaught exception: {exc_type.__name__}: {exc_value}")
-            self.logger.error("Attempting graceful shutdown...")
-            try:
-                self.finish()
-            except Exception as e:
-                self.logger.error(f"Error during exception cleanup: {e}")
+            board = weak_self()
+            if board is not None:
+                board.logger.error(f"Uncaught exception: {exc_type.__name__}: {exc_value}")
+                board.logger.error("Attempting graceful shutdown...")
+                try:
+                    board.finish()
+                except Exception as e:
+                    board.logger.error(f"Error during exception cleanup: {e}")
             # Call original excepthook to print traceback
             original_excepthook(exc_type, exc_value, exc_traceback)
 
@@ -795,14 +896,25 @@ class Board:
         with open(metadata_file, "w") as f:
             json.dump(metadata, f, indent=2)
 
+    def __del__(self):
+        """Destructor - cleanup when board is garbage collected"""
+        # Try to finish if not already finished
+        if hasattr(self, "writer_process") and not self._is_finishing:
+            try:
+                self.finish()
+            except:
+                pass  # Silent fail in __del__
+
     def __repr__(self) -> str:
         return f"Board(name={self.name!r}, id={self.board_id!r})"
 
     def __enter__(self):
+        print("Board Enter")
         """Context manager support"""
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
+        print("Board exit")
         """Context manager cleanup"""
         self.flush()
         self.finish()

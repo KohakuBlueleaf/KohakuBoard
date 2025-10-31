@@ -32,7 +32,7 @@ class SQLiteMetadataStorage:
         self.base_dir.mkdir(parents=True, exist_ok=True)
 
         # Setup file-only logger for storage
-        log_file = base_dir.parent / "storage.log"
+        log_file = base_dir.parent / "logs" / "storage.log"
         self.logger = get_logger("STORAGE", file_only=True, log_file=log_file)
 
         self.db_file = base_dir / "metadata.db"

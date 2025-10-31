@@ -8,6 +8,7 @@ v0.2.0+ ARCHITECTURE:
 """
 
 import multiprocessing as mp
+from multiprocessing import shared_memory
 import queue
 import threading
 import time
@@ -15,9 +16,12 @@ from pathlib import Path
 from queue import Empty
 from typing import Any
 
+import numpy as np
+
 from kohakuboard.client.types.media_handler import MediaHandler
 from kohakuboard.client.storage.hybrid import HybridStorage
 from kohakuboard.client.storage.sqlite import SQLiteMetadataStorage
+from kohakuboard.client.storage.sqlite_kv import SQLiteKVStorage
 
 
 class LogWriter:
@@ -53,7 +57,12 @@ class LogWriter:
                 f"Only 'sqlite' and 'hybrid' are supported in v0.2.0+."
             )
 
-        self.media_handler = MediaHandler(board_dir / "media")
+        # Initialize SQLite KV for media storage
+        media_kv_path = board_dir / "media" / "blobs.db"
+        self.media_kv = SQLiteKVStorage(media_kv_path, readonly=False)
+
+        # Initialize media handler with SQLite KV storage
+        self.media_handler = MediaHandler(board_dir / "media", self.media_kv)
 
         # Statistics
         self.messages_processed = 0
@@ -154,6 +163,10 @@ class LogWriter:
             self._handle_batch(message)
         elif msg_type == "flush":
             self._handle_flush()
+        elif msg_type == "stop":
+            # Poison pill - stop processing and exit
+            self.logger.info("Received stop message, exiting immediately")
+            self.stop_event.set()
         else:
             self.logger.warning(f"Unknown message type: {msg_type}")
 
@@ -251,38 +264,113 @@ class LogWriter:
             raise
 
     def _handle_histogram(self, message: dict):
-        """Handle histogram logging"""
+        """Handle histogram logging with SharedMemory support"""
         step = message["step"]
         global_step = message.get("global_step")
         name = message["name"]
         precomputed = message.get("precomputed", False)
 
-        if precomputed:
-            # Precomputed bins/counts - store directly
-            bins = message["bins"]
-            counts = message["counts"]
-            precision = message.get("precision", "exact")
+        # Check if data is in SharedMemory
+        if "shared_memory" in message:
+            shm_info = message["shared_memory"]
 
-            # For precomputed, we need to store bins/counts directly
-            # The storage layer needs to handle this appropriately
-            self.storage.append_histogram(
-                step,
-                global_step,
-                name,
-                None,
-                bins=bins,
-                counts=counts,
-                precision=precision,
-            )
+            if precomputed:
+                # Precomputed bins/counts from SharedMemory
+                bins_shm = None
+                counts_shm = None
+                try:
+                    # Attach to bins SharedMemory
+                    bins_shm = shared_memory.SharedMemory(name=shm_info["bins_name"])
+                    bins_dtype = np.dtype(shm_info["bins_dtype"])
+                    bins_array = np.ndarray(shm_info["bins_shape"], dtype=bins_dtype, buffer=bins_shm.buf)
+                    bins = bins_array.copy().tolist()  # Copy to local memory
+
+                    # Attach to counts SharedMemory
+                    counts_shm = shared_memory.SharedMemory(name=shm_info["counts_name"])
+                    counts_dtype = np.dtype(shm_info["counts_dtype"])
+                    counts_array = np.ndarray(shm_info["counts_shape"], dtype=counts_dtype, buffer=counts_shm.buf)
+                    counts = counts_array.copy().tolist()  # Copy to local memory
+
+                    precision = message.get("precision", "exact")
+
+                    # Store histogram
+                    self.storage.append_histogram(
+                        step,
+                        global_step,
+                        name,
+                        None,
+                        bins=bins,
+                        counts=counts,
+                        precision=precision,
+                    )
+
+                finally:
+                    # Clean up SharedMemory
+                    if bins_shm:
+                        try:
+                            bins_shm.close()
+                            bins_shm.unlink()
+                        except Exception as e:
+                            self.logger.warning(f"Error cleaning up bins SharedMemory: {e}")
+
+                    if counts_shm:
+                        try:
+                            counts_shm.close()
+                            counts_shm.unlink()
+                        except Exception as e:
+                            self.logger.warning(f"Error cleaning up counts SharedMemory: {e}")
+
+            else:
+                # Raw values from SharedMemory
+                values_shm = None
+                try:
+                    # Attach to values SharedMemory
+                    values_shm = shared_memory.SharedMemory(name=shm_info["values_name"])
+                    values_dtype = np.dtype(shm_info["values_dtype"])
+                    values_array = np.ndarray(shm_info["values_shape"], dtype=values_dtype, buffer=values_shm.buf)
+                    values = values_array.copy().tolist()  # Copy to local memory
+
+                    num_bins = message.get("num_bins", 64)
+                    precision = message.get("precision", "compact")
+
+                    # Store histogram
+                    self.storage.append_histogram(
+                        step, global_step, name, values, num_bins, precision
+                    )
+
+                finally:
+                    # Clean up SharedMemory
+                    if values_shm:
+                        try:
+                            values_shm.close()
+                            values_shm.unlink()
+                        except Exception as e:
+                            self.logger.warning(f"Error cleaning up values SharedMemory: {e}")
+
         else:
-            # Raw values - compute histogram in storage layer
-            values = message["values"]
-            num_bins = message.get("num_bins", 64)
-            precision = message.get("precision", "compact")
+            # Legacy path (no SharedMemory) - for backward compatibility
+            if precomputed:
+                bins = message["bins"]
+                counts = message["counts"]
+                precision = message.get("precision", "exact")
 
-            self.storage.append_histogram(
-                step, global_step, name, values, num_bins, precision
-            )
+                self.storage.append_histogram(
+                    step,
+                    global_step,
+                    name,
+                    None,
+                    bins=bins,
+                    counts=counts,
+                    precision=precision,
+                )
+            else:
+                values = message["values"]
+                num_bins = message.get("num_bins", 64)
+                precision = message.get("precision", "compact")
+
+                self.storage.append_histogram(
+                    step, global_step, name, values, num_bins, precision
+                )
 
     def _handle_batch(self, message: dict):
         """Handle batched message containing multiple types
@@ -426,9 +514,17 @@ class LogWriter:
             self.logger.info(f"Flushing all buffers ({remaining} messages drained)...")
             self.storage.flush_all()
 
+            # Sync SQLite KV to disk
+            if hasattr(self, "media_kv"):
+                self.media_kv.sync(force=True)
+
             # Close storage backend if it has a close method
             if hasattr(self.storage, "close"):
                 self.storage.close()
+
+            # Close SQLite KV storage
+            if hasattr(self, "media_kv"):
+                self.media_kv.close()
 
             self.logger.info(
                 f"LogWriter stopped. Processed {self.messages_processed} total messages "
