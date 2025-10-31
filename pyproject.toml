@@ -25,6 +25,7 @@ dependencies = [
     "fastapi",
     "fsspec",
     "httpx",
+    "kohakuvault",
     "loguru",
     "numpy",
     "orjson",

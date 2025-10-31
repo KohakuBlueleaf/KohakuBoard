@@ -657,7 +657,6 @@ npm run dev
 - Keras callback
 - Hugging Face Trainer integration
 - Custom callback system
-- LMDB backend option
 
 **Backend Features:**
 - Multi-board comparison API

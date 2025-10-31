@@ -252,7 +252,6 @@ for epoch in range(100):
 - [ ] Real-time streaming
 - [ ] Run comparison UI
 - [ ] PyTorch Lightning integration
-- [ ] LMDB for row-oriented logs
 
 ---
 
