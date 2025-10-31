@@ -10,9 +10,11 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List
 
-from loguru import logger
-
+from kohakuboard.logger import get_logger
 from kohakuboard.api.utils.board_reader_hybrid import HybridBoardReader
+
+# Get logger for board reader
+logger = get_logger("READER")
 
 
 class BoardReader:

@@ -13,7 +13,12 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 from lance.dataset import LanceDataset
-from loguru import logger
+
+from kohakuboard.logger import get_logger
+from kohakuboard.client.storage.sqlite_kv import SQLiteKVStorage
+
+# Get logger for board reader
+logger = get_logger("READER")
 
 
 class HybridBoardReader:
@@ -21,7 +26,8 @@ class HybridBoardReader:
 
     Uses:
     - Lance Python API directly for metrics (efficient columnar access)
-    - SQLite for media/tables
+    - SQLite for media/tables metadata
+    - SQLite KV for media binary data
     """
 
     def __init__(self, board_dir: Path):
@@ -39,10 +45,16 @@ class HybridBoardReader:
             self.board_dir / "data" / "metrics"
         )  # Per-metric .lance files
         self.sqlite_db = self.board_dir / "data" / "metadata.db"
+        self.media_kv_path = self.board_dir / "media" / "blobs.db"
 
         # Validate
         if not self.board_dir.exists():
             raise FileNotFoundError(f"Board directory not found: {board_dir}")
+
+        # Initialize SQLite KV storage (readonly mode)
+        self.media_kv = None
+        if self.media_kv_path.exists():
+            self.media_kv = SQLiteKVStorage(self.media_kv_path, readonly=True)
 
         # Retry configuration (for SQLite locks)
         self.max_retries = 5
@@ -486,7 +498,7 @@ class HybridBoardReader:
             return []
 
     def get_media_file_path(self, filename: str) -> Optional[Path]:
-        """Get full path to media file
+        """Get full path to media file (DEPRECATED - use get_media_data instead)
 
         Args:
             filename: Media filename
@@ -496,6 +508,26 @@ class HybridBoardReader:
         """
         media_path = self.media_dir / filename
         return media_path if media_path.exists() else None
+
+    def get_media_data(self, filename: str) -> Optional[bytes]:
+        """Get media binary data from SQLite KV
+
+        Args:
+            filename: Media filename in format {media_hash}.{format}
+
+        Returns:
+            Binary media data or None if not found
+        """
+        if self.media_kv is None:
+            logger.warning(f"SQLite KV not initialized, cannot retrieve media: {filename}")
+            return None
+
+        try:
+            data = self.media_kv.get(filename)
+            return data
+        except Exception as e:
+            logger.error(f"Failed to read media from SQLite KV: {filename}, error: {e}")
+            return None
 
     def get_media_by_id(self, media_id: int) -> Optional[Dict[str, Any]]:
         """Get media metadata by ID from SQLite metadata DB

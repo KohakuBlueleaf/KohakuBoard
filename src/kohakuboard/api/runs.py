@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
 from kohakuboard.api.utils.board_reader import BoardReader
@@ -293,18 +293,18 @@ async def get_media_file(
     filename: str,
     current_user: User | None = Depends(get_optional_user),
 ):
-    """Serve media file (image/video/audio)"""
+    """Serve media file (image/video/audio) from SQLite KV storage"""
     logger_api.info(f"Serving media file: {project}/{run_id}/{filename}")
 
     run_path, _ = get_run_path(project, run_id, current_user)
     reader = BoardReader(run_path)
-    file_path = reader.get_media_file_path(filename)
+    media_data = reader.get_media_data(filename)
 
-    if not file_path:
+    if not media_data:
         raise HTTPException(404, detail={"error": "Media file not found"})
 
     # Determine media type from extension
-    suffix = file_path.suffix.lower()
+    suffix = Path(filename).suffix.lower()
     media_types = {
         ".png": "image/png",
         ".jpg": "image/jpeg",
@@ -320,10 +320,10 @@ async def get_media_file(
 
     media_type = media_types.get(suffix, "application/octet-stream")
 
-    return FileResponse(
-        path=file_path,
+    return Response(
+        content=media_data,
         media_type=media_type,
-        filename=filename,
+        headers={"Content-Disposition": f'inline; filename="{filename}"'},
     )
 
 

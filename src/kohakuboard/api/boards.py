@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException, Query
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import FileResponse, RedirectResponse, Response
 
 from kohakuboard.api.utils.board_reader import BoardReader, list_boards
 from kohakuboard.config import cfg
@@ -250,7 +250,7 @@ async def get_table_data(
 
 @router.get("/boards/{board_id}/media/files/{filename}")
 async def get_media_file(board_id: str, filename: str):
-    """Serve media file (image/video/audio)
+    """Serve media file (image/video/audio) from SQLite KV storage
 
     Args:
         board_id: Board identifier
@@ -264,13 +264,13 @@ async def get_media_file(board_id: str, filename: str):
     try:
         board_dir = Path(cfg.app.board_data_dir) / board_id
         reader = BoardReader(board_dir)
-        file_path = reader.get_media_file_path(filename)
+        media_data = reader.get_media_data(filename)
 
-        if not file_path:
+        if not media_data:
             raise HTTPException(status_code=404, detail="Media file not found")
 
         # Determine media type from extension
-        suffix = file_path.suffix.lower()
+        suffix = Path(filename).suffix.lower()
         media_types = {
             ".png": "image/png",
             ".jpg": "image/jpeg",
@@ -286,10 +286,10 @@ async def get_media_file(board_id: str, filename: str):
 
         media_type = media_types.get(suffix, "application/octet-stream")
 
-        return FileResponse(
-            path=file_path,
+        return Response(
+            content=media_data,
             media_type=media_type,
-            filename=filename,
+            headers={"Content-Disposition": f'inline; filename="{filename}"'},
         )
     except FileNotFoundError as e:
         logger_api.warning(f"Board not found: {board_id}")
@@ -335,11 +335,11 @@ async def get_media_by_id(board_id: str, media_id: int):
                 detail=f"Media ID {media_id} not found in board '{board_id}'",
             )
 
-        # Get filename and file path
+        # Get filename and data from LMDB
         filename = media_info["filename"]
-        file_path = reader.get_media_file_path(filename)
+        media_data = reader.get_media_data(filename)
 
-        if not file_path or not file_path.exists():
+        if not media_data:
             raise HTTPException(
                 status_code=404, detail=f"Media file not found: {filename}"
             )
@@ -365,11 +365,11 @@ async def get_media_by_id(board_id: str, media_id: int):
 
         media_type = media_types.get(format_ext, "application/octet-stream")
 
-        # Serve the actual file
-        return FileResponse(
-            path=file_path,
+        # Serve the media from LMDB
+        return Response(
+            content=media_data,
             media_type=media_type,
-            filename=filename,
+            headers={"Content-Disposition": f'inline; filename="{filename}"'},
         )
 
     except HTTPException:

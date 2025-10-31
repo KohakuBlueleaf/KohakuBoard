@@ -16,6 +16,7 @@ from kohakuboard.api.sync_models import (
 )
 from kohakuboard.auth import get_current_user
 from kohakuboard.client.storage.hybrid import HybridStorage
+from kohakuboard.client.storage.sqlite_kv import SQLiteKVStorage
 from kohakuboard.config import cfg
 from kohakuboard.db import Board, User
 from kohakuboard.db_operations import get_organization, get_user_organization
@@ -147,18 +148,20 @@ async def sync_run(
         await f.write(content)
     total_size = len(content)
 
-    # Save media files
-    media_dir = run_dir / "media"
-    media_dir.mkdir(exist_ok=True)
+    # Save media files to SQLite KV
+    media_kv_path = run_dir / "media" / "blobs.db"
+    media_kv = SQLiteKVStorage(media_kv_path, readonly=False)
 
-    logger_api.info(f"Saving {len(media_files)} media files")
-    for media_file in media_files:
-        media_path = media_dir / media_file.filename
-        logger_api.debug(f"Saving media file: {media_file.filename}")
-        content = await media_file.read()
-        async with aiofiles.open(media_path, "wb") as f:
-            await f.write(content)
-        total_size += len(content)
+    logger_api.info(f"Saving {len(media_files)} media files to SQLite KV")
+    try:
+        for media_file in media_files:
+            key = media_file.filename  # Key is {media_hash}.{format}
+            logger_api.debug(f"Saving media to SQLite KV: {media_file.filename}")
+            content = await media_file.read()
+            media_kv.put(key, content)
+            total_size += len(content)
+    finally:
+        media_kv.close()
 
     # Save metadata.json
     metadata_path = run_dir / "metadata.json"
@@ -331,8 +334,6 @@ async def sync_logs_incremental(
         for step, data in scalars_by_step.items():
             # Convert timestamp_ms to datetime for append_metrics
             if data["timestamp_ms"]:
-                from datetime import datetime, timezone
-
                 timestamp_obj = datetime.fromtimestamp(
                     data["timestamp_ms"] / 1000.0, tz=timezone.utc
                 )
@@ -433,13 +434,23 @@ async def sync_logs_incremental(
                 f"Appended {len(request.log_lines)} log lines to {log_file}"
             )
 
-        # Check which media files we don't have
-        media_dir = board_dir / "media"
+        # Check which media files we don't have in SQLite KV
+        media_kv_path = board_dir / "media" / "blobs.db"
         missing_media = []
-        for media_data in request.media:
-            filename = f"{media_data.media_hash}.{media_data.format}"
-            if not (media_dir / filename).exists():
-                missing_media.append(media_data.media_hash)
+
+        # If KV database doesn't exist yet, all media is missing
+        if not media_kv_path.exists():
+            missing_media = [media_data.media_hash for media_data in request.media]
+        else:
+            # KV database exists, check which media we have
+            media_kv = SQLiteKVStorage(media_kv_path, readonly=True)
+            try:
+                for media_data in request.media:
+                    key = f"{media_data.media_hash}.{media_data.format}"
+                    if not media_kv.exists(key):
+                        missing_media.append(media_data.media_hash)
+            finally:
+                media_kv.close()
 
         # Update board metadata
         board.last_synced_at = datetime.now(timezone.utc)
@@ -502,35 +513,39 @@ async def upload_media_files(
     # Get board
     board, board_dir = _get_or_create_board(project_name, run_id, current_user)
 
-    media_dir = board_dir / "media"
-    media_dir.mkdir(exist_ok=True)
+    # Initialize SQLite KV storage for media
+    media_kv_path = board_dir / "media" / "blobs.db"
+    media_kv = SQLiteKVStorage(media_kv_path, readonly=False)
 
     uploaded_hashes = []
     skipped_count = 0
 
-    for file in files:
-        # Validate filename format
-        if not file.filename or "." not in file.filename:
-            logger_api.warning(f"Invalid media filename: {file.filename}")
-            continue
+    try:
+        for file in files:
+            # Validate filename format
+            if not file.filename or "." not in file.filename:
+                logger_api.warning(f"Invalid media filename: {file.filename}")
+                continue
 
-        # Extract hash from filename
-        media_hash = file.filename.rsplit(".", 1)[0]
+            # Extract hash from filename
+            media_hash = file.filename.rsplit(".", 1)[0]
+            key = file.filename  # Key is {media_hash}.{format}
 
-        # Check if already exists
-        filepath = media_dir / file.filename
-        if filepath.exists():
-            logger_api.debug(f"Media file already exists: {file.filename}")
-            skipped_count += 1
-            continue
+            # Check if already exists in SQLite KV
+            if media_kv.exists(key):
+                logger_api.debug(f"Media already exists in SQLite KV: {file.filename}")
+                skipped_count += 1
+                continue
 
-        # Save file
-        content = await file.read()
-        async with aiofiles.open(filepath, "wb") as f:
-            await f.write(content)
+            # Read file content and store in SQLite KV
+            content = await file.read()
+            media_kv.put(key, content)
 
-        uploaded_hashes.append(media_hash)
-        logger_api.debug(f"Uploaded media: {file.filename} ({len(content)} bytes)")
+            uploaded_hashes.append(media_hash)
+            logger_api.debug(f"Uploaded media to SQLite KV: {file.filename} ({len(content)} bytes)")
+    finally:
+        # Close SQLite KV connection
+        media_kv.close()
 
     # Update board
     board.updated_at = datetime.now(timezone.utc)
