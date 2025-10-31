@@ -91,22 +91,36 @@ class SyncWorker:
         self.session.headers["Authorization"] = f"Bearer {remote_token}"
         self.session.headers["Content-Type"] = "application/json"
 
-        logger.info(
+        # Setup dedicated logger for sync worker (write to file, not stdout)
+        self._setup_logger()
+
+        self.logger.info(
             f"SyncWorker initialized: {project}/{run_id} -> {remote_url} "
             f"(interval: {sync_interval}s)"
         )
 
+    def _setup_logger(self):
+        """Setup dedicated logger for sync worker that writes to file ONLY"""
+        from kohakuboard.logger import get_logger
+
+        log_dir = self.board_dir / "logs"
+        log_dir.mkdir(exist_ok=True)
+        log_file = log_dir / "sync_worker.log"
+
+        # Get file-only logger instance
+        self.logger = get_logger("SYNC", file_only=True, log_file=log_file)
+
     def start(self):
         """Start sync worker thread"""
         if self.running:
-            logger.warning("SyncWorker already running")
+            self.logger.warning("SyncWorker already running")
             return
 
         self.running = True
         self.stop_event.clear()
         self.thread = threading.Thread(target=self._sync_loop, daemon=False)
         self.thread.start()
-        logger.info("SyncWorker thread started")
+        self.logger.info("SyncWorker thread started")
 
     def stop(self, timeout: float = 30.0):
         """Stop sync worker thread gracefully
@@ -117,22 +131,22 @@ class SyncWorker:
         if not self.running:
             return
 
-        logger.info("Stopping SyncWorker...")
+        self.logger.info("Stopping SyncWorker...")
         self.stop_event.set()
 
         if self.thread and self.thread.is_alive():
             self.thread.join(timeout=timeout)
 
             if self.thread.is_alive():
-                logger.warning("SyncWorker thread did not stop within timeout")
+                self.logger.warning("SyncWorker thread did not stop within timeout")
             else:
-                logger.info("SyncWorker stopped")
+                self.logger.info("SyncWorker stopped")
 
         self.running = False
 
     def _sync_loop(self):
         """Main sync loop (runs in background thread)"""
-        logger.info("SyncWorker loop started")
+        self.logger.info("SyncWorker loop started")
 
         while not self.stop_event.is_set():
             try:
@@ -143,41 +157,41 @@ class SyncWorker:
                 self._sync_new_data()
 
             except Exception as e:
-                logger.error(f"Sync loop error: {e}")
+                self.logger.error(f"Sync loop error: {e}")
 
             # Wait for next interval or stop event
             self.stop_event.wait(timeout=self.sync_interval)
 
         # Final sync before stopping
         try:
-            logger.info("Final sync before stopping...")
+            self.logger.info("Final sync before stopping...")
             self._sync_new_data()
         except Exception as e:
-            logger.error(f"Final sync failed: {e}")
+            self.logger.error(f"Final sync failed: {e}")
 
-        logger.info("SyncWorker loop exited")
+        self.logger.info("SyncWorker loop exited")
 
     def _sync_new_data(self):
         """Collect and sync new data since last sync"""
         if not self.sqlite_db.exists():
-            logger.debug("SQLite DB not found, skipping sync")
+            self.logger.debug("SQLite DB not found, skipping sync")
             return
 
         # Get latest step from local storage
         latest_step = self._get_latest_local_step()
         if latest_step is None:
-            logger.debug("No data to sync yet")
+            self.logger.debug("No data to sync yet")
             return
 
         last_synced_step = self.state.get("last_synced_step", -1)
 
         if latest_step <= last_synced_step:
-            logger.debug(
+            self.logger.debug(
                 f"No new data (latest: {latest_step}, synced: {last_synced_step})"
             )
             return
 
-        logger.info(
+        self.logger.info(
             f"Syncing steps {last_synced_step + 1} to {latest_step} "
             f"({latest_step - last_synced_step} new steps)"
         )
@@ -192,7 +206,7 @@ class SyncWorker:
             # Upload missing media
             missing_media = response.get("missing_media", [])
             if missing_media:
-                logger.info(f"Uploading {len(missing_media)} missing media files")
+                self.logger.info(f"Uploading {len(missing_media)} missing media files")
                 self._sync_media(missing_media)
 
             # Update state
@@ -211,10 +225,10 @@ class SyncWorker:
 
             self._save_state()
 
-            logger.info(f"Sync completed successfully (step: {latest_step})")
+            self.logger.info(f"Sync completed successfully (step: {latest_step})")
 
         except Exception as e:
-            logger.error(f"Sync failed: {e}")
+            self.logger.error(f"Sync failed: {e}")
             # Add to retry queue
             self.retry_queue.append(
                 {
@@ -326,7 +340,7 @@ class SyncWorker:
                 ]
 
         except Exception as e:
-            logger.error(f"Failed to collect scalars: {e}")
+            self.logger.error(f"Failed to collect scalars: {e}")
 
         return scalars
 
@@ -452,7 +466,7 @@ class SyncWorker:
                     )
 
         except Exception as e:
-            logger.error(f"Failed to collect histograms: {e}")
+            self.logger.error(f"Failed to collect histograms: {e}")
 
         return histograms
 
@@ -464,16 +478,16 @@ class SyncWorker:
         """
         metadata_file = self.board_dir / "metadata.json"
         if not metadata_file.exists():
-            logger.debug("metadata.json not found")
+            self.logger.debug("metadata.json not found")
             return None
 
         try:
             with open(metadata_file, "r") as f:
                 metadata = json.load(f)
-            logger.debug("Collected metadata.json")
+            self.logger.debug("Collected metadata.json")
             return metadata
         except Exception as e:
-            logger.error(f"Failed to read metadata.json: {e}")
+            self.logger.error(f"Failed to read metadata.json: {e}")
             return None
 
     def _collect_log_lines(self) -> List[str]:
@@ -496,14 +510,14 @@ class SyncWorker:
             new_lines = [line.rstrip("\n") for line in all_lines[last_synced_line:]]
 
             if new_lines:
-                logger.debug(
+                self.logger.debug(
                     f"Collected {len(new_lines)} new log lines "
                     f"(from line {last_synced_line} to {last_synced_line + len(new_lines)})"
                 )
 
             return new_lines
         except Exception as e:
-            logger.error(f"Failed to read output.log: {e}")
+            self.logger.error(f"Failed to read output.log: {e}")
             return []
 
     def _sync_logs(self, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -550,7 +564,7 @@ class SyncWorker:
             matching_files = list(self.media_dir.glob(f"{media_hash}.*"))
 
             if not matching_files:
-                logger.warning(f"Media file not found for hash: {media_hash}")
+                self.logger.warning(f"Media file not found for hash: {media_hash}")
                 continue
 
             # Use first match
@@ -558,7 +572,7 @@ class SyncWorker:
             files_to_upload.append(media_file)
 
         if not files_to_upload:
-            logger.warning("No media files to upload")
+            self.logger.warning("No media files to upload")
             return
 
         # Prepare multipart upload
@@ -585,7 +599,7 @@ class SyncWorker:
             )
 
             response.raise_for_status()
-            logger.info(f"Uploaded {len(files_to_upload)} media files")
+            self.logger.info(f"Uploaded {len(files_to_upload)} media files")
 
         finally:
             # Close all handles
@@ -611,7 +625,7 @@ class SyncWorker:
         for retry_item in self.retry_queue[:]:
             # Check max retries
             if retry_item["attempts"] >= self.max_retries:
-                logger.error(
+                self.logger.error(
                     f"Max retries ({self.max_retries}) exceeded for sync payload, "
                     f"giving up (created at: {retry_item['created_at']})"
                 )
@@ -624,7 +638,7 @@ class SyncWorker:
                 continue  # Not ready yet
 
             # Retry
-            logger.info(
+            self.logger.info(
                 f"Retrying sync (attempt {retry_item['attempts'] + 1}/{self.max_retries})"
             )
 
@@ -639,10 +653,10 @@ class SyncWorker:
 
                 # Success - remove from queue
                 self.retry_queue.remove(retry_item)
-                logger.info("Retry successful")
+                self.logger.info("Retry successful")
 
             except Exception as e:
-                logger.warning(f"Retry failed: {e}")
+                self.logger.warning(f"Retry failed: {e}")
                 retry_item["attempts"] += 1
                 retry_item["last_attempt"] = time.time()
 
@@ -682,7 +696,7 @@ class SyncWorker:
                 state.setdefault("metadata_synced", False)
                 return state
         except Exception as e:
-            logger.warning(f"Failed to load sync state: {e}, using defaults")
+            self.logger.warning(f"Failed to load sync state: {e}, using defaults")
             return {
                 "last_synced_step": -1,
                 "last_synced_log_line": 0,
@@ -699,12 +713,12 @@ class SyncWorker:
             with open(self.state_file, "w") as f:
                 json.dump(self.state, f, indent=2)
         except Exception as e:
-            logger.error(f"Failed to save sync state: {e}")
+            self.logger.error(f"Failed to save sync state: {e}")
 
     def force_sync(self):
         """Force an immediate sync (useful for testing or manual triggers)"""
-        logger.info("Force sync triggered")
+        self.logger.info("Force sync triggered")
         try:
             self._sync_new_data()
         except Exception as e:
-            logger.error(f"Force sync failed: {e}")
+            self.logger.error(f"Force sync failed: {e}")

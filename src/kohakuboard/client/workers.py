@@ -13,7 +13,9 @@ from pathlib import Path
 from queue import Empty
 from typing import Any
 
-from loguru import logger
+from kohakuboard.logger import get_logger
+
+logger = get_logger("WORKER")
 
 from kohakuboard.client.storage.histogram import HistogramStorage
 from kohakuboard.client.storage.lance import LanceMetricsStorage

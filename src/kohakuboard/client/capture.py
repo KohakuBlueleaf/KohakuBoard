@@ -5,7 +5,9 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from loguru import logger
+from kohakuboard.logger import get_logger
+
+logger = get_logger("CAPTURE")
 
 
 class OutputCapture:

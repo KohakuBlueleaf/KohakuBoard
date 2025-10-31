@@ -11,13 +11,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
-from loguru import logger
-
 from kohakuboard.client.capture import OutputCapture
 from kohakuboard.client.types import Media, Table, Histogram
 from kohakuboard.client.types.media import is_media
 from kohakuboard.client.writer import writer_process_main
 from kohakuboard.client.sync_worker import SyncWorker
+
+# Get logger for Board
+from kohakuboard.logger import get_logger
 
 
 class Board:
@@ -128,6 +129,22 @@ class Board:
         self.queue = manager.Queue(maxsize=50000)
         self.stop_event = mp.Event()
 
+        # Setup board logger FIRST (stdout + file)
+        self.logger = get_logger("BOARD")
+
+        # Add file handler to board logger (in addition to stdout)
+        # Note: loguru is global, so this adds a handler that ALL loggers will use
+        # But we filter it to only log BOARD messages to board.log
+        self._log_handler_id = self.logger._logger.add(
+            self.board_dir / "logs" / "board.log",
+            format="<cyan>{time:HH:mm:ss.SSS}</cyan> | <fg #FF00CD>{extra[api_name]: <8}</fg #FF00CD> | <level>{level: <8}</level> | {message}",
+            level="DEBUG",
+            rotation="10 MB",
+            retention="7 days",
+            colorize=True,
+            filter=lambda record: record["extra"].get("api_name") == "BOARD",
+        )
+
         # Start single writer process
         self.writer_process = mp.Process(
             target=writer_process_main,
@@ -149,16 +166,16 @@ class Board:
                     sync_interval=sync_interval,
                 )
                 self.sync_worker.start()
-                logger.info(
+                self.logger.info(
                     f"Sync worker started (remote: {remote_url}, "
                     f"project: {remote_project or 'local'}, "
                     f"interval: {sync_interval}s)"
                 )
             except Exception as e:
-                logger.warning(f"Failed to start sync worker: {e}")
+                self.logger.warning(f"Failed to start sync worker: {e}")
                 self.sync_worker = None
         elif sync_enabled:
-            logger.warning(
+            self.logger.warning(
                 "Sync enabled but missing remote_url or remote_token, "
                 "sync worker not started"
             )
@@ -178,8 +195,8 @@ class Board:
         atexit.register(self.finish)
         self._register_signal_handlers()
 
-        logger.info(f"Board created: {self.name} (ID: {self.board_id})")
-        logger.info(f"Board directory: {self.board_dir}")
+        self.logger.info(f"Board created: {self.name} (ID: {self.board_id})")
+        self.logger.info(f"Board directory: {self.board_dir}")
 
     def log(
         self,
@@ -541,7 +558,7 @@ class Board:
         try:
             queue_size = self.queue.qsize()
             if queue_size > 40000:
-                logger.warning(
+                self.logger.warning(
                     f"Queue size is {queue_size}/50000. Consider reducing logging frequency."
                 )
         except NotImplementedError:
@@ -605,16 +622,16 @@ class Board:
             return  # Already finished
 
         if self._is_finishing:
-            logger.debug("finish() already in progress, skipping re-entrant call")
+            self.logger.debug("finish() already in progress, skipping re-entrant call")
             return
 
         self._is_finishing = True
-        logger.info(f"Finishing board: {self.name}")
+        self.logger.info(f"Finishing board: {self.name}")
 
         # Check queue size
         try:
             queue_size = self.queue.qsize()
-            logger.info(f"Queue size: {queue_size} messages")
+            self.logger.info(f"Queue size: {queue_size} messages")
         except:
             queue_size = 0
 
@@ -624,12 +641,12 @@ class Board:
 
         # Stop sync worker (do this before stopping writer to ensure final sync)
         if self.sync_worker:
-            logger.info("Stopping sync worker...")
+            self.logger.info("Stopping sync worker...")
             self.sync_worker.stop(timeout=30)
 
         # Signal workers to stop
         self.stop_event.set()
-        logger.info("Stop event set, waiting for workers to drain queues...")
+        self.logger.info("Stop event set, waiting for workers to drain queues...")
 
         # Give workers a moment to start draining
         time.sleep(0.5)
@@ -644,39 +661,39 @@ class Board:
                 current_size = self.queue.qsize()
 
                 if current_size == 0:
-                    logger.info("Queue empty - waiting 1s for writer to finish...")
+                    self.logger.info("Queue empty - waiting 1s for writer to finish...")
                     time.sleep(1)
                     break
 
                 # Log progress
                 if current_size != last_size:
-                    logger.info(f"Queue: {current_size} remaining")
+                    self.logger.info(f"Queue: {current_size} remaining")
                     last_size = current_size
 
                 time.sleep(0.5)
             except KeyboardInterrupt:
-                logger.warning("Interrupted during drain - forcing shutdown")
+                self.logger.warning("Interrupted during drain - forcing shutdown")
                 break
             except:
                 break
 
         if time.time() - start_time >= max_wait_time:
-            logger.error(f"Timeout after {max_wait_time}s - KILLING writer")
+            self.logger.error(f"Timeout after {max_wait_time}s - KILLING writer")
             if self.writer_process.is_alive():
                 self.writer_process.kill()
-            logger.error("Writer killed, exiting")
+            self.logger.error("Writer killed, exiting")
             delattr(self, "writer_process")
             sys.exit(1)
 
         # Wait for writer to exit
-        logger.info("Waiting for writer process to exit...")
+        self.logger.info("Waiting for writer process to exit...")
         self.writer_process.join(timeout=2)
 
         if self.writer_process.is_alive():
-            logger.warning("Writer still alive after 2s, killing...")
+            self.logger.warning("Writer still alive after 2s, killing...")
             self.writer_process.kill()
 
-        logger.info(f"Board finished: {self.name}")
+        self.logger.info(f"Board finished: {self.name}")
 
         # Remove to prevent double-call
         delattr(self, "writer_process")
@@ -696,27 +713,27 @@ class Board:
             self._interrupt_count += 1
 
             if self._interrupt_count == 1:
-                logger.warning(f"Received {sig_name}, shutting down gracefully...")
-                logger.warning("Press Ctrl+C again within 3 seconds to FORCE EXIT")
+                self.logger.warning(f"Received {sig_name}, shutting down gracefully...")
+                self.logger.warning("Press Ctrl+C again within 3 seconds to FORCE EXIT")
                 try:
                     self.finish()
                 except Exception as e:
-                    logger.error(f"Error during graceful shutdown: {e}")
+                    self.logger.error(f"Error during graceful shutdown: {e}")
                 finally:
-                    logger.info("Shutdown complete")
+                    self.logger.info("Shutdown complete")
                     sys.exit(0)
             elif self._interrupt_count == 2:
-                logger.error(
+                self.logger.error(
                     "Second Ctrl+C - KILLING writer process (data will be lost!)"
                 )
                 if hasattr(self, "writer_process") and self.writer_process.is_alive():
                     self.writer_process.kill()
                     time.sleep(0.5)
-                logger.error("Force exit")
+                self.logger.error("Force exit")
                 sys.exit(1)
             else:
                 # Third+ interrupt - nuclear option
-                logger.error("THIRD Ctrl+C - IMMEDIATE EXIT")
+                self.logger.error("THIRD Ctrl+C - IMMEDIATE EXIT")
                 import os
 
                 os._exit(1)
@@ -730,12 +747,12 @@ class Board:
 
         def exception_handler(exc_type, exc_value, exc_traceback):
             """Handle uncaught exceptions"""
-            logger.error(f"Uncaught exception: {exc_type.__name__}: {exc_value}")
-            logger.error("Attempting graceful shutdown...")
+            self.logger.error(f"Uncaught exception: {exc_type.__name__}: {exc_value}")
+            self.logger.error("Attempting graceful shutdown...")
             try:
                 self.finish()
             except Exception as e:
-                logger.error(f"Error during exception cleanup: {e}")
+                self.logger.error(f"Error during exception cleanup: {e}")
             # Call original excepthook to print traceback
             original_excepthook(exc_type, exc_value, exc_traceback)
 

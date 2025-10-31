@@ -7,7 +7,9 @@ from typing import Any, Dict, List, Optional
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
-from loguru import logger
+from kohakuboard.logger import get_logger
+
+logger = get_logger("STORAGE")
 
 
 class ParquetStorage:

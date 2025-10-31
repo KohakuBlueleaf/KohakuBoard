@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any, List, Union
 
 import numpy as np
-from loguru import logger
+from kohakuboard.logger import get_logger
 
 from kohakuboard.client.utils.media_hash import generate_media_hash
 
@@ -33,6 +33,10 @@ class MediaHandler:
         """
         self.media_dir = media_dir
         self.media_dir.mkdir(parents=True, exist_ok=True)
+
+        # Setup file-only logger for media
+        log_file = media_dir.parent / "logs" / "media.log"
+        self.logger = get_logger("MEDIA", file_only=True, log_file=log_file)
 
     def process_media(
         self, media: Any, name: str, step: int, media_type: str = "image"
@@ -90,9 +94,9 @@ class MediaHandler:
         if not file_exists:
             with open(filepath, "wb") as f:
                 f.write(content_bytes)
-            logger.debug(f"Saved new {media_type}: {filename}")
+            self.logger.debug(f"Saved new {media_type}: {filename}")
         else:
-            logger.debug(f"Deduplicated {media_type}: {filename} (already exists)")
+            self.logger.debug(f"Deduplicated {media_type}: {filename} (already exists)")
 
         # Get file metadata
         file_size = filepath.stat().st_size
@@ -173,7 +177,7 @@ class MediaHandler:
             return content_bytes, "png"
 
         except Exception as e:
-            logger.error(f"Failed to prepare image: {e}")
+            self.logger.error(f"Failed to prepare image: {e}")
             raise
 
     def _prepare_video(self, video: Union[str, Path]) -> tuple[bytes, str]:

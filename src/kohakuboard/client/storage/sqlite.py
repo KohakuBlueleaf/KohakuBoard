@@ -9,7 +9,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from loguru import logger
+from kohakuboard.logger import get_logger
 
 
 class SQLiteMetadataStorage:
@@ -30,6 +30,10 @@ class SQLiteMetadataStorage:
         """
         self.base_dir = base_dir
         self.base_dir.mkdir(parents=True, exist_ok=True)
+
+        # Setup file-only logger for storage
+        log_file = base_dir.parent / "storage.log"
+        self.logger = get_logger("STORAGE", file_only=True, log_file=log_file)
 
         self.db_file = base_dir / "metadata.db"
 
@@ -135,7 +139,7 @@ class SQLiteMetadataStorage:
             self.step_buffer,
         )
         self.conn.commit()
-        logger.debug(f"Flushed {len(self.step_buffer)} step records to SQLite")
+        self.logger.debug(f"Flushed {len(self.step_buffer)} step records to SQLite")
         self.step_buffer.clear()
 
     def append_media(
@@ -179,7 +183,7 @@ class SQLiteMetadataStorage:
             if existing:
                 # Media already in DB, reuse existing ID
                 media_id = existing[0]
-                logger.debug(
+                self.logger.debug(
                     f"Reusing existing media ID {media_id} for {media_hash}.{format_ext}"
                 )
             else:
@@ -205,7 +209,7 @@ class SQLiteMetadataStorage:
                     ),
                 )
                 media_id = cursor.lastrowid
-                logger.debug(
+                self.logger.debug(
                     f"Inserted new media ID {media_id} for {media_hash}.{format_ext}"
                 )
 
@@ -259,7 +263,7 @@ class SQLiteMetadataStorage:
             self.table_buffer,
         )
         self.conn.commit()
-        logger.debug(f"Flushed {len(self.table_buffer)} table rows to SQLite")
+        self.logger.debug(f"Flushed {len(self.table_buffer)} table rows to SQLite")
         self.table_buffer.clear()
 
     def flush_all(self):
@@ -267,11 +271,11 @@ class SQLiteMetadataStorage:
         self._flush_steps()
         self._flush_media()
         self._flush_tables()
-        logger.debug("Flushed all SQLite buffers")
+        self.logger.debug("Flushed all SQLite buffers")
 
     def close(self):
         """Close database connection - flush first"""
         self.flush_all()
         if self.conn:
             self.conn.close()
-            logger.debug("SQLite metadata storage closed")
+            self.logger.debug("SQLite metadata storage closed")

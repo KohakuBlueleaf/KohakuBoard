@@ -23,7 +23,7 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 import pyarrow as pa
 from lance.dataset import write_dataset
-from loguru import logger
+from kohakuboard.logger import get_logger
 
 
 class HistogramStorage:
@@ -38,6 +38,10 @@ class HistogramStorage:
         """
         self.base_dir = base_dir
         self.base_dir.mkdir(parents=True, exist_ok=True)
+
+        # Setup file-only logger for storage
+        log_file = base_dir.parent / "storage.log"
+        self.logger = get_logger("STORAGE", file_only=True, log_file=log_file)
 
         self.histograms_dir = base_dir / "histograms"
         self.histograms_dir.mkdir(exist_ok=True)
@@ -208,11 +212,13 @@ class HistogramStorage:
                 buffer.clear()
 
             except Exception as e:
-                logger.error(f"Failed to flush {buffer_key}: {e}")
+                self.logger.error(f"Failed to flush {buffer_key}: {e}")
 
-        logger.debug(f"Flushed {total_entries} histograms to {total_files} Lance files")
+        self.logger.debug(
+            f"Flushed {total_entries} histograms to {total_files} Lance files"
+        )
 
     def close(self):
         """Close storage"""
         self.flush()
-        logger.debug("Histogram storage closed")
+        self.logger.debug("Histogram storage closed")

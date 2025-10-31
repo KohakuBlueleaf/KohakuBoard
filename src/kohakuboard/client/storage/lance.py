@@ -15,7 +15,7 @@ from typing import Any, Dict, List, Optional
 
 import pyarrow as pa
 from lance.dataset import write_dataset
-from loguru import logger
+from kohakuboard.logger import get_logger
 
 
 class LanceMetricsStorage:
@@ -42,6 +42,10 @@ class LanceMetricsStorage:
         """
         self.base_dir = base_dir
         self.base_dir.mkdir(parents=True, exist_ok=True)
+
+        # Setup file-only logger for storage
+        log_file = base_dir.parent / "storage.log"
+        self.logger = get_logger("STORAGE", file_only=True, log_file=log_file)
 
         self.metrics_dir = base_dir / "metrics"
         self.metrics_dir.mkdir(exist_ok=True)
@@ -142,7 +146,7 @@ class LanceMetricsStorage:
             else:
                 write_dataset(table, str(metric_file))
 
-            logger.debug(
+            self.logger.debug(
                 f"Flushed {len(self.buffers[metric_name])} rows to {metric_name}.lance"
             )
             self.buffers[metric_name].clear()
@@ -151,8 +155,7 @@ class LanceMetricsStorage:
             self.last_flush_time[metric_name] = time.time()
 
         except Exception as e:
-            logger.error(f"Failed to flush metric '{metric_name}' to Lance: {e}")
-            logger.exception(e)
+            self.logger.error(f"Failed to flush metric '{metric_name}' to Lance: {e}")
 
     def flush(self):
         """Flush all metric buffers"""
@@ -162,4 +165,4 @@ class LanceMetricsStorage:
     def close(self):
         """Close storage - flush all remaining buffers"""
         self.flush()
-        logger.debug("Lance metrics storage closed")
+        self.logger.debug("Lance metrics storage closed")

@@ -15,8 +15,6 @@ from pathlib import Path
 from queue import Empty
 from typing import Any
 
-from loguru import logger
-
 from kohakuboard.client.types.media_handler import MediaHandler
 from kohakuboard.client.storage.hybrid import HybridStorage
 from kohakuboard.client.storage.sqlite import SQLiteMetadataStorage
@@ -40,6 +38,7 @@ class LogWriter:
         self.queue = queue
         self.stop_event = stop_event
         self.backend = backend
+        self.logger = None  # Will be set by writer_process_main
 
         # Initialize storage backend based on selection (v0.2.0+: sqlite or hybrid only)
         if backend == "hybrid":
@@ -64,7 +63,7 @@ class LogWriter:
 
     def run(self):
         """Main loop - adaptive batching with exponential backoff"""
-        logger.info(f"LogWriter started for {self.board_dir}")
+        self.logger.info(f"LogWriter started for {self.board_dir}")
 
         # Adaptive sleep parameters
         min_period = 0.01  # 10ms minimum sleep
@@ -92,7 +91,7 @@ class LogWriter:
                     if batch_count > 0:
                         self.storage.flush_all()
                         batch_time = time.time() - batch_start
-                        logger.debug(
+                        self.logger.debug(
                             f"Processed and flushed {batch_count} messages in {batch_time*1000:.1f}ms"
                         )
                         self.last_flush_time = time.time()
@@ -117,22 +116,22 @@ class LogWriter:
 
                 except KeyboardInterrupt:
                     # Received interrupt in worker - DRAIN QUEUE FIRST
-                    logger.warning(
+                    self.logger.warning(
                         "Writer received interrupt, draining queue before stopping..."
                     )
                     # Continue processing until stop_event is set by main process
 
                 except Exception as e:
-                    logger.error(f"Error processing message: {e}")
+                    self.logger.error(f"Error processing message: {e}")
 
             # Stop event is set - drain remaining queue
-            logger.info("Stop event detected, draining remaining queue...")
+            self.logger.info("Stop event detected, draining remaining queue...")
             self._final_flush()
 
         except KeyboardInterrupt:
-            logger.warning("Writer interrupted during shutdown, forcing exit...")
+            self.logger.warning("Writer interrupted during shutdown, forcing exit...")
         except Exception as e:
-            logger.error(f"Fatal error in LogWriter: {e}")
+            self.logger.error(f"Fatal error in LogWriter: {e}")
             raise
 
     def _process_message(self, message: dict):
@@ -156,7 +155,7 @@ class LogWriter:
         elif msg_type == "flush":
             self._handle_flush()
         else:
-            logger.warning(f"Unknown message type: {msg_type}")
+            self.logger.warning(f"Unknown message type: {msg_type}")
 
     def _handle_scalar(self, message: dict):
         """Handle scalar metric logging"""
@@ -187,10 +186,12 @@ class LogWriter:
                 step, global_step, name, [media_meta], caption
             )
 
-            logger.debug(f"Logged media '{name}' at step {step} (ID: {media_ids[0]})")
+            self.logger.debug(
+                f"Logged media '{name}' at step {step} (ID: {media_ids[0]})"
+            )
 
         except Exception as e:
-            logger.error(f"Error handling media '{name}': {e}")
+            self.logger.error(f"Error handling media '{name}': {e}")
             raise
 
     def _handle_table(self, message: dict):
@@ -230,12 +231,12 @@ class LogWriter:
                             int(col_idx)
                         ] = f"<media id={media_id}>"
 
-                        logger.debug(
+                        self.logger.debug(
                             f"Logged table media at ({row_idx},{col_idx}), ID: {media_id}"
                         )
 
                     except Exception as e:
-                        logger.error(
+                        self.logger.error(
                             f"Error processing table media at ({row_idx},{col_idx}): {e}"
                         )
                         # Replace with error marker
@@ -244,9 +245,9 @@ class LogWriter:
         # Store table with media ID references
         try:
             self.storage.append_table(step, global_step, name, table_data)
-            logger.debug(f"Logged table '{name}' at step {step}")
+            self.logger.debug(f"Logged table '{name}' at step {step}")
         except Exception as e:
-            logger.error(f"Error storing table: {e}")
+            self.logger.error(f"Error storing table: {e}")
             raise
 
     def _handle_histogram(self, message: dict):
@@ -375,13 +376,13 @@ class LogWriter:
         """Handle explicit flush request"""
         self.storage.flush_all()
         self.last_flush_time = time.time()
-        logger.debug("Explicit flush completed")
+        self.logger.debug("Explicit flush completed")
 
     def _auto_flush(self):
         """Periodic auto-flush"""
         self.storage.flush_all()
         self.last_flush_time = time.time()
-        logger.debug(
+        self.logger.debug(
             f"Auto-flush completed ({self.messages_processed} messages processed)"
         )
 
@@ -400,7 +401,7 @@ class LogWriter:
 
                     # Log progress every 1000 messages
                     if remaining - last_log_count >= 1000:
-                        logger.info(
+                        self.logger.info(
                             f"Final drain progress: {remaining} messages processed..."
                         )
                         last_log_count = remaining
@@ -408,32 +409,34 @@ class LogWriter:
                 except Empty:
                     break
                 except KeyboardInterrupt:
-                    logger.warning(
+                    self.logger.warning(
                         f"Final drain interrupted after {remaining} messages!"
                     )
-                    logger.warning("Press Ctrl+C again in main process for force exit")
+                    self.logger.warning(
+                        "Press Ctrl+C again in main process for force exit"
+                    )
                     # Don't break - let main process handle force exit
                 except Exception as e:
-                    logger.error(
+                    self.logger.error(
                         f"Error during final drain at message {remaining}: {e}"
                     )
                     # Continue processing other messages
 
             # Flush all buffers
-            logger.info(f"Flushing all buffers ({remaining} messages drained)...")
+            self.logger.info(f"Flushing all buffers ({remaining} messages drained)...")
             self.storage.flush_all()
 
             # Close storage backend if it has a close method
             if hasattr(self.storage, "close"):
                 self.storage.close()
 
-            logger.info(
+            self.logger.info(
                 f"LogWriter stopped. Processed {self.messages_processed} total messages "
                 f"({remaining} from final queue drain)"
             )
 
         except Exception as e:
-            logger.error(f"Error during final flush: {e}")
+            self.logger.error(f"Error during final flush: {e}")
 
 
 def writer_process_main(
@@ -447,16 +450,13 @@ def writer_process_main(
         stop_event: Stop event (mp.Event)
         backend: Storage backend ("duckdb" or "parquet")
     """
-    # Configure logger for this process
-    logger.remove()  # Remove default handler
-    logger.add(
-        board_dir / "logs" / "writer.log",
-        rotation="10 MB",
-        retention="7 days",
-        level="DEBUG",
-    )
-    logger.add(lambda msg: None)  # Suppress console output in writer process
+    # Configure logger for this process (file only, no stdout)
+    from kohakuboard.logger import get_logger
+
+    log_file = board_dir / "logs" / "writer.log"
+    logger = get_logger("WRITER", file_only=True, log_file=log_file)
 
     # Create and run writer
     writer = LogWriter(board_dir, queue, stop_event, backend)
+    writer.logger = logger
     writer.run()

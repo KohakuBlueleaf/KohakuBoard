@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from loguru import logger
+from kohakuboard.logger import get_logger
 
 from kohakuboard.client.storage.histogram import HistogramStorage
 from kohakuboard.client.storage.lance import LanceMetricsStorage
@@ -43,12 +43,16 @@ class HybridStorage:
         self.base_dir = base_dir
         self.base_dir.mkdir(parents=True, exist_ok=True)
 
+        # Setup file-only logger for storage
+        log_file = base_dir.parent / "storage.log"
+        self.logger = get_logger("STORAGE", file_only=True, log_file=log_file)
+
         # Initialize sub-storages
         self.metrics_storage = LanceMetricsStorage(base_dir)
         self.metadata_storage = SQLiteMetadataStorage(base_dir)
         self.histogram_storage = HistogramStorage(base_dir, num_bins=64)
 
-        logger.debug("Hybrid storage initialized (Lance + SQLite + Histograms)")
+        self.logger.debug("Hybrid storage initialized (Lance + SQLite + Histograms)")
 
     def append_metrics(
         self,
@@ -190,11 +194,11 @@ class HybridStorage:
         self.flush_media()
         self.flush_tables()
         self.flush_histograms()
-        logger.info("Flushed all buffers (hybrid storage)")
+        self.logger.info("Flushed all buffers (hybrid storage)")
 
     def close(self):
         """Close all storage backends"""
         self.metrics_storage.close()
         self.metadata_storage.close()
         self.histogram_storage.close()
-        logger.debug("Hybrid storage closed")
+        self.logger.debug("Hybrid storage closed")
