@@ -128,8 +128,22 @@ def open(folder, port, host, reload, browser):
     is_flag=True,
     help="Open browser automatically",
 )
+@click.option(
+    "--no-auth",
+    is_flag=True,
+    help="Disable authentication (for testing only, NOT for production)",
+)
 def serve(
-    host, port, data_dir, db, db_backend, reload, workers, session_secret, browser
+    host,
+    port,
+    data_dir,
+    db,
+    db_backend,
+    reload,
+    workers,
+    session_secret,
+    browser,
+    no_auth,
 ):
     """Start KohakuBoard server in remote mode with authentication
 
@@ -157,12 +171,13 @@ def serve(
 
     # Set environment for remote mode
     os.environ["KOHAKU_BOARD_MODE"] = "remote"
-    os.environ["KOHAKU_BOARD_BOARD_DATA_DIR"] = str(data_dir_path)
+    os.environ["KOHAKU_BOARD_DATA_DIR"] = str(data_dir_path)
     os.environ["KOHAKU_BOARD_PORT"] = str(port)
     os.environ["KOHAKU_BOARD_HOST"] = host
     os.environ["KOHAKU_BOARD_DB_BACKEND"] = db_backend
     os.environ["KOHAKU_BOARD_DATABASE_URL"] = db
     os.environ["KOHAKU_BOARD_BASE_URL"] = f"http://localhost:{port}"
+    os.environ["KOHAKU_BOARD_NO_AUTH"] = "true" if no_auth else "false"
 
     # Session secret (required for production)
     if session_secret:
@@ -182,7 +197,11 @@ def serve(
     click.echo(f"📁 Data directory: {data_dir_path}")
     click.echo(f"💾 Database: {db}")
     click.echo(f"🌐 Server URL: http://localhost:{port}")
-    click.echo(f"👥 Authentication: Enabled")
+    if no_auth:
+        click.echo(f"👥 Authentication: DISABLED (test mode)")
+        click.echo(f"⚠️  WARNING: No-auth mode is for TESTING ONLY!")
+    else:
+        click.echo(f"👥 Authentication: Enabled")
     if reload:
         click.echo(f"🔄 Auto-reload: Enabled (development)")
     if workers > 1:

@@ -100,6 +100,8 @@ class TeeStream:
                     self.current_line = ""
                 else:
                     self.stream2.write("\n")
+                # Flush immediately after each line for real-time sync
+                self.stream2.flush()
             else:
                 # Regular character - add to current line
                 self.current_line += char

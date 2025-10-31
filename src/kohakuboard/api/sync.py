@@ -302,52 +302,101 @@ async def sync_logs_incremental(
     try:
         storage = HybridStorage(board_dir / "data")
 
-        # Write steps
-        for step_data in request.steps:
-            storage.write_step(
-                step=step_data.step,
-                global_step=step_data.global_step,
-                timestamp=step_data.timestamp,
-            )
-
-        # Write scalars (to Lance)
+        # Group scalars by step for batch writing
+        scalars_by_step = {}
         for metric_name, points in request.scalars.items():
             for point in points:
-                storage.write_metric(
-                    step=point.step,
-                    metric=metric_name,
-                    value=point.value,
+                if point.step not in scalars_by_step:
+                    scalars_by_step[point.step] = {
+                        "global_step": None,
+                        "timestamp_ms": None,
+                        "metrics": {},
+                    }
+                scalars_by_step[point.step]["metrics"][metric_name] = point.value
+
+        # Merge step info from request.steps into scalars_by_step
+        for step_data in request.steps:
+            if step_data.step in scalars_by_step:
+                scalars_by_step[step_data.step]["global_step"] = step_data.global_step
+                scalars_by_step[step_data.step]["timestamp_ms"] = step_data.timestamp
+            else:
+                # Step with no scalars, still need to record it
+                scalars_by_step[step_data.step] = {
+                    "global_step": step_data.global_step,
+                    "timestamp_ms": step_data.timestamp,
+                    "metrics": {},
+                }
+
+        # Write scalars with step info
+        for step, data in scalars_by_step.items():
+            # Convert timestamp_ms to datetime for append_metrics
+            if data["timestamp_ms"]:
+                from datetime import datetime, timezone
+
+                timestamp_obj = datetime.fromtimestamp(
+                    data["timestamp_ms"] / 1000.0, tz=timezone.utc
+                )
+            else:
+                timestamp_obj = datetime.now(timezone.utc)
+
+            # Only call append_metrics if there are actual metrics
+            if data["metrics"]:
+                storage.append_metrics(
+                    step=step,
+                    global_step=data["global_step"],
+                    metrics=data["metrics"],
+                    timestamp=timestamp_obj,
+                )
+            else:
+                # Just record step info without metrics
+                timestamp_ms = (
+                    data["timestamp_ms"]
+                    if data["timestamp_ms"]
+                    else int(timestamp_obj.timestamp() * 1000)
+                )
+                storage.metadata_storage.append_step_info(
+                    step=step,
+                    global_step=data["global_step"],
+                    timestamp=timestamp_ms,
                 )
 
-        # Write media metadata (to SQLite)
+        # Write media metadata (convert to media_list format expected by SQLite)
         for media_data in request.media:
-            storage.write_media_metadata(
-                media_hash=media_data.media_hash,
-                format=media_data.format,
+            media_list = [
+                {
+                    "media_hash": media_data.media_hash,
+                    "format": media_data.format,
+                    "type": media_data.type,
+                    "size_bytes": media_data.size_bytes or 0,
+                    "width": media_data.width,
+                    "height": media_data.height,
+                }
+            ]
+            storage.append_media(
                 step=media_data.step,
                 global_step=media_data.global_step,
                 name=media_data.name,
+                media_list=media_list,
                 caption=media_data.caption,
-                media_type=media_data.type,
-                size_bytes=media_data.size_bytes,
-                width=media_data.width,
-                height=media_data.height,
             )
 
-        # Write tables (to SQLite)
+        # Write tables
         for table_data in request.tables:
-            storage.write_table(
+            table_dict = {
+                "columns": table_data.columns,
+                "column_types": table_data.column_types,
+                "rows": table_data.rows,
+            }
+            storage.append_table(
                 step=table_data.step,
                 global_step=table_data.global_step,
                 name=table_data.name,
-                columns=table_data.columns,
-                column_types=table_data.column_types,
-                rows=table_data.rows,
+                table_data=table_dict,
             )
 
-        # Write histograms (to Lance)
+        # Write histograms
         for hist_data in request.histograms:
-            storage.write_histogram(
+            storage.append_histogram(
                 step=hist_data.step,
                 global_step=hist_data.global_step,
                 name=hist_data.name,
@@ -356,8 +405,33 @@ async def sync_logs_incremental(
                 precision=hist_data.precision,
             )
 
-        # Flush to disk
-        storage.flush()
+        # Flush all buffers to disk
+        storage.flush_all()
+
+        # Save metadata.json if provided
+        if request.metadata:
+            metadata_path = board_dir / "metadata.json"
+            async with aiofiles.open(metadata_path, "w") as f:
+                await f.write(json.dumps(request.metadata, indent=2))
+            logger_api.debug(f"Saved metadata.json to {metadata_path}")
+
+            # Update board name from metadata if available
+            if "name" in request.metadata:
+                board.name = request.metadata["name"]
+            if "config" in request.metadata:
+                board.config = json.dumps(request.metadata["config"])
+
+        # Append log lines if provided
+        if request.log_lines:
+            log_dir = board_dir / "logs"
+            log_dir.mkdir(exist_ok=True)
+            log_file = log_dir / "output.log"
+            async with aiofiles.open(log_file, "a") as f:
+                for line in request.log_lines:
+                    await f.write(line + "\n")
+            logger_api.debug(
+                f"Appended {len(request.log_lines)} log lines to {log_file}"
+            )
 
         # Check which media files we don't have
         media_dir = board_dir / "media"

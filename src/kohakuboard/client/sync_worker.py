@@ -198,6 +198,17 @@ class SyncWorker:
             # Update state
             self.state["last_synced_step"] = latest_step
             self.state["last_sync_at"] = datetime.now(timezone.utc).isoformat()
+
+            # Mark metadata as synced if it was included
+            if payload.get("metadata"):
+                self.state["metadata_synced"] = True
+
+            # Update last synced log line
+            if payload.get("log_lines"):
+                self.state["last_synced_log_line"] = self.state.get(
+                    "last_synced_log_line", 0
+                ) + len(payload["log_lines"])
+
             self._save_state()
 
             logger.info(f"Sync completed successfully (step: {latest_step})")
@@ -247,6 +258,13 @@ class SyncWorker:
 
         # Collect histograms from Lance
         payload["histograms"] = self._collect_histograms(start_step, end_step)
+
+        # Collect metadata (only on first sync)
+        if not self.state.get("metadata_synced", False):
+            payload["metadata"] = self._collect_metadata()
+
+        # Collect new log lines
+        payload["log_lines"] = self._collect_log_lines()
 
         return payload
 
@@ -438,6 +456,56 @@ class SyncWorker:
 
         return histograms
 
+    def _collect_metadata(self) -> Optional[Dict[str, Any]]:
+        """Collect metadata.json
+
+        Returns:
+            Metadata dict or None if file doesn't exist
+        """
+        metadata_file = self.board_dir / "metadata.json"
+        if not metadata_file.exists():
+            logger.debug("metadata.json not found")
+            return None
+
+        try:
+            with open(metadata_file, "r") as f:
+                metadata = json.load(f)
+            logger.debug("Collected metadata.json")
+            return metadata
+        except Exception as e:
+            logger.error(f"Failed to read metadata.json: {e}")
+            return None
+
+    def _collect_log_lines(self) -> List[str]:
+        """Collect new log lines from output.log
+
+        Returns:
+            List of new log lines (since last sync)
+        """
+        log_file = self.board_dir / "logs" / "output.log"
+        if not log_file.exists():
+            return []
+
+        last_synced_line = self.state.get("last_synced_log_line", 0)
+
+        try:
+            with open(log_file, "r") as f:
+                all_lines = f.readlines()
+
+            # Get new lines (strip newlines since we add them back on server)
+            new_lines = [line.rstrip("\n") for line in all_lines[last_synced_line:]]
+
+            if new_lines:
+                logger.debug(
+                    f"Collected {len(new_lines)} new log lines "
+                    f"(from line {last_synced_line} to {last_synced_line + len(new_lines)})"
+                )
+
+            return new_lines
+        except Exception as e:
+            logger.error(f"Failed to read output.log: {e}")
+            return []
+
     def _sync_logs(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """Send log data to remote server
 
@@ -505,10 +573,14 @@ class SyncWorker:
                     ("files", (media_file.name, handle, "application/octet-stream"))
                 )
 
-            # Upload
-            response = self.session.post(
+            # Upload with custom headers (remove JSON Content-Type for multipart)
+            headers = {"Authorization": self.session.headers.get("Authorization")}
+            # Don't include Content-Type - let requests set it for multipart/form-data
+
+            response = requests.post(
                 url,
                 files=files,
+                headers=headers,
                 timeout=300,
             )
 
@@ -594,6 +666,8 @@ class SyncWorker:
         if not self.state_file.exists():
             return {
                 "last_synced_step": -1,
+                "last_synced_log_line": 0,
+                "metadata_synced": False,
                 "last_sync_at": None,
                 "remote_url": self.remote_url,
                 "project": self.project,
@@ -602,11 +676,17 @@ class SyncWorker:
 
         try:
             with open(self.state_file, "r") as f:
-                return json.load(f)
+                state = json.load(f)
+                # Add new fields if missing (for backward compatibility)
+                state.setdefault("last_synced_log_line", 0)
+                state.setdefault("metadata_synced", False)
+                return state
         except Exception as e:
             logger.warning(f"Failed to load sync state: {e}, using defaults")
             return {
                 "last_synced_step": -1,
+                "last_synced_log_line": 0,
+                "metadata_synced": False,
                 "last_sync_at": None,
                 "remote_url": self.remote_url,
                 "project": self.project,

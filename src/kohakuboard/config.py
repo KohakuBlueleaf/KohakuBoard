@@ -17,6 +17,7 @@ class AppConfig(BaseModel):
     mode: str = "local"  # "local" or "remote"
     db_backend: str = "sqlite"  # "sqlite" or "postgres"
     database_url: str = "sqlite:///kohakuboard.db"
+    no_auth: bool = False  # Disable authentication (for testing only)
 
 
 class MockDataConfig(BaseModel):
@@ -87,6 +88,7 @@ class Config(BaseModel):
                 database_url=os.getenv(
                     "KOHAKU_BOARD_DATABASE_URL", "sqlite:///kohakuboard.db"
                 ),
+                no_auth=os.getenv("KOHAKU_BOARD_NO_AUTH", "false").lower() == "true",
             ),
             mock=MockDataConfig(
                 default_steps=int(os.getenv("KOHAKU_BOARD_DEFAULT_STEPS", "1000")),

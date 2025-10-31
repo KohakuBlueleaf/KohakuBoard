@@ -89,6 +89,12 @@ class LogSyncRequest(BaseModel):
     histograms: List[HistogramData] = Field(
         default_factory=list, description="Histogram entries"
     )
+    metadata: Optional[Dict[str, Any]] = Field(
+        None, description="Board metadata (name, config, etc.)"
+    )
+    log_lines: Optional[List[str]] = Field(
+        None, description="New log lines from output.log"
+    )
 
 
 class LogSyncResponse(BaseModel):

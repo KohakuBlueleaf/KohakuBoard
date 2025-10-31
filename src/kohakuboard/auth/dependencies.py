@@ -18,6 +18,7 @@ def get_current_user(
 
     In LOCAL MODE: Always raises HTTPException (no auth in local mode)
     In REMOTE MODE: Checks session/token against database
+    In REMOTE MODE with no_auth=True: Returns a test user without authentication
 
     Args:
         session_id: Session cookie
@@ -33,6 +34,26 @@ def get_current_user(
     if cfg.app.mode == "local":
         logger_api.debug("Local mode: authentication not available")
         raise HTTPException(401, detail="Authentication not available in local mode")
+
+    # Remote mode with no_auth: return test user
+    if cfg.app.no_auth:
+        logger_api.debug("No-auth mode: using test user")
+        # Get or create test user
+        test_user = User.get_or_none(User.username == "test")
+        if not test_user:
+            from kohakuboard.auth.utils import hash_password
+            from kohakuboard.utils.names import normalize_name
+
+            test_user = User.create(
+                username="test",
+                normalized_name=normalize_name("test"),
+                email="test@example.com",
+                password_hash=hash_password("test"),
+                is_active=True,
+                email_verified=True,
+            )
+            logger_api.info("Created test user for no-auth mode")
+        return test_user
 
     session_id = str(session_id) if session_id is not None else None
     authorization = str(authorization) if authorization is not None else None
