@@ -299,35 +299,62 @@ media/
 
 ---
 
-### Future: LMDB for Row-Oriented Logs
+### KohakuVault for Media Storage (v0.3.0+)
 
-**Under Consideration:** Add LMDB for row-oriented large data logging
+**Implemented:** High-performance SQLite KV store for media binary blobs using [KohakuVault](https://github.com/KohakuBlueleaf/KohakuVault)
 
 ```mermaid
 graph LR
-    A[Future Hybrid] --> B[Lance<br/>Column-oriented]
+    A[Hybrid Storage] --> B[Lance<br/>Column-oriented]
     A --> C[SQLite<br/>Metadata]
-    A --> D[LMDB<br/>Row logs]
+    A --> D[KohakuVault<br/>Media blobs]
 
     B --> B1[Metrics<br/>Histograms]
     C --> C1[Media refs<br/>Tables<br/>Step info]
-    D --> D1[Event logs<br/>Large JSON<br/>Time-series]
+    D --> D1[Images<br/>Videos<br/>Audio]
 
 ```
 
-**Use Case:**
-- Large JSON logs per step (not supported well by current system)
-- Event-based logging (not metric time-series)
-- High-frequency row inserts with fast random access
+**Design Decisions:**
 
-**Benefits of LMDB:**
-- Zero-copy reads (memory-mapped)
-- ACID transactions
-- High write throughput
-- No server process needed
-- Excellent for key-value stores
+**Why KohakuVault instead of filesystem:**
+- Eliminates filesystem overhead (no inode limits, directory traversal)
+- Single database file instead of thousands of individual files
+- ACID transactions with automatic deduplication
+- Easy to symlink/relocate media folder for deployment
+- No size limits (dynamic growth)
 
-**Status:** Under consideration, not yet implemented
+**KohakuVault Features:**
+- **Rust backend:** High-performance native implementation
+- **Streaming operations:** Memory-efficient for multi-GB files
+- **Write-back caching:** Batches writes for optimal disk I/O
+- **Dict-like API:** Simple `vault[key] = data` interface
+- **Zero dependencies:** Self-contained SQLite database
+
+**Usage Example:**
+```python
+from kohakuvault import KVault
+
+vault = KVault("media.db")
+
+# Store media
+vault["a1b2c3...xyz.png"] = image_bytes
+
+# Retrieve media
+data = vault.get("a1b2c3...xyz.png")
+
+# Check existence
+if "key" in vault:
+    ...
+```
+
+**Implementation:**
+- **Library:** [KohakuVault](https://github.com/KohakuBlueleaf/KohakuVault) (Rust + Python bindings)
+- **File Location:** `{board_dir}/media/blobs.db`
+- **Key Format:** `{media_hash}.{format}` (e.g., `a1b2c3d4e5f6g7h8i9j0k1.png`)
+- **Benefits:** All WAL files in media/ folder for easy deployment
+
+**Status:** ✅ Implemented in v0.3.0
 
 ---
 
