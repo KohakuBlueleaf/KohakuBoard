@@ -1,21 +1,41 @@
-# KohakuBoard - High-Performance ML Experiment Tracking
+# KohakuBoard
+
+High-performance ML experiment tracking with **zero training overhead**.
+
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/KohakuBlueleaf/KohakuBoard)
 
 > **Part of [KohakuHub](https://github.com/KohakuBlueleaf/KohakuHub)** - Self-hosted AI Infrastructure
 
 ---
 
-[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/KohakuBlueleaf/KohakuBoard)
+## Quick Start
 
-**🚀 Production Ready - Non-Blocking Experiment Tracking**
+```bash
+pip install -e .
+```
 
-Local-first ML experiment tracking system with **zero training overhead**. Track experiments locally without a server, or deploy for team collaboration.
+```python
+from kohakuboard.client import Board
 
-> **Status:** Core features are complete and functional. Ready for production use. Remote server mode is under active development.
+# Create board
+board = Board(name="my-experiment", config={"lr": 0.001, "batch_size": 32})
 
+# Training loop
+for epoch in range(10):
+    for data, target in train_loader:
+        loss = train_step(data, target)
+
+        board.step()  # Once per optimizer step
+        board.log(loss=loss.item())  # Non-blocking, <0.1ms
+
+# log will be saved under ./kohakuboard with sqlite/lance format
+```
+
+
+---
 
 |![1761752427584](image/README/1761752427584.png)|![1761752450957](image/README/1761752450957.png)|
 |-|-|
-
 
 **Join our community:** https://discord.gg/xWYrkyvJ2s
 
@@ -45,7 +65,7 @@ Training Script          Background Process
      │                          │
      ├─ board.log(loss=0.5)     │
      │  └─> Queue.put()         │
-     │      (<0.1s return!)     │
+     │      (<0.1ms return!)    │
      │                          ├─ Queue.get()
      ├─ Continue training...    ├─ Batch write
      │                          └─ Flush to disk
@@ -137,28 +157,27 @@ pip install -e .
 ### Basic Usage
 
 ```python
-from kobo.client import Board
+from kohakuboard.client import Board
 
-# Create board (auto-finishes on exit)
-board = Board(
-    name="my-experiment",
-    config={"lr": 0.001, "batch_size": 32}
-)
+# Create board - automatically saves on program exit
+board = Board(name="my-experiment", config={"lr": 0.001, "batch_size": 32})
 
 # Training loop
 for epoch in range(10):
-    board.step()  # Increment global_step
-
     for batch_idx, (data, target) in enumerate(train_loader):
         loss = train_step(data, target)
 
-        # Log metrics (non-blocking, <0.1ms)
-        board.log(
-            loss=loss.item(),
-            lr=optimizer.param_groups[0]['lr']
-        )
+        # Increment step once per optimizer step (not per epoch!)
+        board.step()
 
-# Auto-saves on exit via atexit hook
+        # Log metrics (non-blocking, returns in <0.1ms)
+        board.log(loss=loss.item(), lr=optimizer.param_groups[0]['lr'])
+
+    # Log validation at end of epoch
+    val_loss = validate(model, val_loader)
+    board.log(**{"val/loss": val_loss})
+
+# That's it! No .finish() needed - auto-cleanup via atexit
 ```
 
 ### View Results
@@ -177,55 +196,34 @@ kobo serve --port 48889
 ## Complete Example
 
 ```python
-from kobo.client import Board, Histogram, Table, Media
+from kohakuboard.client import Board, Histogram, Table, Media
 import torch
-from torch import nn, optim
 
-# Initialize board with config
+# Create board with hyperparameters
 board = Board(
     name="cifar10-resnet18",
-    config={
-        "lr": 0.001,
-        "batch_size": 128,
-        "epochs": 100,
-        "optimizer": "AdamW"
-    }
+    config={"lr": 0.001, "batch_size": 128, "epochs": 100, "optimizer": "AdamW"}
 )
 
 # Training loop
 for epoch in range(100):
-    board.step()  # Increment global_step for epoch
-
-    # Training phase
     model.train()
-    for batch_idx, (data, target) in enumerate(train_loader):
+    for data, target in train_loader:
         optimizer.zero_grad()
         output = model(data)
         loss = criterion(output, target)
         loss.backward()
         optimizer.step()
 
-        # Log training metrics (non-blocking!)
-        board.log(**{
-            "train/loss": loss.item(),
-            "train/lr": optimizer.param_groups[0]['lr']
-        })
+        # Step once per optimizer step
+        board.step()
 
-    # Log histograms every epoch (not every batch!)
-    if epoch % 1 == 0:
-        # Unified API - all histograms at same step
-        hist_data = {}
-        for name, param in model.named_parameters():
-            if param.grad is not None:
-                # Precompute for efficiency (optional)
-                hist_data[f"gradients/{name}"] = Histogram(param.grad).compute_bins()
-        board.log(**hist_data)
+        # Log scalars (non-blocking, <0.1ms)
+        board.log(loss=loss.item(), lr=optimizer.param_groups[0]['lr'])
 
-    # Validation phase
+    # Validation
     model.eval()
-    val_loss = 0
-    correct = 0
-    predictions_table = []
+    val_loss, correct, predictions_table = 0, 0, []
 
     with torch.no_grad():
         for batch_idx, (data, target) in enumerate(val_loader):
@@ -234,7 +232,7 @@ for epoch in range(100):
             pred = output.argmax(dim=1)
             correct += (pred == target).sum().item()
 
-            # Collect sample predictions (first batch only)
+            # Sample predictions for table (first batch only)
             if batch_idx == 0:
                 for i in range(min(8, len(data))):
                     predictions_table.append({
@@ -244,14 +242,16 @@ for epoch in range(100):
                         "correct": "✓" if pred[i] == target[i] else "✗"
                     })
 
-    # Log validation results (scalars + table together!)
+    # Log validation (scalars + table + histograms - all at same step!)
+    hist_data = {f"grad/{n}": Histogram(p.grad) for n, p in model.named_parameters() if p.grad is not None}
     board.log(**{
         "val/loss": val_loss / len(val_loader),
         "val/accuracy": correct / len(val_loader.dataset),
-        "val/predictions": Table(predictions_table)
+        "val/predictions": Table(predictions_table),
+        **hist_data
     })
 
-# Auto-cleanup on exit (atexit hook)
+# No .finish() needed - automatic cleanup when script exits
 ```
 
 ---
@@ -704,6 +704,7 @@ KohakuBoard is part of the KohakuHub ecosystem. We welcome contributions!
 
 ## Acknowledgments
 
+- [KohakuVault](https://github.com/KohakuBlueleaf/KohakuVault) - High-performance SQLite KV store for media blobs
 - [Lance](https://lancedb.github.io/lance/) - Columnar storage for metrics
 - [DuckDB](https://duckdb.org/) - Alternative storage backend
 - [Plotly.js](https://plotly.com/javascript/) - WebGL charts
