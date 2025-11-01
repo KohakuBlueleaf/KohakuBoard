@@ -655,9 +655,24 @@ See `examples/` directory:
 
 ## License
 
-**Commercial Licensing:** For commercial exemption licenses, contact kohaku@kblueleaf.net
+KohakuBoard is a multi-component project with different licenses:
 
-See [LICENSE](./LICENSE) for full terms.
+- **Client Library** (`kohakuboard`): [Apache License 2.0](src/kohakuboard/LICENSE)
+  - Free for commercial and non-commercial use
+  - Permissive license with minimal requirements
+
+- **Web UI** (`kohaku-board-ui`): [AGPL-3.0](src/kohaku-board-ui/LICENSE)
+  - Free to use and modify
+  - Source code disclosure required for network services
+
+- **Server** (`kohakuboard_server`): [Kohaku Software License 1.0](src/kohakuboard_server/LICENSE)
+  - Free for non-commercial use
+  - Free for commercial use under revenue/duration limits
+  - Commercial licenses available for larger deployments
+
+**Commercial Licensing:** For commercial licenses or exemptions, contact kohaku@kblueleaf.net
+
+See [LICENSE](./LICENSE) for complete details.
 
 ---
 
