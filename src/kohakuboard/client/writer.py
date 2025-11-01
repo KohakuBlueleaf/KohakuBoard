@@ -73,8 +73,8 @@ class LogWriter:
         self.logger.info(f"LogWriter started for {self.board_dir}")
 
         # Adaptive sleep parameters
-        min_period = 0.01  # 10ms minimum sleep
-        max_period = 1.0  # 1s maximum sleep
+        min_period = 0.5  # 0.5s minimum sleep
+        max_period = 5.0  # 5s maximum sleep
         consecutive_empty = 0  # Track consecutive empty queue reads
 
         try:
@@ -109,17 +109,15 @@ class LogWriter:
                         # Queue empty - increase backoff
                         consecutive_empty += 1
 
-                        # Adaptive sleep: min_period * 2^k, capped at max_period
-                        sleep_time = min(
-                            min_period * (2**consecutive_empty), max_period
-                        )
+                    # Adaptive sleep: min_period * 2^k, capped at max_period
+                    sleep_time = min(min_period * (2**consecutive_empty), max_period)
 
-                        # Sleep in small chunks to allow responsive shutdown
-                        # Instead of sleep(1.0), sleep(0.1) × 10 times and check stop_event
-                        slept = 0.0
-                        while slept < sleep_time and not self.stop_event.is_set():
-                            time.sleep(0.05)  # Sleep in 50ms chunks
-                            slept += 0.05
+                    # Sleep in small chunks to allow responsive shutdown
+                    # Instead of sleep(1.0), sleep(0.1) × 10 times and check stop_event
+                    slept = 0.0
+                    while slept < sleep_time and not self.stop_event.is_set():
+                        time.sleep(0.05)  # Sleep in 50ms chunks
+                        slept += 0.05
 
                 except KeyboardInterrupt:
                     # Received interrupt in worker - DRAIN QUEUE FIRST
