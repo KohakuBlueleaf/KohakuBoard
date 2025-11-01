@@ -15,7 +15,7 @@ import numpy as np
 from lance.dataset import LanceDataset
 
 from kohakuboard.logger import get_logger
-from kohakuboard.client.storage.sqlite_kv import SQLiteKVStorage
+from kohakuboard.storage.sqlite_kv import SQLiteKVStorage
 
 # Get logger for board reader
 logger = get_logger("READER")

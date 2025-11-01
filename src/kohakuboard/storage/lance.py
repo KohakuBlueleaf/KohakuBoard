@@ -34,18 +34,23 @@ class LanceMetricsStorage:
     - Independent metric writes
     """
 
-    def __init__(self, base_dir: Path):
+    def __init__(self, base_dir: Path, logger=None):
         """Initialize Lance metrics storage
 
         Args:
             base_dir: Base directory for metric files
+            logger: Optional logger instance (if None, creates file-only logger)
         """
         self.base_dir = base_dir
         self.base_dir.mkdir(parents=True, exist_ok=True)
 
-        # Setup file-only logger for storage
-        log_file = base_dir.parent / "logs" / "storage.log"
-        self.logger = get_logger("STORAGE", file_only=True, log_file=log_file)
+        # Optional logger injection
+        if logger is not None:
+            self.logger = logger
+        else:
+            # Default: file-only logger (for client/writer)
+            log_file = base_dir.parent / "logs" / "storage.log"
+            self.logger = get_logger("STORAGE", file_only=True, log_file=log_file)
 
         self.metrics_dir = base_dir / "metrics"
         self.metrics_dir.mkdir(exist_ok=True)

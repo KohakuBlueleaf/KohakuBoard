@@ -14,15 +14,11 @@ async def get_system_info():
     Returns mode, authentication requirements, and version.
     Frontend uses this to determine UI behavior.
 
-    NO AUTH DEPENDENCY - This endpoint must work in local mode without database.
-
     Returns:
         dict: System info with mode, require_auth, version
     """
-    info = {
-        "mode": cfg.app.mode,
-        "require_auth": cfg.app.mode == "remote",
+    return {
+        "mode": "local",
+        "require_auth": False,
         "version": "0.1.0",
     }
-
-    return info

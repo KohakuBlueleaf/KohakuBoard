@@ -19,9 +19,9 @@ from typing import Any
 import numpy as np
 
 from kohakuboard.client.types.media_handler import MediaHandler
-from kohakuboard.client.storage.hybrid import HybridStorage
-from kohakuboard.client.storage.sqlite import SQLiteMetadataStorage
-from kohakuboard.client.storage.sqlite_kv import SQLiteKVStorage
+from kohakuboard.storage.hybrid import HybridStorage
+from kohakuboard.storage.sqlite import SQLiteMetadataStorage
+from kohakuboard.storage.sqlite_kv import SQLiteKVStorage
 
 
 class LogWriter:
@@ -48,8 +48,6 @@ class LogWriter:
         if backend == "hybrid":
             self.storage = HybridStorage(board_dir / "data")
         elif backend == "sqlite":
-            from kohakuboard.client.storage.sqlite import SQLiteMetadataStorage
-
             self.storage = SQLiteMetadataStorage(board_dir / "data")
         else:
             raise ValueError(

@@ -16,7 +16,7 @@ import numpy as np
 import orjson
 import requests
 
-from kohakuboard.client.storage.sqlite_kv import SQLiteKVStorage
+from kohakuboard.storage.sqlite_kv import SQLiteKVStorage
 
 try:
     from lance.dataset import LanceDataset

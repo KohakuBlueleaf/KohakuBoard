@@ -26,20 +26,25 @@ class SQLiteKVStorage:
     File location: {board_dir}/media/blobs.db
     """
 
-    def __init__(self, db_path: Path, readonly: bool = False):
+    def __init__(self, db_path: Path, readonly: bool = False, logger=None):
         """
         Initialize KohakuVault storage.
 
         Args:
             db_path: Path to the SQLite database file
             readonly: Open database in read-only mode (not used, kept for compatibility)
+            logger: Optional logger instance (if None, creates file-only logger)
         """
         self.db_path = Path(db_path)
         self.readonly = readonly
 
-        # Initialize file-only logger (no stdout output)
-        log_file = self.db_path.parent.parent / "logs" / "sqlite_kv.log"
-        self.logger = get_logger("SQLITE_KV", file_only=True, log_file=log_file)
+        # Optional logger injection
+        if logger is not None:
+            self.logger = logger
+        else:
+            # Default: file-only logger (for client/writer)
+            log_file = self.db_path.parent.parent / "logs" / "sqlite_kv.log"
+            self.logger = get_logger("SQLITE_KV", file_only=True, log_file=log_file)
 
         # Create parent directory if needed
         self.db_path.parent.mkdir(parents=True, exist_ok=True)

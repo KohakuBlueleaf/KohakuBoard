@@ -9,7 +9,7 @@ import numpy as np
 from kohakuboard.logger import get_logger
 
 from kohakuboard.client.utils.media_hash import generate_media_hash
-from kohakuboard.client.storage.sqlite_kv import SQLiteKVStorage
+from kohakuboard.storage.sqlite_kv import SQLiteKVStorage
 
 
 class MediaHandler:

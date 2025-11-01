@@ -9,15 +9,12 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, HTTPException, Query
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
-from kohakuboard.api.utils.board_reader import BoardReader
-from kohakuboard.auth import get_optional_user
-from kohakuboard.auth.permissions import check_board_read_permission
+from kohakuboard.utils.board_reader import BoardReader
 from kohakuboard.config import cfg
-from kohakuboard.db import Board, User
 from kohakuboard.logger import logger_api
 
 router = APIRouter()
@@ -32,54 +29,34 @@ class BatchScalarsRequest(BaseModel):
     metrics: list[str]
 
 
-def get_run_path(
-    project: str, run_id: str, current_user: User | None
-) -> tuple[Path, Board | None]:
-    """Resolve run path based on mode.
+def get_run_path(project: str, run_id: str) -> Path:
+    """Resolve run path in local mode.
 
     Args:
-        project: Project name
+        project: Project name (must be "local")
         run_id: Run ID
-        current_user: Current user (optional)
 
     Returns:
-        Tuple of (run_path, board) - board is None in local mode
+        Path to run directory
 
     Raises:
-        HTTPException: 401/403/404 if access denied or not found
+        HTTPException: 404 if project not "local"
     """
     base_dir = Path(cfg.app.board_data_dir)
 
-    if cfg.app.mode == "local":
-        if project != "local":
-            raise HTTPException(404, detail={"error": "Project not found"})
-        return base_dir / run_id, None
+    if project != "local":
+        raise HTTPException(404, detail={"error": "Project not found"})
 
-    else:  # remote mode
-        # Get board from DB (don't filter by owner - check permissions instead)
-        board = Board.get_or_none(
-            (Board.project_name == project) & (Board.run_id == run_id)
-        )
-        if not board:
-            raise HTTPException(404, detail={"error": "Run not found"})
-
-        # Check read permission (works for owner, org members, and public boards)
-        check_board_read_permission(board, current_user)
-
-        return base_dir / board.storage_path, board
+    return base_dir / run_id
 
 
 @router.get("/projects/{project}/runs/{run_id}/status")
-async def get_run_status(
-    project: str,
-    run_id: str,
-    current_user: User | None = Depends(get_optional_user),
-):
+async def get_run_status(project: str, run_id: str):
     """Get run status with latest update timestamp
 
     Returns minimal info for polling (last update time, row counts)
     """
-    run_path, _ = get_run_path(project, run_id, current_user)
+    run_path = get_run_path(project, run_id)
 
     # Check metadata for creation time
     metadata_file = run_path / "metadata.json"
@@ -137,7 +114,6 @@ async def get_run_status(
 async def get_run_summary(
     project: str,
     run_id: str,
-    current_user: User | None = Depends(get_optional_user),
 ):
     """Get run summary with metadata and available data
 
@@ -152,7 +128,7 @@ async def get_run_summary(
     """
     logger_api.info(f"Fetching summary for {project}/{run_id}")
 
-    run_path, _ = get_run_path(project, run_id, current_user)
+    run_path = get_run_path(project, run_id)
     reader = BoardReader(run_path)
     summary = reader.get_summary()
 
@@ -186,12 +162,11 @@ async def get_run_summary(
 async def get_run_metadata(
     project: str,
     run_id: str,
-    current_user: User | None = Depends(get_optional_user),
 ):
     """Get run metadata"""
     logger_api.info(f"Fetching metadata for {project}/{run_id}")
 
-    run_path, _ = get_run_path(project, run_id, current_user)
+    run_path = get_run_path(project, run_id)
     reader = BoardReader(run_path)
     metadata = reader.get_metadata()
 
@@ -202,12 +177,11 @@ async def get_run_metadata(
 async def get_available_scalars(
     project: str,
     run_id: str,
-    current_user: User | None = Depends(get_optional_user),
 ):
     """Get list of available scalar metrics"""
     logger_api.info(f"Fetching available scalars for {project}/{run_id}")
 
-    run_path, _ = get_run_path(project, run_id, current_user)
+    run_path = get_run_path(project, run_id)
     reader = BoardReader(run_path)
     metrics = reader.get_available_metrics()
 
@@ -220,7 +194,6 @@ async def get_scalar_data(
     run_id: str,
     metric: str,
     limit: int | None = Query(None, description="Maximum number of data points"),
-    current_user: User | None = Depends(get_optional_user),
 ):
     """Get scalar data for a specific metric
 
@@ -229,7 +202,7 @@ async def get_scalar_data(
     """
     logger_api.info(f"Fetching scalar data for {project}/{run_id}/{metric}")
 
-    run_path, _ = get_run_path(project, run_id, current_user)
+    run_path = get_run_path(project, run_id)
     reader = BoardReader(run_path)
     data = reader.get_scalar_data(metric, limit=limit)
 
@@ -241,12 +214,11 @@ async def get_scalar_data(
 async def get_available_media(
     project: str,
     run_id: str,
-    current_user: User | None = Depends(get_optional_user),
 ):
     """Get list of available media log names"""
     logger_api.info(f"Fetching available media for {project}/{run_id}")
 
-    run_path, _ = get_run_path(project, run_id, current_user)
+    run_path = get_run_path(project, run_id)
     reader = BoardReader(run_path)
     media_names = reader.get_available_media_names()
 
@@ -259,12 +231,11 @@ async def get_media_data(
     run_id: str,
     name: str,
     limit: int | None = Query(None, description="Maximum number of entries"),
-    current_user: User | None = Depends(get_optional_user),
 ):
     """Get media data for a specific log name"""
     logger_api.info(f"Fetching media data for {project}/{run_id}/{name}")
 
-    run_path, _ = get_run_path(project, run_id, current_user)
+    run_path = get_run_path(project, run_id)
     reader = BoardReader(run_path)
     data = reader.get_media_data(name, limit=limit)
 
@@ -291,12 +262,11 @@ async def get_media_file(
     project: str,
     run_id: str,
     filename: str,
-    current_user: User | None = Depends(get_optional_user),
 ):
     """Serve media file (image/video/audio) from SQLite KV storage"""
     logger_api.info(f"Serving media file: {project}/{run_id}/{filename}")
 
-    run_path, _ = get_run_path(project, run_id, current_user)
+    run_path = get_run_path(project, run_id)
     reader = BoardReader(run_path)
     media_data = reader.get_media_data(filename)
 
@@ -331,12 +301,11 @@ async def get_media_file(
 async def get_available_tables(
     project: str,
     run_id: str,
-    current_user: User | None = Depends(get_optional_user),
 ):
     """Get list of available table log names"""
     logger_api.info(f"Fetching available tables for {project}/{run_id}")
 
-    run_path, _ = get_run_path(project, run_id, current_user)
+    run_path = get_run_path(project, run_id)
     reader = BoardReader(run_path)
     table_names = reader.get_available_table_names()
 
@@ -349,12 +318,11 @@ async def get_table_data(
     run_id: str,
     name: str,
     limit: int | None = Query(None, description="Maximum number of entries"),
-    current_user: User | None = Depends(get_optional_user),
 ):
     """Get table data for a specific log name"""
     logger_api.info(f"Fetching table data for {project}/{run_id}/{name}")
 
-    run_path, _ = get_run_path(project, run_id, current_user)
+    run_path = get_run_path(project, run_id)
     reader = BoardReader(run_path)
     data = reader.get_table_data(name, limit=limit)
 
@@ -365,12 +333,11 @@ async def get_table_data(
 async def get_available_histograms(
     project: str,
     run_id: str,
-    current_user: User | None = Depends(get_optional_user),
 ):
     """Get list of available histogram log names"""
     logger_api.info(f"Fetching available histograms for {project}/{run_id}")
 
-    run_path, _ = get_run_path(project, run_id, current_user)
+    run_path = get_run_path(project, run_id)
     reader = BoardReader(run_path)
     histogram_names = reader.get_available_histogram_names()
 
@@ -383,12 +350,11 @@ async def get_histogram_data(
     run_id: str,
     name: str,
     limit: int | None = Query(None, description="Maximum number of entries"),
-    current_user: User | None = Depends(get_optional_user),
 ):
     """Get histogram data for a specific log name"""
     logger_api.info(f"Fetching histogram data for {project}/{run_id}/{name}")
 
-    run_path, _ = get_run_path(project, run_id, current_user)
+    run_path = get_run_path(project, run_id)
     reader = BoardReader(run_path)
     data = reader.get_histogram_data(name, limit=limit)
 
@@ -406,7 +372,6 @@ def should_include_metric(metric_name: str) -> bool:
 async def batch_get_run_summaries(
     project: str,
     batch_request: BatchSummaryRequest = Body(...),
-    current_user: User | None = Depends(get_optional_user),
 ):
     """Batch fetch summaries for multiple runs.
 
@@ -423,7 +388,7 @@ async def batch_get_run_summaries(
 
     async def fetch_one_summary(run_id: str) -> tuple[str, dict | None]:
         try:
-            run_path, _ = get_run_path(project, run_id, current_user)
+            run_path = get_run_path(project, run_id)
             reader = BoardReader(run_path)
 
             def get_summary_sync():
@@ -492,7 +457,6 @@ async def batch_get_run_summaries(
 async def batch_get_scalar_data(
     project: str,
     body: BatchScalarsRequest = Body(...),
-    current_user: User | None = Depends(get_optional_user),
 ):
     """Batch fetch scalar data for multiple runs and metrics.
 
@@ -518,7 +482,7 @@ async def batch_get_scalar_data(
         run_id: str, metric: str
     ) -> tuple[str, str, dict | None]:
         try:
-            run_path, _ = get_run_path(project, run_id, current_user)
+            run_path = get_run_path(project, run_id)
             reader = BoardReader(run_path)
 
             def get_scalar_sync():

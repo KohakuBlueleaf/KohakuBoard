@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from kohakuboard.logger import get_logger
-from kohakuboard.api.utils.board_reader_hybrid import HybridBoardReader
+from kohakuboard.utils.board_reader_hybrid import HybridBoardReader
 
 # Get logger for board reader
 logger = get_logger("READER")

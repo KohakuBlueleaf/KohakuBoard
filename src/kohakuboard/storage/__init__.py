@@ -7,10 +7,10 @@ Available backends:
 - SQLiteMetadataStorage: Pure SQLite storage (simple, reliable)
 """
 
-from kohakuboard.client.storage.histogram import HistogramStorage
-from kohakuboard.client.storage.hybrid import HybridStorage
-from kohakuboard.client.storage.lance import LanceMetricsStorage
-from kohakuboard.client.storage.sqlite import SQLiteMetadataStorage
+from kohakuboard.storage.histogram import HistogramStorage
+from kohakuboard.storage.hybrid import HybridStorage
+from kohakuboard.storage.lance import LanceMetricsStorage
+from kohakuboard.storage.sqlite import SQLiteMetadataStorage
 
 __all__ = [
     "HybridStorage",

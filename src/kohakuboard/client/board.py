@@ -727,14 +727,9 @@ class Board:
         if self.output_capture:
             self.output_capture.stop()
 
-        # Stop sync worker (do this before stopping writer to ensure final sync)
-        if self.sync_worker:
-            self.logger.info("Stopping sync worker...")
-            self.sync_worker.stop(timeout=30)
-
-        # Signal workers to stop
+        # Signal workers to stop (FIRST - let writer start draining)
         self.stop_event.set()
-        self.logger.info("Stop event set, waiting for workers to drain queues...")
+        self.logger.info("Stop event set, waiting for writer to drain queue...")
 
         # Give workers a moment to start draining
         time.sleep(0.5)
@@ -780,6 +775,11 @@ class Board:
         if self.writer_process.is_alive():
             self.logger.warning("Writer still alive after 2s, killing...")
             self.writer_process.kill()
+
+        # Stop sync worker AFTER writer has finished (ensures final sync includes ALL data)
+        if self.sync_worker:
+            self.logger.info("Writer finished, now stopping sync worker...")
+            self.sync_worker.stop(timeout=30)
 
         # Clean up SharedMemory blocks
         if hasattr(self, "_shared_memory_blocks"):

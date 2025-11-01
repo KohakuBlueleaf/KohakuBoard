@@ -12,10 +12,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from kohakuboard.logger import get_logger
-
-from kohakuboard.client.storage.histogram import HistogramStorage
-from kohakuboard.client.storage.lance import LanceMetricsStorage
-from kohakuboard.client.storage.sqlite import SQLiteMetadataStorage
+from kohakuboard.storage.histogram import HistogramStorage
+from kohakuboard.storage.lance import LanceMetricsStorage
+from kohakuboard.storage.sqlite import SQLiteMetadataStorage
 
 
 class HybridStorage:
@@ -34,23 +33,30 @@ class HybridStorage:
     - Multi-connection friendly (SQLite WAL mode)
     """
 
-    def __init__(self, base_dir: Path):
+    def __init__(self, base_dir: Path, logger=None):
         """Initialize hybrid storage
 
         Args:
             base_dir: Base directory for all storage files
+            logger: Optional logger instance (if None, creates file-only logger)
         """
         self.base_dir = base_dir
         self.base_dir.mkdir(parents=True, exist_ok=True)
 
-        # Setup file-only logger for storage
-        log_file = base_dir.parent / "logs" / "storage.log"
-        self.logger = get_logger("STORAGE", file_only=True, log_file=log_file)
+        # Optional logger injection
+        if logger is not None:
+            self.logger = logger
+        else:
+            # Default: file-only logger (for client/writer)
+            log_file = base_dir.parent / "logs" / "storage.log"
+            self.logger = get_logger("STORAGE", file_only=True, log_file=log_file)
 
-        # Initialize sub-storages
-        self.metrics_storage = LanceMetricsStorage(base_dir)
-        self.metadata_storage = SQLiteMetadataStorage(base_dir)
-        self.histogram_storage = HistogramStorage(base_dir, num_bins=64)
+        # Initialize sub-storages (pass logger to them)
+        self.metrics_storage = LanceMetricsStorage(base_dir, logger=self.logger)
+        self.metadata_storage = SQLiteMetadataStorage(base_dir, logger=self.logger)
+        self.histogram_storage = HistogramStorage(
+            base_dir, num_bins=64, logger=self.logger
+        )
 
         self.logger.debug("Hybrid storage initialized (Lance + SQLite + Histograms)")
 

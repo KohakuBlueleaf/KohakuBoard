@@ -22,18 +22,23 @@ class SQLiteMetadataStorage:
     - Fixed schema (media/tables don't need dynamic columns)
     """
 
-    def __init__(self, base_dir: Path):
+    def __init__(self, base_dir: Path, logger=None):
         """Initialize SQLite metadata storage
 
         Args:
             base_dir: Base directory for database file
+            logger: Optional logger instance (if None, creates file-only logger)
         """
         self.base_dir = base_dir
         self.base_dir.mkdir(parents=True, exist_ok=True)
 
-        # Setup file-only logger for storage
-        log_file = base_dir.parent / "logs" / "storage.log"
-        self.logger = get_logger("STORAGE", file_only=True, log_file=log_file)
+        # Optional logger injection
+        if logger is not None:
+            self.logger = logger
+        else:
+            # Default: file-only logger (for client/writer)
+            log_file = base_dir.parent / "logs" / "storage.log"
+            self.logger = get_logger("STORAGE", file_only=True, log_file=log_file)
 
         self.db_file = base_dir / "metadata.db"
 

@@ -6,7 +6,7 @@ from typing import List, Optional
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import FileResponse, RedirectResponse, Response
 
-from kohakuboard.api.utils.board_reader import BoardReader, list_boards
+from kohakuboard.utils.board_reader import BoardReader, list_boards
 from kohakuboard.config import cfg
 from kohakuboard.logger import logger_api
 

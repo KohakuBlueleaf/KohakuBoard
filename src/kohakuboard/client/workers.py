@@ -15,11 +15,11 @@ from typing import Any
 
 from kohakuboard.logger import get_logger
 
-logger = get_logger("WORKER")
+from kohakuboard.storage.histogram import HistogramStorage
+from kohakuboard.storage.lance import LanceMetricsStorage
+from kohakuboard.storage.sqlite import SQLiteMetadataStorage
 
-from kohakuboard.client.storage.histogram import HistogramStorage
-from kohakuboard.client.storage.lance import LanceMetricsStorage
-from kohakuboard.client.storage.sqlite import SQLiteMetadataStorage
+logger = get_logger("WORKER")
 
 
 def metrics_worker_main(board_dir: Path, queue: Any, stop_event: Any):

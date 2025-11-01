@@ -29,19 +29,24 @@ from kohakuboard.logger import get_logger
 class HistogramStorage:
     """Histogram storage with namespace-based grouping"""
 
-    def __init__(self, base_dir: Path, num_bins: int = 64):
+    def __init__(self, base_dir: Path, num_bins: int = 64, logger=None):
         """Initialize histogram storage
 
         Args:
             base_dir: Base directory
             num_bins: Number of bins (default: 64)
+            logger: Optional logger instance (if None, creates file-only logger)
         """
         self.base_dir = base_dir
         self.base_dir.mkdir(parents=True, exist_ok=True)
 
-        # Setup file-only logger for storage
-        log_file = base_dir.parent / "logs" / "storage.log"
-        self.logger = get_logger("STORAGE", file_only=True, log_file=log_file)
+        # Optional logger injection
+        if logger is not None:
+            self.logger = logger
+        else:
+            # Default: file-only logger (for client/writer)
+            log_file = base_dir.parent / "logs" / "storage.log"
+            self.logger = get_logger("STORAGE", file_only=True, log_file=log_file)
 
         self.histograms_dir = base_dir / "histograms"
         self.histograms_dir.mkdir(exist_ok=True)
