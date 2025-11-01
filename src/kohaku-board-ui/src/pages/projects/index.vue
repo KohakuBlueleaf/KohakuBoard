@@ -16,7 +16,7 @@ onMounted(async () => {
     systemInfo.value = await getSystemInfo();
 
     // Check if authentication required
-    if (systemInfo.value?.mode === "remote" && !authStore.isAuthenticated) {
+    if (systemInfo.value?.require_auth && !authStore.isAuthenticated) {
       // Don't fetch - show login prompt instead
       loading.value = false;
       return;
@@ -34,7 +34,7 @@ onMounted(async () => {
 
 const isRemoteMode = computed(() => systemInfo.value?.mode === "remote");
 const needsAuth = computed(
-  () => isRemoteMode.value && !authStore.isAuthenticated,
+  () => systemInfo.value?.require_auth && !authStore.isAuthenticated,
 );
 
 function viewProject(projectName) {

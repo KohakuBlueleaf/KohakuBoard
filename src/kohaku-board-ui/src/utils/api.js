@@ -351,27 +351,29 @@ export const authAPI = {
   revokeToken: (id) =>
     axios.delete(`/api/auth/tokens/${id}`, { withCredentials: true }),
   listUserOrgs: (username) =>
-    axios.get(`/org/users/${username}/orgs`, { withCredentials: true }),
+    axios.get(`/api/org/users/${username}/orgs`, { withCredentials: true }),
 };
 
 /**
  * Organization API
  */
 export const orgAPI = {
-  create: (data) => axios.post("/org/create", data, { withCredentials: true }),
-  getInfo: (orgName) => axios.get(`/org/${orgName}`, { withCredentials: true }),
+  create: (data) =>
+    axios.post("/api/org/create", data, { withCredentials: true }),
+  getInfo: (orgName) =>
+    axios.get(`/api/org/${orgName}`, { withCredentials: true }),
   addMember: (orgName, data) =>
-    axios.post(`/org/${orgName}/members`, data, { withCredentials: true }),
+    axios.post(`/api/org/${orgName}/members`, data, { withCredentials: true }),
   removeMember: (orgName, username) =>
-    axios.delete(`/org/${orgName}/members/${username}`, {
+    axios.delete(`/api/org/${orgName}/members/${username}`, {
       withCredentials: true,
     }),
   updateMemberRole: (orgName, username, data) =>
-    axios.put(`/org/${orgName}/members/${username}`, data, {
+    axios.put(`/api/org/${orgName}/members/${username}`, data, {
       withCredentials: true,
     }),
   listMembers: (orgName) =>
-    axios.get(`/org/${orgName}/members`, { withCredentials: true }),
+    axios.get(`/api/org/${orgName}/members`, { withCredentials: true }),
 };
 
 export default api;

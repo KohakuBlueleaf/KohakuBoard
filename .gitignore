@@ -1,7 +1,7 @@
-kohakuboard/
-!src/kohakuboard
-!docker/kohakuboard
-!docs/kohakuboard
+*kohaku*board*/
+!docker/kohakuboard*
+!src/kohakuboard*
+
 *.backup*
 .DS_store
 *_old.*

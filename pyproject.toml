@@ -51,6 +51,7 @@ urls = { "Homepage" = "https://github.com/KohakuBlueleaf/KohakuBoard" }
 
 [project.scripts]
 kobo = "kohakuboard.cli:cli"
+kobo-serve = "kohakuboard_server.cli:cli"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

@@ -16,6 +16,7 @@ class AppConfig(BaseModel):
     api_base: str = "/api"
     cors_origins: list[str] = ["http://localhost:5175", "http://localhost:28081"]
     board_data_dir: str = "./kohakuboard"
+    mode: str = "local"  # Always local for kohakuboard package
 
 
 class SyncConfig(BaseModel):
