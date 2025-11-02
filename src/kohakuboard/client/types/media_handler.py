@@ -3,13 +3,13 @@
 import io
 import shutil
 from pathlib import Path
-from typing import Any, List, Union
+from typing import Any
 
 import numpy as np
-from kohakuboard.logger import get_logger
+from kohakuvault import KVault
 
 from kohakuboard.client.utils.media_hash import generate_media_hash
-from kohakuboard.storage.sqlite_kv import SQLiteKVStorage
+from kohakuboard.logger import get_logger
 
 
 class MediaHandler:
@@ -26,12 +26,12 @@ class MediaHandler:
     VIDEO_EXTS = {".mp4", ".avi", ".mov", ".mkv", ".webm", ".flv", ".wmv", ".m4v"}
     AUDIO_EXTS = {".mp3", ".wav", ".flac", ".ogg", ".m4a", ".aac", ".wma"}
 
-    def __init__(self, media_dir: Path, kv_storage: SQLiteKVStorage):
+    def __init__(self, media_dir: Path, kv_storage: KVault):
         """Initialize media handler
 
         Args:
             media_dir: Directory to store media files (deprecated, kept for logging path)
-            kv_storage: SQLite KV storage instance for media binary data
+            kv_storage: KVault storage instance for media binary data
         """
         self.media_dir = media_dir
         self.kv_storage = kv_storage
@@ -90,14 +90,16 @@ class MediaHandler:
         media_hash = generate_media_hash(content_bytes)
         key = f"{media_hash}.{ext}"
 
-        # Deduplication: Only write if key doesn't exist in SQLite KV
-        already_exists = self.kv_storage.exists(key)
+        # Deduplication: Only write if key doesn't exist in KVault
+        already_exists = key in self.kv_storage
         if not already_exists:
-            self.kv_storage.put(key, content_bytes)
-            self.logger.debug(f"Saved new {media_type} to SQLite KV: {key}")
+            # Use cache for efficient bulk writes (cache is shared across calls)
+            with self.kv_storage.cache(64 * 1024 * 1024):  # 64MB cache
+                self.kv_storage[key] = content_bytes
+            self.logger.debug(f"Saved new {media_type} to KVault: {key}")
         else:
             self.logger.debug(
-                f"Deduplicated {media_type}: {key} (already exists in SQLite KV)"
+                f"Deduplicated {media_type}: {key} (already exists in KVault)"
             )
 
         # Get file metadata
@@ -126,7 +128,7 @@ class MediaHandler:
             "deduplicated": already_exists,
         }
 
-    def process_images(self, images: List[Any], name: str, step: int) -> List[dict]:
+    def process_images(self, images: list[Any], name: str, step: int) -> list[dict]:
         """Process multiple images
 
         Args:
@@ -184,7 +186,7 @@ class MediaHandler:
             self.logger.error(f"Failed to prepare image: {e}")
             raise
 
-    def _prepare_video(self, video: Union[str, Path]) -> tuple[bytes, str]:
+    def _prepare_video(self, video: str | Path) -> tuple[bytes, str]:
         """Prepare video data for storage
 
         Args:
@@ -207,7 +209,7 @@ class MediaHandler:
 
         return content_bytes, ext
 
-    def _prepare_audio(self, audio: Union[str, Path]) -> tuple[bytes, str]:
+    def _prepare_audio(self, audio: str | Path) -> tuple[bytes, str]:
         """Prepare audio data for storage
 
         Args:

@@ -7,7 +7,7 @@ Fixed schema - no dynamic columns needed.
 import json
 import sqlite3
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from kohakuboard.logger import get_logger
 
@@ -109,8 +109,8 @@ class SQLiteMetadataStorage:
         self.conn.commit()
 
         # Buffers for batching (NOTE: media is no longer batched as of v0.2.0)
-        self.step_buffer: List[tuple] = []
-        self.table_buffer: List[tuple] = []
+        self.step_buffer: list[tuple] = []
+        self.table_buffer: list[tuple] = []
 
         # Flush thresholds
         self.step_flush_threshold = 1000
@@ -119,7 +119,7 @@ class SQLiteMetadataStorage:
     def append_step_info(
         self,
         step: int,
-        global_step: Optional[int],
+        global_step: int | None,
         timestamp: int,
     ):
         """Record step/global_step/timestamp mapping (batched)
@@ -150,11 +150,11 @@ class SQLiteMetadataStorage:
     def append_media(
         self,
         step: int,
-        global_step: Optional[int],
+        global_step: int | None,
         name: str,
-        media_list: List[Dict[str, Any]],
-        caption: Optional[str] = None,
-    ) -> List[int]:
+        media_list: list[dict[str, Any]],
+        caption: str | None = None,
+    ) -> list[int]:
         """Append media log entry with deduplication (immediate insert, no batching)
 
         NEW in v0.2.0: Returns list of media IDs for reference in tables.
@@ -234,9 +234,9 @@ class SQLiteMetadataStorage:
     def append_table(
         self,
         step: int,
-        global_step: Optional[int],
+        global_step: int | None,
         name: str,
-        table_data: Dict[str, Any],
+        table_data: dict[str, Any],
     ):
         """Append table log entry (batched)
 

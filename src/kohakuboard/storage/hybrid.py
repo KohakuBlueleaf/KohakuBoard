@@ -1,36 +1,37 @@
-"""Hybrid storage backend: Lance for metrics + SQLite for metadata
+"""Hybrid storage backend: KohakuVault ColumnVault for metrics + SQLite for metadata
 
 Combines the best of both worlds:
-- Lance: Dynamic schema, efficient columnar storage for metrics
+- ColumnVault: Efficient columnar storage for metrics with true SWMR
 - SQLite: Fixed schema, excellent concurrency for media/tables
-- Adaptive histograms: Lance with percentile-based range tracking
+- Adaptive histograms: ColumnVault with percentile-based range tracking
 """
 
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from kohakuboard.logger import get_logger
-from kohakuboard.storage.histogram import HistogramStorage
-from kohakuboard.storage.lance import LanceMetricsStorage
+from kohakuboard.storage.columnar import ColumnVaultMetricsStorage
+from kohakuboard.storage.columnar_histogram import ColumnVaultHistogramStorage
 from kohakuboard.storage.sqlite import SQLiteMetadataStorage
 
 
 class HybridStorage:
-    """Hybrid storage: Lance for metrics + SQLite for metadata
+    """Hybrid storage: ColumnVault for metrics + SQLite for metadata
 
     Architecture:
-    - Metrics (scalars): Lance columnar format (dynamic schema)
+    - Metrics (scalars): ColumnVault columnar format (per-metric SQLite DBs)
     - Media: SQLite (fixed schema, good for metadata)
     - Tables: SQLite (fixed schema)
-    - Histograms: Skipped for now (wandb doesn't log locally)
+    - Histograms: ColumnVault with fixed-size bytes for counts
 
     Benefits:
-    - Fast metric writes (Lance batch append)
+    - Fast metric writes (ColumnVault .extend() with .cache())
+    - True SWMR with SQLite WAL mode
+    - Single file per metric (simpler deployment)
     - Fast media/table writes (SQLite autocommit)
     - No connection overhead
-    - Multi-connection friendly (SQLite WAL mode)
     """
 
     def __init__(self, base_dir: Path, logger=None):
@@ -52,19 +53,21 @@ class HybridStorage:
             self.logger = get_logger("STORAGE", file_only=True, log_file=log_file)
 
         # Initialize sub-storages (pass logger to them)
-        self.metrics_storage = LanceMetricsStorage(base_dir, logger=self.logger)
+        self.metrics_storage = ColumnVaultMetricsStorage(base_dir, logger=self.logger)
         self.metadata_storage = SQLiteMetadataStorage(base_dir, logger=self.logger)
-        self.histogram_storage = HistogramStorage(
+        self.histogram_storage = ColumnVaultHistogramStorage(
             base_dir, num_bins=64, logger=self.logger
         )
 
-        self.logger.debug("Hybrid storage initialized (Lance + SQLite + Histograms)")
+        self.logger.debug(
+            "Hybrid storage initialized (ColumnVault + SQLite + Histograms)"
+        )
 
     def append_metrics(
         self,
         step: int,
-        global_step: Optional[int],
-        metrics: Dict[str, Any],
+        global_step: int | None,
+        metrics: dict[str, Any],
         timestamp: Any,
     ):
         """Append scalar metrics
@@ -84,17 +87,17 @@ class HybridStorage:
         # Store step info in SQLite for base column queries
         self.metadata_storage.append_step_info(step, global_step, timestamp_ms)
 
-        # Store metrics in Lance
+        # Store metrics in ColumnVault
         self.metrics_storage.append_metrics(step, global_step, metrics, timestamp)
 
     def append_media(
         self,
         step: int,
-        global_step: Optional[int],
+        global_step: int | None,
         name: str,
-        media_list: List[Dict[str, Any]],
-        caption: Optional[str] = None,
-    ) -> List[int]:
+        media_list: list[dict[str, Any]],
+        caption: str | None = None,
+    ) -> list[int]:
         """Append media log entry with deduplication
 
         NEW in v0.2.0: Returns list of media IDs for reference in tables.
@@ -121,9 +124,9 @@ class HybridStorage:
     def append_table(
         self,
         step: int,
-        global_step: Optional[int],
+        global_step: int | None,
         name: str,
-        table_data: Dict[str, Any],
+        table_data: dict[str, Any],
     ):
         """Append table log entry
 
@@ -142,13 +145,13 @@ class HybridStorage:
     def append_histogram(
         self,
         step: int,
-        global_step: Optional[int],
+        global_step: int | None,
         name: str,
-        values: Optional[List[float]] = None,
+        values: list[float] | None = None,
         num_bins: int = 64,
         precision: str = "compact",
-        bins: Optional[List[float]] = None,
-        counts: Optional[List[int]] = None,
+        bins: list[float] | None = None,
+        counts: list[int] | None = None,
     ):
         """Append histogram with configurable precision
 
@@ -178,7 +181,7 @@ class HybridStorage:
         )
 
     def flush_metrics(self):
-        """Flush metrics buffer to Lance"""
+        """Flush metrics buffer to ColumnVault"""
         self.metrics_storage.flush()
 
     def flush_media(self):

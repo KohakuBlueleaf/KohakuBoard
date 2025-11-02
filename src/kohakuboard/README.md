@@ -76,15 +76,15 @@ kobo open ./kohakuboard --browser
 
 ## Architecture
 
-### Hybrid Lance + SQLite Storage
+### Hybrid ColumnVault + SQLite Storage
 
 After trying various approaches (DuckDB, Parquet), we settled on Lance+SQLite:
 
-- **Lance (Columnar)** - Metrics and histograms (column-oriented reads)
+- **ColumnVault (Columnar)** - Metrics and histograms (column-oriented reads)
 - **SQLite (Row-Oriented)** - Metadata, tables, media references
 
 **Why this works:**
-- Metrics are read as entire columns → Lance excels
+- Metrics are read as entire columns → ColumnVault excels
 - Metadata needs random row access → SQLite excels
 - Both support non-blocking operations with proper configuration
 
@@ -117,13 +117,13 @@ src/kohakuboard/
 │   ├── types/                # Data types (Media, Table, Histogram)
 │   │   ├── media.py
 │   │   ├── table.py
-│   │   ├── histogram.py
+│   │   ├── columnar_histogram.py
 │   │   └── media_handler.py
 │   └── storage/              # Storage backends
-│       ├── hybrid.py         # Lance + SQLite (default)
-│       ├── lance.py          # Lance metrics storage
+│       ├── hybrid.py         # ColumnVault + SQLite (default)
+│       ├── columnar.py          # Lance metrics storage
 │       ├── sqlite.py         # SQLite metadata storage
-│       └── histogram.py      # Histogram storage (Lance)
+│       └── columnar_histogram.py      # Histogram storage (Lance)
 ├── api/                      # FastAPI server (WIP)
 ├── cli.py                    # CLI tool (kobo command)
 ├── main.py                   # Server entry point
@@ -233,7 +233,7 @@ for epoch in range(100):
 ### ✅ Complete
 
 - [x] Python client library
-- [x] Hybrid Lance+SQLite storage
+- [x] Hybrid ColumnVault+SQLite storage
 - [x] Rich data types
 - [x] Non-blocking async logging
 - [x] Local viewer (`kobo open`)

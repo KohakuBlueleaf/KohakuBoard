@@ -100,7 +100,7 @@ class Board:
             capture_output: Whether to capture stdout/stderr to log file
             backend: Storage backend ("sqlite" or "hybrid", default: "hybrid")
                 - "sqlite": Pure SQLite storage (simple, reliable)
-                - "hybrid": Lance + SQLite (recommended, best performance)
+                - "hybrid": ColumnVault + SQLite (recommended, best performance)
                 Note: DuckDB and Parquet backends are deprecated in v0.2.0+
             remote_url: Remote server base URL for sync (e.g., https://board.example.com)
             remote_token: Authentication token for remote server

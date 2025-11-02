@@ -10,27 +10,18 @@ import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Any
 
 import numpy as np
 import orjson
 import requests
-
-from kohakuboard.storage.sqlite_kv import SQLiteKVStorage
-
-try:
-    from lance.dataset import LanceDataset
-
-    LANCE_AVAILABLE = True
-except ImportError:
-    LANCE_AVAILABLE = False
-    # Note: Lance not available warning will be logged by SyncWorker if needed
+from kohakuvault import ColumnVault, KVault
 
 
 class SyncWorker:
     """Background worker for incremental sync to remote server
 
-    Periodically checks local SQLite/Lance storage for new data and syncs
+    Periodically checks local SQLite/ColumnVault storage for new data and syncs
     to remote server. Runs in a separate thread and doesn't block logging.
 
     Features:
@@ -75,21 +66,21 @@ class SyncWorker:
         self.media_dir = self.board_dir / "media"
         self.media_kv_path = self.board_dir / "media" / "blobs.db"
 
-        # Initialize SQLite KV storage for reading media (readonly)
+        # Initialize KVault storage for reading media
         self.media_kv = None
         if self.media_kv_path.exists():
-            self.media_kv = SQLiteKVStorage(self.media_kv_path, readonly=True)
+            self.media_kv = KVault(str(self.media_kv_path))
 
         # Sync state
         self.state = self._load_state()
 
         # Retry queue
-        self.retry_queue: List[Dict[str, Any]] = []
+        self.retry_queue: list[dict[str, Any]] = []
         self.max_retries = 5
         self.backoff_base = 2
 
         # Thread control
-        self.thread: Optional[threading.Thread] = None
+        self.thread: threading.Thread | None = None
         self.stop_event = threading.Event()
         self.running = False
 
@@ -105,12 +96,6 @@ class SyncWorker:
             f"SyncWorker initialized: {project}/{run_id} -> {remote_url} "
             f"(interval: {sync_interval}s)"
         )
-
-        # Warn if Lance is not available
-        if not LANCE_AVAILABLE:
-            self.logger.warning(
-                "Lance not available - scalar and histogram sync will be skipped"
-            )
 
     def _setup_logger(self):
         """Setup dedicated logger for sync worker that writes to file ONLY"""
@@ -311,7 +296,7 @@ class SyncWorker:
                 }
             )
 
-    def _collect_sync_payload(self, start_step: int, end_step: int) -> Dict[str, Any]:
+    def _collect_sync_payload(self, start_step: int, end_step: int) -> dict[str, Any]:
         """Collect new data from local storage
 
         Args:
@@ -333,7 +318,7 @@ class SyncWorker:
         # Collect steps
         payload["steps"] = self._collect_steps(start_step, end_step)
 
-        # Collect scalars from Lance
+        # Collect scalars from ColumnVault
         payload["scalars"] = self._collect_scalars(start_step, end_step)
 
         # Collect media from SQLite
@@ -342,7 +327,7 @@ class SyncWorker:
         # Collect tables from SQLite
         payload["tables"] = self._collect_tables(start_step, end_step)
 
-        # Collect histograms from Lance
+        # Collect histograms from ColumnVault
         payload["histograms"] = self._collect_histograms(start_step, end_step)
 
         # Collect metadata (only on first sync)
@@ -354,7 +339,7 @@ class SyncWorker:
 
         return payload
 
-    def _collect_steps(self, start_step: int, end_step: int) -> List[Dict[str, Any]]:
+    def _collect_steps(self, start_step: int, end_step: int) -> list[dict[str, Any]]:
         """Collect steps from SQLite"""
         conn = sqlite3.connect(str(self.sqlite_db))
         try:
@@ -377,46 +362,43 @@ class SyncWorker:
 
     def _collect_scalars(
         self, start_step: int, end_step: int
-    ) -> Dict[str, List[Dict[str, Any]]]:
-        """Collect scalar metrics from Lance files"""
+    ) -> dict[str, list[dict[str, Any]]]:
+        """Collect scalar metrics from ColumnVault DB files"""
         scalars = {}
-
-        if not LANCE_AVAILABLE:
-            return scalars
 
         if not self.metrics_dir.exists():
             return scalars
 
         try:
-            for lance_file in self.metrics_dir.glob("*.lance"):
+            for db_file in self.metrics_dir.glob("*.db"):
                 # Convert filename back to metric name (undo __ escaping)
-                metric_name = lance_file.stem.replace("__", "/")
+                metric_name = db_file.stem.replace("__", "/")
 
-                # Read dataset
-                ds = LanceDataset(str(lance_file))
+                # Read ColumnVault dataset
+                cv = ColumnVault(str(db_file))
+
+                # Read all data
+                all_steps = list(cv["step"])
+                all_values = list(cv["value"])
 
                 # Filter by step range
-                table = ds.to_table(
-                    filter=f"step >= {start_step} and step <= {end_step}"
-                )
+                filtered_data = [
+                    {"step": s, "value": v}
+                    for s, v in zip(all_steps, all_values)
+                    if start_step <= s <= end_step
+                ]
 
-                if len(table) == 0:
+                if not filtered_data:
                     continue
 
-                # Convert to list of {step, value}
-                steps = table["step"].to_pylist()
-                values = table["value"].to_pylist()
-
-                scalars[metric_name] = [
-                    {"step": s, "value": v} for s, v in zip(steps, values)
-                ]
+                scalars[metric_name] = filtered_data
 
         except Exception as e:
             self.logger.error(f"Failed to collect scalars: {e}")
 
         return scalars
 
-    def _collect_media(self, start_step: int, end_step: int) -> List[Dict[str, Any]]:
+    def _collect_media(self, start_step: int, end_step: int) -> list[dict[str, Any]]:
         """Collect media metadata from SQLite"""
         conn = sqlite3.connect(str(self.sqlite_db))
         try:
@@ -453,7 +435,7 @@ class SyncWorker:
         finally:
             conn.close()
 
-    def _collect_tables(self, start_step: int, end_step: int) -> List[Dict[str, Any]]:
+    def _collect_tables(self, start_step: int, end_step: int) -> list[dict[str, Any]]:
         """Collect tables from SQLite"""
         conn = sqlite3.connect(str(self.sqlite_db))
         try:
@@ -486,51 +468,68 @@ class SyncWorker:
 
     def _collect_histograms(
         self, start_step: int, end_step: int
-    ) -> List[Dict[str, Any]]:
-        """Collect histograms from Lance files"""
+    ) -> list[dict[str, Any]]:
+        """Collect histograms from ColumnVault DB files"""
         histograms = []
-
-        if not LANCE_AVAILABLE:
-            return histograms
 
         if not self.histograms_dir.exists():
             return histograms
 
         try:
-            for lance_file in self.histograms_dir.glob("*.lance"):
-                # Read dataset
-                ds = LanceDataset(str(lance_file))
+            import struct
 
-                # Filter by step range
-                table = ds.to_table(
-                    filter=f"step >= {start_step} and step <= {end_step}"
-                )
+            for db_file in self.histograms_dir.glob("*.db"):
+                # Read ColumnVault dataset
+                cv = ColumnVault(str(db_file))
 
-                if len(table) == 0:
-                    continue
+                # Read all data
+                all_steps = list(cv["step"])
+                all_global_steps = list(cv["global_step"])
+                all_names = list(cv["name"])
+                all_counts_bytes = list(cv["counts"])
+                all_mins = list(cv["min"])
+                all_maxs = list(cv["max"])
 
-                # Convert to list of dicts
-                for i in range(len(table)):
-                    counts = table["counts"][i].as_py()
-                    min_val = float(table["min"][i].as_py())
-                    max_val = float(table["max"][i].as_py())
+                # Determine precision from filename
+                precision = "i32" if "_i32" in db_file.stem else "u8"
+
+                # Filter by step range and convert
+                for i in range(len(all_steps)):
+                    step = all_steps[i]
+                    if not (start_step <= step <= end_step):
+                        continue
+
+                    # Deserialize counts from fixed-size bytes
+                    counts_bytes = all_counts_bytes[i]
+                    if precision == "u8":
+                        # uint8: 1 byte per bin
+                        counts = list(
+                            struct.unpack(f"{len(counts_bytes)}B", counts_bytes)
+                        )
+                    else:
+                        # int32: 4 bytes per bin, little-endian
+                        num_bins = len(counts_bytes) // 4
+                        counts = list(struct.unpack(f"<{num_bins}i", counts_bytes))
+
+                    min_val = float(all_mins[i])
+                    max_val = float(all_maxs[i])
                     num_bins = len(counts)
 
                     # Reconstruct bin edges
                     bin_edges = np.linspace(min_val, max_val, num_bins + 1).tolist()
 
-                    # Determine precision from filename
-                    precision = "i32" if "_i32" in lance_file.stem else "u8"
+                    # Decode name from bytes
+                    name = all_names[i].decode("utf-8")
 
                     histograms.append(
                         {
-                            "step": int(table["step"][i].as_py()),
+                            "step": int(step),
                             "global_step": (
-                                int(table["global_step"][i].as_py())
-                                if table["global_step"][i].as_py()
+                                int(all_global_steps[i])
+                                if all_global_steps[i]
                                 else None
                             ),
-                            "name": table["name"][i].as_py(),
+                            "name": name,
                             "bins": bin_edges,
                             "counts": counts,
                             "precision": precision,
@@ -542,7 +541,7 @@ class SyncWorker:
 
         return histograms
 
-    def _collect_metadata(self) -> Optional[Dict[str, Any]]:
+    def _collect_metadata(self) -> dict[str, Any] | None:
         """Collect metadata.json
 
         Returns:
@@ -562,7 +561,7 @@ class SyncWorker:
             self.logger.error(f"Failed to read metadata.json: {e}")
             return None
 
-    def _collect_log_lines(self) -> List[str]:
+    def _collect_log_lines(self) -> list[str]:
         """Collect new log lines from output.log
 
         Returns:
@@ -592,7 +591,7 @@ class SyncWorker:
             self.logger.error(f"Failed to read output.log: {e}")
             return []
 
-    def _sync_logs(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+    def _sync_logs(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Send log data to remote server
 
         Args:
@@ -618,7 +617,7 @@ class SyncWorker:
         response.raise_for_status()
         return response.json()
 
-    def _sync_media(self, missing_hashes: List[str]):
+    def _sync_media(self, missing_hashes: list[str]):
         """Upload missing media files to remote server (from SQLite KV)
 
         Args:
@@ -627,13 +626,13 @@ class SyncWorker:
         if not missing_hashes:
             return
 
-        # Check if SQLite KV is available
+        # Check if KVault is available
         if self.media_kv is None:
             # Try to initialize if file exists now
             if self.media_kv_path.exists():
-                self.media_kv = SQLiteKVStorage(self.media_kv_path, readonly=True)
+                self.media_kv = KVault(str(self.media_kv_path))
             else:
-                self.logger.warning("SQLite KV not available, cannot upload media")
+                self.logger.warning("KVault not available, cannot upload media")
                 return
 
         url = f"{self.remote_url}/api/projects/{self.project}/runs/{self.run_id}/media"
@@ -663,10 +662,10 @@ class SyncWorker:
             format = media_info[media_hash]
             key = f"{media_hash}.{format}"
 
-            # Read from SQLite KV
+            # Read from KVault
             data = self.media_kv.get(key)
             if data is None:
-                self.logger.warning(f"Media data not found in SQLite KV: {key}")
+                self.logger.warning(f"Media data not found in KVault: {key}")
                 continue
 
             files_data.append((key, data))
@@ -700,13 +699,13 @@ class SyncWorker:
             )
 
             response.raise_for_status()
-            self.logger.info(f"Uploaded {len(files_data)} media files from SQLite KV")
+            self.logger.info(f"Uploaded {len(files_data)} media files from KVault")
 
         except Exception as e:
             self.logger.error(f"Failed to upload media: {e}")
             raise
 
-    def _get_latest_local_step(self) -> Optional[int]:
+    def _get_latest_local_step(self) -> int | None:
         """Get latest step from local SQLite
 
         Returns:
@@ -771,7 +770,7 @@ class SyncWorker:
         """
         return self.backoff_base**attempts
 
-    def _load_state(self) -> Dict[str, Any]:
+    def _load_state(self) -> dict[str, Any]:
         """Load sync state from JSON file
 
         Returns:

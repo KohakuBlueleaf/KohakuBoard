@@ -2,7 +2,7 @@
 
 import json
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import pandas as pd
 import pyarrow as pa
@@ -33,19 +33,19 @@ class ParquetStorage:
         self.tables_file = self.base_dir / "tables.parquet"
 
         # In-memory buffers for batching
-        self.metrics_buffer: List[Dict[str, Any]] = []
-        self.media_buffer: List[Dict[str, Any]] = []
-        self.tables_buffer: List[Dict[str, Any]] = []
+        self.metrics_buffer: list[dict[str, Any]] = []
+        self.media_buffer: list[dict[str, Any]] = []
+        self.tables_buffer: list[dict[str, Any]] = []
 
         # Schema tracking for optimization (only rewrite when schema changes)
-        self.metrics_columns: Optional[set] = None
+        self.metrics_columns: set | None = None
 
         # Flush thresholds - lower for better online sync
         # Best-effort flush: flush often to make data available quickly
         self.flush_threshold = 10  # Flush every 10 rows (aggressive for online sync)
 
     def append_metrics(
-        self, step: int, global_step: Optional[int], metrics: Dict[str, Any]
+        self, step: int, global_step: int | None, metrics: dict[str, Any]
     ):
         """Append metrics for a step
 
@@ -77,10 +77,10 @@ class ParquetStorage:
     def append_media(
         self,
         step: int,
-        global_step: Optional[int],
+        global_step: int | None,
         name: str,
-        media_list: List[Dict[str, Any]],
-        caption: Optional[str] = None,
+        media_list: list[dict[str, Any]],
+        caption: str | None = None,
     ):
         """Append media log entry
 
@@ -108,9 +108,9 @@ class ParquetStorage:
     def append_table(
         self,
         step: int,
-        global_step: Optional[int],
+        global_step: int | None,
         name: str,
-        table_data: Dict[str, Any],
+        table_data: dict[str, Any],
     ):
         """Append table log entry
 

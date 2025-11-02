@@ -16,7 +16,7 @@ from kohakuboard_server.api.sync_models import (
 )
 from kohakuboard_server.auth import get_current_user
 from kohakuboard.storage.hybrid import HybridStorage
-from kohakuboard.storage.sqlite_kv import SQLiteKVStorage
+from kohakuvault import KVault
 from kohakuboard_server.config import cfg
 from kohakuboard_server.db import Board, User
 from kohakuboard_server.db_operations import get_organization, get_user_organization
@@ -148,18 +148,20 @@ async def sync_run(
         await f.write(content)
     total_size = len(content)
 
-    # Save media files to SQLite KV
+    # Save media files to KVault
     media_kv_path = run_dir / "media" / "blobs.db"
-    media_kv = SQLiteKVStorage(media_kv_path, readonly=False, logger=logger_api)
+    media_kv = KVault(str(media_kv_path))
 
-    logger_api.info(f"Saving {len(media_files)} media files to SQLite KV")
+    logger_api.info(f"Saving {len(media_files)} media files to KVault")
     try:
-        for media_file in media_files:
-            key = media_file.filename  # Key is {media_hash}.{format}
-            logger_api.debug(f"Saving media to SQLite KV: {media_file.filename}")
-            content = await media_file.read()
-            media_kv.put(key, content)
-            total_size += len(content)
+        # Use .cache() for bulk media writes (64MB cache)
+        with media_kv.cache(64 * 1024 * 1024):
+            for media_file in media_files:
+                key = media_file.filename  # Key is {media_hash}.{format}
+                logger_api.debug(f"Saving media to KVault: {media_file.filename}")
+                content = await media_file.read()
+                media_kv[key] = content
+                total_size += len(content)
     finally:
         media_kv.close()
 
@@ -443,11 +445,11 @@ async def sync_logs_incremental(
             missing_media = [media_data.media_hash for media_data in request.media]
         else:
             # KV database exists, check which media we have
-            media_kv = SQLiteKVStorage(media_kv_path, readonly=True, logger=logger_api)
+            media_kv = KVault(str(media_kv_path))
             try:
                 for media_data in request.media:
                     key = f"{media_data.media_hash}.{media_data.format}"
-                    if not media_kv.exists(key):
+                    if key not in media_kv:
                         missing_media.append(media_data.media_hash)
             finally:
                 media_kv.close()
@@ -513,40 +515,42 @@ async def upload_media_files(
     # Get board
     board, board_dir = _get_or_create_board(project_name, run_id, current_user)
 
-    # Initialize SQLite KV storage for media
+    # Initialize KVault storage for media
     media_kv_path = board_dir / "media" / "blobs.db"
-    media_kv = SQLiteKVStorage(media_kv_path, readonly=False, logger=logger_api)
+    media_kv = KVault(str(media_kv_path))
 
     uploaded_hashes = []
     skipped_count = 0
 
     try:
-        for file in files:
-            # Validate filename format
-            if not file.filename or "." not in file.filename:
-                logger_api.warning(f"Invalid media filename: {file.filename}")
-                continue
+        # Use .cache() for bulk media uploads (64MB cache)
+        with media_kv.cache(64 * 1024 * 1024):
+            for file in files:
+                # Validate filename format
+                if not file.filename or "." not in file.filename:
+                    logger_api.warning(f"Invalid media filename: {file.filename}")
+                    continue
 
-            # Extract hash from filename
-            media_hash = file.filename.rsplit(".", 1)[0]
-            key = file.filename  # Key is {media_hash}.{format}
+                # Extract hash from filename
+                media_hash = file.filename.rsplit(".", 1)[0]
+                key = file.filename  # Key is {media_hash}.{format}
 
-            # Check if already exists in SQLite KV
-            if media_kv.exists(key):
-                logger_api.debug(f"Media already exists in SQLite KV: {file.filename}")
-                skipped_count += 1
-                continue
+                # Check if already exists in KVault
+                if key in media_kv:
+                    logger_api.debug(f"Media already exists in KVault: {file.filename}")
+                    skipped_count += 1
+                    continue
 
-            # Read file content and store in SQLite KV
-            content = await file.read()
-            media_kv.put(key, content)
+                # Read file content and store in KVault
+                content = await file.read()
+                media_kv[key] = content
 
-            uploaded_hashes.append(media_hash)
-            logger_api.debug(
-                f"Uploaded media to SQLite KV: {file.filename} ({len(content)} bytes)"
-            )
+                uploaded_hashes.append(media_hash)
+                logger_api.debug(
+                    f"Uploaded media to KVault: {file.filename} ({len(content)} bytes)"
+                )
     finally:
-        # Close SQLite KV connection
+        # Close KVault connection
         media_kv.close()
 
     # Update board

@@ -1,31 +1,31 @@
-"""Board reader for hybrid storage backend (Lance + SQLite)
+"""Board reader for hybrid storage backend (ColumnVault + SQLite)
 
-Reads metrics from Lance dataset and media/tables from SQLite.
-Uses Lance Python API directly for efficient columnar access.
+Reads metrics from ColumnVault dataset and media/tables from SQLite.
+Uses ColumnVault Python API directly for efficient columnar access.
 """
 
 import json
 import math
 import sqlite3
+import struct
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import numpy as np
-from lance.dataset import LanceDataset
+from kohakuvault import ColumnVault, KVault
 
 from kohakuboard.logger import get_logger
-from kohakuboard.storage.sqlite_kv import SQLiteKVStorage
 
 # Get logger for board reader
 logger = get_logger("READER")
 
 
 class HybridBoardReader:
-    """Reader for hybrid storage (Lance metrics + SQLite metadata)
+    """Reader for hybrid storage (ColumnVault metrics + SQLite metadata)
 
     Uses:
-    - Lance Python API directly for metrics (efficient columnar access)
+    - ColumnVault Python API directly for metrics (efficient columnar access)
     - SQLite for media/tables metadata
     - SQLite KV for media binary data
     """
@@ -43,7 +43,7 @@ class HybridBoardReader:
         # Storage paths
         self.metrics_dir = (
             self.board_dir / "data" / "metrics"
-        )  # Per-metric .lance files
+        )  # Per-metric .db files (ColumnVault)
         self.sqlite_db = self.board_dir / "data" / "metadata.db"
         self.media_kv_path = self.board_dir / "media" / "blobs.db"
 
@@ -51,16 +51,16 @@ class HybridBoardReader:
         if not self.board_dir.exists():
             raise FileNotFoundError(f"Board directory not found: {board_dir}")
 
-        # Initialize SQLite KV storage (readonly mode)
+        # Initialize KVault storage (read mode)
         self.media_kv = None
         if self.media_kv_path.exists():
-            self.media_kv = SQLiteKVStorage(self.media_kv_path, readonly=True)
+            self.media_kv = KVault(str(self.media_kv_path))
 
         # Retry configuration (for SQLite locks)
         self.max_retries = 5
         self.retry_delay = 0.05
 
-    def get_metadata(self) -> Dict[str, Any]:
+    def get_metadata(self) -> dict[str, Any]:
         """Get board metadata
 
         Returns:
@@ -72,7 +72,7 @@ class HybridBoardReader:
         with open(self.metadata_path, "r") as f:
             return json.load(f)
 
-    def get_latest_step(self) -> Optional[Dict[str, Any]]:
+    def get_latest_step(self) -> dict[str, Any] | None:
         """Get latest step info from steps table
 
         Returns:
@@ -101,17 +101,17 @@ class HybridBoardReader:
         finally:
             conn.close()
 
-    def _get_metric_lance_file(self, metric: str) -> Path:
-        """Get Lance file path for a metric
+    def _get_metric_db_file(self, metric: str) -> Path:
+        """Get ColumnVault DB file path for a metric
 
         Args:
             metric: Metric name
 
         Returns:
-            Path to metric's .lance file
+            Path to metric's .db file
         """
         escaped_name = metric.replace("/", "__")
-        return self.metrics_dir / f"{escaped_name}.lance"
+        return self.metrics_dir / f"{escaped_name}.db"
 
     def _get_sqlite_connection(self) -> sqlite3.Connection:
         """Get SQLite connection (with retry)
@@ -146,8 +146,8 @@ class HybridBoardReader:
 
         raise last_error
 
-    def get_available_metrics(self) -> List[str]:
-        """Get list of available scalar metrics from Lance files
+    def get_available_metrics(self) -> list[str]:
+        """Get list of available scalar metrics from ColumnVault DB files
 
         Returns:
             List of metric names
@@ -156,14 +156,14 @@ class HybridBoardReader:
             return ["step", "global_step", "timestamp"]  # Base columns always available
 
         try:
-            # List all .lance files in metrics directory
-            lance_files = list(self.metrics_dir.glob("*.lance"))
+            # List all .db files in metrics directory
+            db_files = list(self.metrics_dir.glob("*.db"))
 
             # Convert filenames back to metric names
             metrics = []
-            for lance_file in lance_files:
-                # Remove .lance extension and convert __ back to /
-                metric_name = lance_file.stem.replace("__", "/")
+            for db_file in db_files:
+                # Remove .db extension and convert __ back to /
+                metric_name = db_file.stem.replace("__", "/")
                 metrics.append(metric_name)
 
             # Add base columns at the beginning
@@ -173,9 +173,7 @@ class HybridBoardReader:
             logger.error(f"Failed to list metrics: {e}")
             return ["step", "global_step", "timestamp"]
 
-    def get_scalar_data(
-        self, metric: str, limit: Optional[int] = None
-    ) -> Dict[str, List]:
+    def get_scalar_data(self, metric: str, limit: int | None = None) -> dict[str, list]:
         """Get scalar data for a metric
 
         Args:
@@ -189,34 +187,35 @@ class HybridBoardReader:
         if metric in ("step", "global_step", "timestamp"):
             return self._get_base_column_data(metric, limit)
 
-        # Handle regular metrics from Lance files
-        metric_file = self._get_metric_lance_file(metric)
+        # Handle regular metrics from ColumnVault DB files
+        metric_file = self._get_metric_db_file(metric)
 
         if not metric_file.exists():
             return {"steps": [], "global_steps": [], "timestamps": [], "values": []}
 
         try:
-            # Open metric's Lance dataset
-            ds = LanceDataset(str(metric_file))
+            # Open metric's ColumnVault database
+            cv = ColumnVault(str(metric_file))
 
-            # Read all columns as Arrow table (efficient!)
-            table = ds.to_table(limit=limit)
+            # Read all columns (efficient columnar access!)
+            steps = list(cv["step"])
+            global_steps = list(cv["global_step"])
+            timestamps_ms = list(cv["timestamp"])
+            raw_values = list(cv["value"])
 
-            # Convert to Python lists (columnar format)
-            steps = table["step"].to_pylist()
-            global_steps = table["global_step"].to_pylist()
+            # Apply limit if specified
+            if limit:
+                steps = steps[-limit:]
+                global_steps = global_steps[-limit:]
+                timestamps_ms = timestamps_ms[-limit:]
+                raw_values = raw_values[-limit:]
 
             # Convert timestamp ms to seconds
-            timestamps = [
-                int(ts / 1000) if ts else None for ts in table["timestamp"].to_pylist()
-            ]
+            timestamps = [int(ts / 1000) if ts else None for ts in timestamps_ms]
 
-            # Get values
-            raw_values = table["value"].to_pylist()
+            # Process values (handle NaN/inf)
             values = []
-
             for value in raw_values:
-                # Lance stores NaN/inf as NULL (limitation)
                 if value is None:
                     value = None  # Treat NULL as sparse
                 elif isinstance(value, float):
@@ -234,12 +233,12 @@ class HybridBoardReader:
                 "values": values,
             }
         except Exception as e:
-            logger.error(f"Failed to read metric '{metric}' from Lance: {e}")
+            logger.error(f"Failed to read metric '{metric}' from ColumnVault: {e}")
             return {"steps": [], "global_steps": [], "timestamps": [], "values": []}
 
     def _get_base_column_data(
-        self, column: str, limit: Optional[int] = None
-    ) -> Dict[str, List]:
+        self, column: str, limit: int | None = None
+    ) -> dict[str, list]:
         """Get base column data from SQLite steps table
 
         Args:
@@ -290,7 +289,7 @@ class HybridBoardReader:
         finally:
             conn.close()
 
-    def get_available_media_names(self) -> List[str]:
+    def get_available_media_names(self) -> list[str]:
         """Get list of available media names
 
         Returns:
@@ -310,8 +309,8 @@ class HybridBoardReader:
             conn.close()
 
     def get_media_data(
-        self, name: str, limit: Optional[int] = None
-    ) -> List[Dict[str, Any]]:
+        self, name: str, limit: int | None = None
+    ) -> list[dict[str, Any]]:
         """Get media data for a name
 
         Args:
@@ -347,7 +346,7 @@ class HybridBoardReader:
         finally:
             conn.close()
 
-    def get_available_table_names(self) -> List[str]:
+    def get_available_table_names(self) -> list[str]:
         """Get list of available table names
 
         Returns:
@@ -367,8 +366,8 @@ class HybridBoardReader:
             conn.close()
 
     def get_table_data(
-        self, name: str, limit: Optional[int] = None
-    ) -> List[Dict[str, Any]]:
+        self, name: str, limit: int | None = None
+    ) -> list[dict[str, Any]]:
         """Get table data for a name
 
         Args:
@@ -408,8 +407,8 @@ class HybridBoardReader:
         finally:
             conn.close()
 
-    def get_available_histogram_names(self) -> List[str]:
-        """Get histogram names from Lance files
+    def get_available_histogram_names(self) -> list[str]:
+        """Get histogram names from ColumnVault DB files
 
         Returns:
             List of unique histogram names
@@ -421,11 +420,14 @@ class HybridBoardReader:
         try:
             names = set()
 
-            # Read from all histogram Lance files
-            for lance_file in histograms_dir.glob("*.lance"):
-                ds = LanceDataset(str(lance_file))
-                table = ds.to_table(columns=["name"])
-                names.update(table["name"].to_pylist())
+            # Read from all histogram ColumnVault DB files
+            for db_file in histograms_dir.glob("*.db"):
+                cv = ColumnVault(str(db_file))
+                # Read all name entries
+                name_bytes_list = list(cv["name"])
+                # Decode bytes to strings
+                for name_bytes in name_bytes_list:
+                    names.add(name_bytes.decode("utf-8"))
 
             return sorted(names)
 
@@ -434,8 +436,8 @@ class HybridBoardReader:
             return []
 
     def get_histogram_data(
-        self, name: str, limit: Optional[int] = None
-    ) -> List[Dict[str, Any]]:
+        self, name: str, limit: int | None = None
+    ) -> list[dict[str, Any]]:
         """Get histogram data
 
         Args:
@@ -455,22 +457,42 @@ class HybridBoardReader:
 
             # Try both precisions
             for suffix in ["_i32", "_u8"]:
-                lance_file = histograms_dir / f"{namespace}{suffix}.lance"
-                if not lance_file.exists():
+                db_file = histograms_dir / f"{namespace}{suffix}.db"
+                if not db_file.exists():
                     continue
 
-                ds = LanceDataset(str(lance_file))
-                table = ds.to_table(filter=f"name = '{name}'", limit=limit)
+                cv = ColumnVault(str(db_file))
 
-                if len(table) == 0:
-                    continue
+                # Read all data from columns
+                steps = list(cv["step"])
+                global_steps = list(cv["global_step"])
+                names = list(cv["name"])
+                counts_bytes_list = list(cv["counts"])
+                mins = list(cv["min"])
+                maxs = list(cv["max"])
 
-                # Convert to list
+                # Filter by name and build result
                 result = []
-                for i in range(len(table)):
-                    counts = table["counts"][i].as_py()
-                    min_val = float(table["min"][i].as_py())
-                    max_val = float(table["max"][i].as_py())
+                name_bytes = name.encode("utf-8")
+
+                for i in range(len(steps)):
+                    if names[i] != name_bytes:
+                        continue
+
+                    # Deserialize counts from fixed-size bytes
+                    counts_bytes = counts_bytes_list[i]
+                    if suffix == "_u8":
+                        # uint8: 1 byte per bin
+                        counts = list(
+                            struct.unpack(f"{len(counts_bytes)}B", counts_bytes)
+                        )
+                    else:
+                        # int32: 4 bytes per bin, little-endian
+                        num_bins = len(counts_bytes) // 4
+                        counts = list(struct.unpack(f"<{num_bins}i", counts_bytes))
+
+                    min_val = float(mins[i])
+                    max_val = float(maxs[i])
                     num_bins = len(counts)
 
                     # Reconstruct bin edges from min/max/num_bins
@@ -478,18 +500,21 @@ class HybridBoardReader:
 
                     result.append(
                         {
-                            "step": int(table["step"][i].as_py()),
+                            "step": int(steps[i]),
                             "global_step": (
-                                int(table["global_step"][i].as_py())
-                                if table["global_step"][i].as_py()
-                                else None
+                                int(global_steps[i]) if global_steps[i] else None
                             ),
                             "bins": bin_edges,  # Bin EDGES (K+1 values)
                             "counts": counts,  # Counts (K values)
                         }
                     )
 
-                return result
+                    # Apply limit
+                    if limit and len(result) >= limit:
+                        break
+
+                if result:
+                    return result
 
             return []
 
@@ -497,7 +522,7 @@ class HybridBoardReader:
             logger.error(f"Failed to read histogram '{name}': {e}")
             return []
 
-    def get_media_file_path(self, filename: str) -> Optional[Path]:
+    def get_media_file_path(self, filename: str) -> Path | None:
         """Get full path to media file (DEPRECATED - use get_media_data instead)
 
         Args:
@@ -509,8 +534,8 @@ class HybridBoardReader:
         media_path = self.media_dir / filename
         return media_path if media_path.exists() else None
 
-    def get_media_data(self, filename: str) -> Optional[bytes]:
-        """Get media binary data from SQLite KV
+    def get_media_data(self, filename: str) -> bytes | None:
+        """Get media binary data from KVault
 
         Args:
             filename: Media filename in format {media_hash}.{format}
@@ -519,19 +544,17 @@ class HybridBoardReader:
             Binary media data or None if not found
         """
         if self.media_kv is None:
-            logger.warning(
-                f"SQLite KV not initialized, cannot retrieve media: {filename}"
-            )
+            logger.warning(f"KVault not initialized, cannot retrieve media: {filename}")
             return None
 
         try:
             data = self.media_kv.get(filename)
             return data
         except Exception as e:
-            logger.error(f"Failed to read media from SQLite KV: {filename}, error: {e}")
+            logger.error(f"Failed to read media from KVault: {filename}, error: {e}")
             return None
 
-    def get_media_by_id(self, media_id: int) -> Optional[Dict[str, Any]]:
+    def get_media_by_id(self, media_id: int) -> dict[str, Any] | None:
         """Get media metadata by ID from SQLite metadata DB
 
         NEW in v0.2.0: Resolves <media id=123> tags to media metadata.
@@ -567,7 +590,7 @@ class HybridBoardReader:
         finally:
             conn.close()
 
-    def get_summary(self) -> Dict[str, Any]:
+    def get_summary(self) -> dict[str, Any]:
         """Get board summary
 
         Returns:
@@ -575,13 +598,13 @@ class HybridBoardReader:
         """
         metadata = self.get_metadata()
 
-        # Count from Lance (sum rows from all metric files)
+        # Count from ColumnVault (sum rows from all metric files)
         metrics_count = 0
         if self.metrics_dir.exists():
             try:
-                for lance_file in self.metrics_dir.glob("*.lance"):
-                    ds = LanceDataset(str(lance_file))
-                    metrics_count += ds.count_rows()
+                for db_file in self.metrics_dir.glob("*.db"):
+                    cv = ColumnVault(str(db_file))
+                    metrics_count += len(cv["step"])
             except Exception as e:
                 logger.warning(f"Failed to count metrics: {e}")
 

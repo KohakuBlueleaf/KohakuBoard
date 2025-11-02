@@ -2,7 +2,7 @@
 
 v0.2.0+ ARCHITECTURE:
 - Single writer process with multiprocessing queue
-- SQLite + Lance storage backends only
+- SQLite + ColumnVault storage backends only
 - Immediate media inserts (for ID return)
 - Batched metric/table writes
 """
@@ -21,7 +21,7 @@ import numpy as np
 from kohakuboard.client.types.media_handler import MediaHandler
 from kohakuboard.storage.hybrid import HybridStorage
 from kohakuboard.storage.sqlite import SQLiteMetadataStorage
-from kohakuboard.storage.sqlite_kv import SQLiteKVStorage
+from kohakuvault import KVault
 
 
 class LogWriter:
@@ -55,11 +55,11 @@ class LogWriter:
                 f"Only 'sqlite' and 'hybrid' are supported in v0.2.0+."
             )
 
-        # Initialize SQLite KV for media storage
+        # Initialize KVault for media storage
         media_kv_path = board_dir / "media" / "blobs.db"
-        self.media_kv = SQLiteKVStorage(media_kv_path, readonly=False)
+        self.media_kv = KVault(str(media_kv_path))
 
-        # Initialize media handler with SQLite KV storage
+        # Initialize media handler with KVault storage
         self.media_handler = MediaHandler(board_dir / "media", self.media_kv)
 
         # Statistics
