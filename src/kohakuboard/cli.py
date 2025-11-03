@@ -204,5 +204,47 @@ def sync(folder, remote, token, project, private):
         sys.exit(1)
 
 
+@cli.command()
+@click.option(
+    "--board-dir",
+    default="./kohakuboard",
+    help="Directory containing boards (default: ./kohakuboard)",
+)
+def inspect(board_dir):
+    """Open KohakuBoard Inspector GUI to browse and manage experiments
+
+    Opens a graphical interface for viewing metrics, plots, media, and more.
+    Allows exporting data and managing board content.
+
+    Examples:
+        kobo inspect
+        kobo inspect ./my-experiments
+        kobo inspect /path/to/boards
+    """
+    try:
+        from kohakuboard.inspector import run_inspector
+
+        click.echo("Opening KohakuBoard Inspector...")
+        click.echo(f"Board directory: {Path(board_dir).resolve()}")
+        click.echo()
+
+        run_inspector(board_dir)
+
+    except ImportError as e:
+        click.echo("\n❌ Inspector dependencies not installed", err=True)
+        click.echo("\nInstall with:", err=True)
+        click.echo("  pip install customtkinter", err=True)
+        click.echo("\nOr install with optional extras:", err=True)
+        click.echo('  pip install -e ".[inspector]"', err=True)
+        click.echo(f"\nDetails: {e}", err=True)
+        sys.exit(1)
+    except Exception as e:
+        click.echo(f"\n❌ Error: {e}", err=True)
+        import traceback
+
+        traceback.print_exc()
+        sys.exit(1)
+
+
 if __name__ == "__main__":
     cli()

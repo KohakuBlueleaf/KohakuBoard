@@ -46,6 +46,11 @@ dependencies = [
 ]
 urls = { "Homepage" = "https://github.com/KohakuBlueleaf/KohakuBoard" }
 
+[project.optional-dependencies]
+inspector = [
+    "customtkinter>=5.2.2",
+    "matplotlib>=3.5.0",
+]
 
 [project.scripts]
 kobo = "kohakuboard.cli:cli"
