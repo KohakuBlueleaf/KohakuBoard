@@ -112,15 +112,6 @@ async def get_run_status(
                     last_updated = datetime.fromtimestamp(
                         ts_ms / 1000, tz=timezone.utc
                     ).isoformat()
-        else:
-            # DuckDB backend - count rows
-            conn = reader._get_metrics_connection()
-            try:
-                metrics_count = conn.execute("SELECT COUNT(*) FROM metrics").fetchone()[
-                    0
-                ]
-            finally:
-                conn.close()
 
     except Exception as e:
         logger_api.warning(f"Failed to get status: {e}")

@@ -129,7 +129,6 @@ async def sync_run(
             private=private,
             config=json.dumps(config),
             storage_path=storage_path,
-            backend="duckdb",
         )
         logger_api.info(f"Created new board: {board.id} (owner: {owner.username})")
 
@@ -250,7 +249,6 @@ def _get_or_create_board(
             private=True,  # Default to private
             config="{}",
             storage_path=storage_path,
-            backend="hybrid",  # Use hybrid backend for new boards
         )
         logger_api.info(f"Created new board: {board.id} (owner: {owner.username})")
 
