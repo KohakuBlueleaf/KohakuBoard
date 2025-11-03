@@ -49,7 +49,7 @@ board = Board(
         "max_epochs": 10,
         "model": "bert-base-uncased"
     },
-    backend="hybrid"
+    
 )
 ```
 

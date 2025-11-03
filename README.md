@@ -356,7 +356,6 @@ Vue 3 Frontend (WebGL Charts)
   "created_at": "2025-01-29T15:04:23",
   "finished_at": "2025-01-29T18:32:45",
   "status": "finished",
-  "backend": "hybrid",
   "version": "0.0.1"
 }
 ```
@@ -380,23 +379,11 @@ kobo sync board_id -r https://kohakuboard.example.com
 
 ## Configuration
 
-### Storage Backends
+### Basic Usage
 
 ```python
-# Hybrid (default, recommended)
-board = Board(name="exp", backend="hybrid")
-# - Metrics: KohakuVault (fastest)
-# - Media/Tables: SQLite (best concurrency)
-
-# DuckDB
-board = Board(name="exp", backend="duckdb")
-# - NaN/inf preservation
-# - SQL query support
-
-# Parquet
-board = Board(name="exp", backend="parquet")
-# - Maximum compatibility
-# - Good for post-processing
+# All boards now use KohakuVault + SQLite (no backend parameter needed)
+board = Board(name="my-experiment")
 ```
 
 ### Advanced Options
@@ -407,10 +394,14 @@ board = Board(
     board_id="custom-id",           # Auto-generated if not provided
     config={"lr": 0.001},           # Hyperparameters
     base_dir="./my-boards",         # Custom directory
-    backend="hybrid",               # Storage backend
     capture_output=True,            # Capture stdout/stderr
 )
 ```
+
+**Storage Architecture:**
+- KohakuVault KVault: Media blobs (K-V table with B+Tree index)
+- KohakuVault ColumnVault: Metrics/histograms (blob-based columnar)
+- Standard SQLite: Metadata (traditional relational tables)
 
 ### Context Manager
 
@@ -432,7 +423,6 @@ Board(
     board_id: str | None = None,    # Auto-generated if not provided
     config: dict | None = None,     # Hyperparameters, etc.
     base_dir: Path | None = None,   # Default: ./kohakuboard
-    backend: str = "hybrid",        # Storage backend
     capture_output: bool = True,    # Capture stdout/stderr
 )
 ```
@@ -616,7 +606,6 @@ See `examples/` directory:
 - Non-blocking logging architecture
 - Rich data types (scalars, media, tables, histograms)
 - Three-tier SQLite architecture (KohakuVault KVault + ColumnVault + Standard SQLite)
-- Alternative backends (DuckDB, Parquet)
 - Graceful shutdown with queue draining
 - Content-addressed media storage
 
@@ -717,7 +706,6 @@ KohakuBoard is part of the KohakuHub ecosystem. We welcome contributions!
 ## Acknowledgments
 
 - [KohakuVault](https://github.com/KohakuBlueleaf/KohakuVault) - High-performance storage library with dual SQLite interfaces (KVault for blobs, ColumnVault for sequences)
-- [DuckDB](https://duckdb.org/) - Alternative storage backend
 - [Plotly.js](https://plotly.com/javascript/) - WebGL charts
 - [Vue 3](https://vuejs.org/) - Modern UI framework
 - [FastAPI](https://fastapi.tiangolo.com/) - Backend framework

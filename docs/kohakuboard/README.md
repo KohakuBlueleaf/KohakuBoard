@@ -488,7 +488,7 @@ export KOHAKU_BOARD_DATA_DIR="./kohakuboard"
 board = Board(
     name="my_training",
     base_dir="./my_boards",  # Override default
-    backend="hybrid",         # or "parquet" (legacy)
+    ,         # or "parquet" (legacy)
     capture_output=True       # Capture stdout/stderr
 )
 ```

@@ -306,12 +306,12 @@ KohakuBoard supports 3 storage backends:
 
 ```python
 # Hybrid (default, recommended)
-board = Board(name="exp", backend="hybrid")
+board = Board(name="exp")
 # - Metrics: KohakuVault (fastest)
 # - Media/Tables: SQLite (best concurrency)
 
 # DuckDB
-board = Board(name="exp", backend="hybrid")
+board = Board(name="exp")
 # - NaN/inf preservation
 # - SQL query support
 
