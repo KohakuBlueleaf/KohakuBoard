@@ -8,6 +8,7 @@ from kohakuboard.utils.board_reader import list_boards
 from kohakuboard.config import cfg
 from kohakuboard.logger import logger_api
 
+
 router = APIRouter()
 
 

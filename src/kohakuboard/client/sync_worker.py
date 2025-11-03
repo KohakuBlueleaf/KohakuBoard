@@ -15,14 +15,20 @@ from typing import Any
 import numpy as np
 import orjson
 import requests
+
 from kohakuvault import ColumnVault, KVault
 
 
 class SyncWorker:
     """Background worker for incremental sync to remote server
 
-    Periodically checks local SQLite/ColumnVault storage for new data and syncs
-    to remote server. Runs in a separate thread and doesn't block logging.
+    Periodically checks local storage (three-tier SQLite architecture) for new data
+    and syncs to remote server. Runs in a separate thread and doesn't block logging.
+
+    Reads from:
+    1. KohakuVault ColumnVault - Metrics (blob-based columnar)
+    2. KohakuVault KVault - Media blobs (K-V table with B+Tree index)
+    3. Standard SQLite - Metadata (traditional tables)
 
     Features:
     - Periodic polling of local storage

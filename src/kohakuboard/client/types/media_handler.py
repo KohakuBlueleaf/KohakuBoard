@@ -1,7 +1,6 @@
 """Media handling utilities for images, videos, and audio"""
 
 import io
-import shutil
 from pathlib import Path
 from typing import Any
 

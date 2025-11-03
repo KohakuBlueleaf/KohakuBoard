@@ -1,7 +1,11 @@
-"""Board reader for hybrid storage backend (ColumnVault + SQLite)
+"""Board reader for hybrid storage backend (Three-tier SQLite)
 
-Reads metrics from ColumnVault dataset and media/tables from SQLite.
-Uses ColumnVault Python API directly for efficient columnar access.
+Reads from three specialized SQLite implementations:
+1. KohakuVault ColumnVault - Metrics/histograms (blob-based columnar)
+2. KohakuVault KVault - Media blobs (K-V table with B+Tree index)
+3. Standard SQLite - Metadata (traditional relational tables)
+
+All powered by KohakuVault for efficient data access.
 """
 
 import json
@@ -22,12 +26,12 @@ logger = get_logger("READER")
 
 
 class HybridBoardReader:
-    """Reader for hybrid storage (ColumnVault metrics + SQLite metadata)
+    """Reader for hybrid storage (Three-tier SQLite architecture)
 
-    Uses:
-    - ColumnVault Python API directly for metrics (efficient columnar access)
-    - SQLite for media/tables metadata
-    - SQLite KV for media binary data
+    Reads from three specialized SQLite implementations:
+    1. KohakuVault ColumnVault - Metrics (blob-based columnar, Rust-managed)
+    2. KohakuVault KVault - Media blobs (K-V table with B+Tree index)
+    3. Standard SQLite - Metadata (traditional relational tables)
     """
 
     def __init__(self, board_dir: Path):

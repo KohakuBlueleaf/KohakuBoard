@@ -8,6 +8,9 @@ import aiofiles
 import orjson
 from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, UploadFile
 
+from kohakuvault import KVault
+
+from kohakuboard.storage.hybrid import HybridStorage
 from kohakuboard_server.api.sync_models import (
     LogSyncRequest,
     LogSyncResponse,
@@ -15,8 +18,6 @@ from kohakuboard_server.api.sync_models import (
     SyncRange,
 )
 from kohakuboard_server.auth import get_current_user
-from kohakuboard.storage.hybrid import HybridStorage
-from kohakuvault import KVault
 from kohakuboard_server.config import cfg
 from kohakuboard_server.db import Board, User
 from kohakuboard_server.db_operations import get_organization, get_user_organization

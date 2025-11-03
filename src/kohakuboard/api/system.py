@@ -2,7 +2,6 @@
 
 from fastapi import APIRouter
 
-from kohakuboard.config import cfg
 
 router = APIRouter()
 

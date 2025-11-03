@@ -3,23 +3,23 @@
 import atexit
 import json
 import multiprocessing as mp
-from multiprocessing import shared_memory
 import signal
 import sys
 import time
 import uuid
 import weakref
 from datetime import datetime, timezone
+from multiprocessing import shared_memory
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 import numpy as np
 
 from kohakuboard.client.capture import OutputCapture
+from kohakuboard.client.sync_worker import SyncWorker
 from kohakuboard.client.types import Media, Table, Histogram
 from kohakuboard.client.types.media import is_media
 from kohakuboard.client.writer import writer_process_main
-from kohakuboard.client.sync_worker import SyncWorker
 
 # Get logger for Board
 from kohakuboard.logger import get_logger
@@ -99,8 +99,11 @@ class Board:
             base_dir: Base directory for boards (default: ./kohakuboard)
             capture_output: Whether to capture stdout/stderr to log file
             backend: Storage backend ("sqlite" or "hybrid", default: "hybrid")
-                - "sqlite": Pure SQLite storage (simple, reliable)
-                - "hybrid": ColumnVault + SQLite (recommended, best performance)
+                - "sqlite": Pure standard SQLite storage (simple, reliable)
+                - "hybrid": Three-tier SQLite architecture (recommended, best performance)
+                  1. KohakuVault KVault (K-V table with B+Tree index) - Media blobs
+                  2. KohakuVault ColumnVault (blob-based columnar) - Metrics/histograms
+                  3. Standard SQLite (traditional tables) - Metadata
                 Note: DuckDB and Parquet backends are deprecated in v0.2.0+
             remote_url: Remote server base URL for sync (e.g., https://board.example.com)
             remote_token: Authentication token for remote server
@@ -143,8 +146,6 @@ class Board:
         self._is_finishing = False  # Prevent re-entrant finish() calls
         self._interrupt_count = 0  # Track Ctrl+C presses for force exit
 
-        # Multiprocessing setup - use Manager.Queue to avoid Windows deadlock
-        # See: https://bugs.python.org/issue29797
         self.queue = mp.Queue(maxsize=50000)
         self.stop_event = mp.Event()
 

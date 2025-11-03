@@ -1,4 +1,4 @@
-"""Histogram storage using KohakuVault ColumnVault (grouped by namespace)
+"""Histogram storage using KohakuVault's ColumnVault (grouped by namespace)
 
 Strategy:
 1. One ColumnVault DB per namespace:
@@ -19,7 +19,6 @@ Schema:
 Fixed-size bytes optimization for counts reduces overhead!
 """
 
-import struct
 from pathlib import Path
 from typing import Any
 
@@ -30,7 +29,11 @@ from kohakuboard.logger import get_logger
 
 
 class ColumnVaultHistogramStorage:
-    """Histogram storage with namespace-based grouping using ColumnVault"""
+    """Histogram storage with namespace-based grouping using KohakuVault's ColumnVault
+
+    Uses blob-based columnar storage with Rust-managed layout for efficient
+    histogram data management.
+    """
 
     def __init__(self, base_dir: Path, num_bins: int = 64, logger=None):
         """Initialize histogram storage

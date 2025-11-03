@@ -7,6 +7,7 @@ from typing import Optional
 
 from kohakuboard.logger import get_logger
 
+
 logger = get_logger("CAPTURE")
 
 

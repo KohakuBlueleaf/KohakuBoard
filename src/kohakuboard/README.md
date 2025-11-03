@@ -16,7 +16,7 @@ KohakuBoard is a **standalone sub-project** within KohakuHub, providing experime
 
 - ✅ **Non-Blocking Logging** - Background writer process, zero training overhead
 - ✅ **Rich Data Types** - Scalars, images, videos, tables, histograms
-- ✅ **Hybrid Storage** - Lance (columnar) + SQLite (row-oriented) for optimal performance
+- ✅ **Hybrid Storage** - KohakuVault (columnar) + SQLite (row-oriented) for optimal performance
 - ✅ **No Step Inflation** - Log multiple values at same step
 - ✅ **Local-First** - View experiments locally with `kobo open`, no server required
 - ⏳ **Remote Sync** - Upload to shared server (WIP)
@@ -76,9 +76,9 @@ kobo open ./kohakuboard --browser
 
 ## Architecture
 
-### Hybrid ColumnVault + SQLite Storage
+### Hybrid KohakuVault + SQLite Storage
 
-After trying various approaches (DuckDB, Parquet), we settled on Lance+SQLite:
+After trying various approaches (DuckDB, Parquet), we settled on KohakuVault+SQLite:
 
 - **ColumnVault (Columnar)** - Metrics and histograms (column-oriented reads)
 - **SQLite (Row-Oriented)** - Metadata, tables, media references
@@ -120,10 +120,10 @@ src/kohakuboard/
 │   │   ├── columnar_histogram.py
 │   │   └── media_handler.py
 │   └── storage/              # Storage backends
-│       ├── hybrid.py         # ColumnVault + SQLite (default)
-│       ├── columnar.py          # Lance metrics storage
+│       ├── hybrid.py         # KohakuVault + SQLite (default)
+│       ├── columnar.py          # KohakuVault metrics storage
 │       ├── sqlite.py         # SQLite metadata storage
-│       └── columnar_histogram.py      # Histogram storage (Lance)
+│       └── columnar_histogram.py      # Histogram storage (KohakuVault)
 ├── api/                      # FastAPI server (WIP)
 ├── cli.py                    # CLI tool (kobo command)
 ├── main.py                   # Server entry point
@@ -233,7 +233,7 @@ for epoch in range(100):
 ### ✅ Complete
 
 - [x] Python client library
-- [x] Hybrid ColumnVault+SQLite storage
+- [x] Hybrid KohakuVault+SQLite storage
 - [x] Rich data types
 - [x] Non-blocking async logging
 - [x] Local viewer (`kobo open`)

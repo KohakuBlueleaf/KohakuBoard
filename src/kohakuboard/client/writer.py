@@ -2,26 +2,26 @@
 
 v0.2.0+ ARCHITECTURE:
 - Single writer process with multiprocessing queue
-- SQLite + ColumnVault storage backends only
+- Three-tier SQLite storage architecture:
+  1. KohakuVault ColumnVault - Metrics/histograms (blob-based columnar)
+  2. KohakuVault KVault - Media blobs (K-V table with B+Tree index)
+  3. Standard SQLite - Metadata (traditional relational tables)
 - Immediate media inserts (for ID return)
 - Batched metric/table writes
 """
 
-import multiprocessing as mp
-from multiprocessing import shared_memory
-import queue
-import threading
 import time
+from multiprocessing import shared_memory
 from pathlib import Path
 from queue import Empty
 from typing import Any
 
 import numpy as np
+from kohakuvault import KVault
 
 from kohakuboard.client.types.media_handler import MediaHandler
 from kohakuboard.storage.hybrid import HybridStorage
 from kohakuboard.storage.sqlite import SQLiteMetadataStorage
-from kohakuvault import KVault
 
 
 class LogWriter:

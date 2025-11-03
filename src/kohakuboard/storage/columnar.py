@@ -1,4 +1,4 @@
-"""KohakuVault ColumnVault-based storage for scalar metrics (per-metric files)
+"""KohakuVault-based storage for scalar metrics using ColumnVault (per-metric files)
 
 Uses one ColumnVault DB per metric (like Lance but with SQLite):
 - metrics/train__loss.db
@@ -19,18 +19,20 @@ from kohakuboard.logger import get_logger
 
 
 class ColumnVaultMetricsStorage:
-    """ColumnVault-based storage with per-metric files
+    """KohakuVault ColumnVault-based storage with per-metric files
 
-    Architecture:
-    - One .db file per metric (SQLite with ColumnVault)
+    Uses KohakuVault's ColumnVault (blob-based columnar storage):
+    - One .db file per metric
     - Fixed columns: step, global_step, timestamp, value
-    - WAL mode for true SWMR (Single-Writer-Multiple-Reader)
+    - Rust-managed columnar layout in SQLite blobs
+    - True SWMR (Single-Writer-Multiple-Reader)
     - Independent writes per metric
 
     Benefits:
-    - Single file per metric (simpler than Lance)
+    - Blob-based columnar storage (efficient for time-series)
+    - Rust-managed chunk layout (fast .extend() operations)
+    - Single file per metric (simpler deployment)
     - True SWMR with SQLite WAL mode
-    - Efficient columnar storage
     - Fast bulk appends with .extend()
     """
 

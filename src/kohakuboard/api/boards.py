@@ -1,14 +1,14 @@
 """Boards API endpoints - serves real board data from file system"""
 
 from pathlib import Path
-from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException, Query
-from fastapi.responses import FileResponse, RedirectResponse, Response
+from fastapi.responses import Response
 
 from kohakuboard.utils.board_reader import BoardReader, list_boards
 from kohakuboard.config import cfg
 from kohakuboard.logger import logger_api
+
 
 router = APIRouter()
 
@@ -108,7 +108,7 @@ async def get_available_scalars(board_id: str):
 async def get_scalar_data(
     board_id: str,
     metric: str,
-    limit: Optional[int] = Query(None, description="Maximum number of data points"),
+    limit: int | None = Query(None, description="Maximum number of data points"),
 ):
     """Get scalar data for a specific metric
 
@@ -165,7 +165,7 @@ async def get_available_media(board_id: str):
 async def get_media_data(
     board_id: str,
     name: str,
-    limit: Optional[int] = Query(None, description="Maximum number of entries"),
+    limit: int | None = Query(None, description="Maximum number of entries"),
 ):
     """Get media data for a specific log name
 
@@ -221,7 +221,7 @@ async def get_available_tables(board_id: str):
 async def get_table_data(
     board_id: str,
     name: str,
-    limit: Optional[int] = Query(None, description="Maximum number of entries"),
+    limit: int | None = Query(None, description="Maximum number of entries"),
 ):
     """Get table data for a specific log name
 

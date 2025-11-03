@@ -10,12 +10,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, Body, HTTPException, Query
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import Response
 from pydantic import BaseModel
 
 from kohakuboard.utils.board_reader import BoardReader
 from kohakuboard.config import cfg
 from kohakuboard.logger import logger_api
+
 
 router = APIRouter()
 

@@ -6,6 +6,7 @@ from pathlib import Path
 import requests
 from kohakuboard.logger import get_logger
 
+
 logger = get_logger("CLIENT")
 
 

@@ -1,12 +1,25 @@
-"""Hybrid storage backend: KohakuVault ColumnVault for metrics + SQLite for metadata
+"""Hybrid storage backend: Three-tier SQLite architecture
 
-Combines the best of both worlds:
-- ColumnVault: Efficient columnar storage for metrics with true SWMR
-- SQLite: Fixed schema, excellent concurrency for media/tables
-- Adaptive histograms: ColumnVault with percentile-based range tracking
+Three specialized SQLite implementations for optimal performance:
+1. KohakuVault KVault - K-V table with index on K (B+Tree-based disk KV store)
+2. KohakuVault ColumnVault - Blob storage with Rust columnar layout management
+3. Standard SQLite - Traditional relational tables for metadata
+
+Architecture:
+- Metrics/Histograms: ColumnVault (blob-based columnar, Rust-managed chunks)
+- Media blobs: KVault (K-V table with B+Tree index, content-addressable)
+- Metadata: Standard SQLite (traditional relational tables)
+
+Why this design?
+- All use SQLite but with specialized implementations
+- KVault: Efficient B+Tree-based KV store with .cache() for bulk ops
+- ColumnVault: Columnar layout in blobs, managed by Rust for performance
+- Standard SQLite: Traditional ACID tables for structured metadata
+- Single dependency (kohakuvault), no external services
+- Rust performance with Pythonic API
+- Simple deployment (just .db files, no infrastructure)
 """
 
-import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -18,20 +31,31 @@ from kohakuboard.storage.sqlite import SQLiteMetadataStorage
 
 
 class HybridStorage:
-    """Hybrid storage: ColumnVault for metrics + SQLite for metadata
+    """Hybrid storage: Three-tier SQLite architecture
 
-    Architecture:
-    - Metrics (scalars): ColumnVault columnar format (per-metric SQLite DBs)
-    - Media: SQLite (fixed schema, good for metadata)
-    - Tables: SQLite (fixed schema)
-    - Histograms: ColumnVault with fixed-size bytes for counts
+    Powered by KohakuVault (https://github.com/KohakuBlueleaf/KohakuVault):
 
-    Benefits:
-    - Fast metric writes (ColumnVault .extend() with .cache())
-    - True SWMR with SQLite WAL mode
-    - Single file per metric (simpler deployment)
-    - Fast media/table writes (SQLite autocommit)
-    - No connection overhead
+    1. KohakuVault KVault (K-V Store):
+       - K-V table with index on K → B+Tree-based disk KV store
+       - Used for: Media blobs (content-addressable storage)
+       - Benefits: .cache() for bulk ops, efficient key lookups
+
+    2. KohakuVault ColumnVault (Columnar Storage):
+       - Blobs managed by Rust for columnar layout
+       - Used for: Metrics (per-metric DBs), Histograms (namespace-grouped)
+       - Benefits: Fast .extend(), true SWMR, dynamic chunking
+
+    3. Standard SQLite (Relational):
+       - Traditional SQLite tables
+       - Used for: Metadata (media/table metadata, step info)
+       - Benefits: ACID guarantees, standard SQL queries
+
+    Why this design?
+    - All three use SQLite, but with different specializations
+    - KVault: Optimized for KV lookups (B+Tree index)
+    - ColumnVault: Optimized for append-heavy time-series (Rust-managed blobs)
+    - Standard SQLite: Optimized for structured metadata (relational)
+    - Single dependency, no external services, simple deployment
     """
 
     def __init__(self, base_dir: Path, logger=None):
@@ -60,7 +84,7 @@ class HybridStorage:
         )
 
         self.logger.debug(
-            "Hybrid storage initialized (ColumnVault + SQLite + Histograms)"
+            "Hybrid storage initialized (Three-tier SQLite: KVault + ColumnVault + Standard)"
         )
 
     def append_metrics(
