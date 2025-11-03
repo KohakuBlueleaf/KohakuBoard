@@ -1,12 +1,22 @@
 """Sync API endpoints for uploading boards to remote server"""
 
+import hashlib
 import json
 from datetime import datetime, timezone
 from pathlib import Path
 
 import aiofiles
 import orjson
-from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, UploadFile
+from fastapi import (
+    APIRouter,
+    Body,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Request,
+    UploadFile,
+)
 
 from kohakuvault import KVault
 
@@ -423,17 +433,25 @@ async def sync_logs_incremental(
             if "config" in request.metadata:
                 board.config = json.dumps(request.metadata["config"])
 
-        # Append log lines if provided
-        if request.log_lines:
-            log_dir = board_dir / "logs"
-            log_dir.mkdir(exist_ok=True)
-            log_file = log_dir / "output.log"
-            async with aiofiles.open(log_file, "a") as f:
-                for line in request.log_lines:
-                    await f.write(line + "\n")
-            logger_api.debug(
-                f"Appended {len(request.log_lines)} log lines to {log_file}"
-            )
+        # Collect server-side log file hashes for comparison
+        log_dir = board_dir / "logs"
+        log_dir.mkdir(exist_ok=True)
+
+        server_log_hashes = {}
+        for log_name in [
+            "output.log",
+            "board.log",
+            "writer.log",
+            "sync_worker.log",
+            "storage.log",
+        ]:
+            log_file = log_dir / log_name
+            if log_file.exists():
+                try:
+                    content = log_file.read_bytes()
+                    server_log_hashes[log_name] = hashlib.sha256(content).hexdigest()
+                except:
+                    pass
 
         # Check which media files we don't have in SQLite KV
         media_kv_path = board_dir / "media" / "blobs.db"
@@ -469,6 +487,7 @@ async def sync_logs_incremental(
             status="synced",
             synced_range=request.sync_range,
             missing_media=missing_media,
+            log_hashes=server_log_hashes,
         )
 
     except Exception as e:
@@ -477,6 +496,71 @@ async def sync_logs_incremental(
             500,
             detail={"error": f"Sync failed: {str(e)}"},
         )
+
+
+@router.put("/projects/{project_name}/runs/{run_id}/logs/{log_filename}")
+async def upload_log_file(
+    project_name: str,
+    run_id: str,
+    log_filename: str,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+):
+    """Upload a log file (binary endpoint)
+
+    Args:
+        project_name: Project name (may include org/)
+        run_id: Run ID
+        log_filename: Log file name (output.log, board.log, etc.)
+        request: Raw request with binary body
+        current_user: Authenticated user
+
+    Returns:
+        Success status with hash
+    """
+    # Validate log filename (security)
+    allowed_logs = [
+        "output.log",
+        "board.log",
+        "writer.log",
+        "sync_worker.log",
+        "storage.log",
+    ]
+    if log_filename not in allowed_logs:
+        raise HTTPException(
+            400,
+            detail={"error": f"Invalid log filename: {log_filename}"},
+        )
+
+    logger_api.info(f"Log upload: {project_name}/{run_id}/{log_filename}")
+
+    # Get or create board
+    board, board_dir = _get_or_create_board(project_name, run_id, current_user)
+
+    # Read binary body
+    content_bytes = await request.body()
+
+    # Write to log file (binary mode)
+    log_dir = board_dir / "logs"
+    log_dir.mkdir(exist_ok=True)
+    log_file = log_dir / log_filename
+
+    async with aiofiles.open(log_file, "wb") as f:
+        await f.write(content_bytes)
+
+    # Calculate hash for verification
+    file_hash = hashlib.sha256(content_bytes).hexdigest()
+
+    logger_api.debug(
+        f"Uploaded log file: {log_filename} ({len(content_bytes)} bytes, hash: {file_hash[:8]}...)"
+    )
+
+    return {
+        "status": "success",
+        "filename": log_filename,
+        "size": len(content_bytes),
+        "hash": file_hash,
+    }
 
 
 @router.post("/projects/{project_name}/runs/{run_id}/media")

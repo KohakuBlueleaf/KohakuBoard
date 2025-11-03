@@ -148,7 +148,7 @@ class Board:
             level="DEBUG",
             rotation="10 MB",
             retention="7 days",
-            colorize=True,
+            colorize=False,  # No ANSI color codes in log files
             filter=lambda record: record["extra"].get("api_name") == "BOARD",
         )
 

@@ -338,7 +338,7 @@ def create_file_only_logger(log_file: Path, api_name: str = "WORKER") -> Logger:
         level="DEBUG",
         rotation="10 MB",
         retention="7 days",
-        colorize=True,
+        colorize=False,  # No ANSI codes in log files
         filter=lambda record: record["extra"].get("api_name") == api_name,
     )
 

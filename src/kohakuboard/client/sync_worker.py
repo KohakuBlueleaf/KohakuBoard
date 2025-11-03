@@ -4,6 +4,7 @@ Standalone thread that periodically reads from local storage and syncs
 new data to remote server using JSON payloads.
 """
 
+import hashlib
 import json
 import sqlite3
 import threading
@@ -126,7 +127,7 @@ class SyncWorker:
         # Perform initial sync immediately to create remote board
         self._initial_sync()
 
-        self.thread = threading.Thread(target=self._sync_loop, daemon=False)
+        self.thread = threading.Thread(target=self._sync_loop, daemon=True)
         self.thread.start()
         self.logger.info("SyncWorker thread started")
 
@@ -189,7 +190,7 @@ class SyncWorker:
                 "tables": [],
                 "histograms": [],
                 "metadata": metadata,
-                "log_lines": [],
+                "log_files": {},
             }
 
             # Send to remote server
@@ -280,11 +281,12 @@ class SyncWorker:
             if payload.get("metadata"):
                 self.state["metadata_synced"] = True
 
-            # Update last synced log line
-            if payload.get("log_lines"):
-                self.state["last_synced_log_line"] = self.state.get(
-                    "last_synced_log_line", 0
-                ) + len(payload["log_lines"])
+            # Upload changed log files (compare hashes)
+            # Server always returns log_hashes (even if empty dict on first sync)
+            if "log_hashes" in response:
+                self._upload_changed_log_files(
+                    payload.get("log_hashes", {}), response.get("log_hashes", {})
+                )
 
             self._save_state()
 
@@ -340,8 +342,8 @@ class SyncWorker:
         if not self.state.get("metadata_synced", False):
             payload["metadata"] = self._collect_metadata()
 
-        # Collect new log lines
-        payload["log_lines"] = self._collect_log_lines()
+        # Collect log file hashes for change detection
+        payload["log_hashes"] = self._collect_log_hashes()
 
         return payload
 
@@ -567,35 +569,101 @@ class SyncWorker:
             self.logger.error(f"Failed to read metadata.json: {e}")
             return None
 
-    def _collect_log_lines(self) -> list[str]:
-        """Collect new log lines from output.log
+    def _collect_log_hashes(self) -> dict[str, str]:
+        """Collect hashes of ALL log files for change detection
 
         Returns:
-            List of new log lines (since last sync)
+            Dict of {filename: hash}
         """
-        log_file = self.board_dir / "logs" / "output.log"
-        if not log_file.exists():
-            return []
+        logs_dir = self.board_dir / "logs"
+        if not logs_dir.exists():
+            return {}
 
-        last_synced_line = self.state.get("last_synced_log_line", 0)
+        log_hashes = {}
 
-        try:
-            with open(log_file, "r") as f:
-                all_lines = f.readlines()
+        # All log files to sync
+        log_names = [
+            "output.log",
+            "board.log",
+            "writer.log",
+            "sync_worker.log",
+            "storage.log",
+        ]
 
-            # Get new lines (strip newlines since we add them back on server)
-            new_lines = [line.rstrip("\n") for line in all_lines[last_synced_line:]]
+        for log_name in log_names:
+            log_path = logs_dir / log_name
+            if not log_path.exists():
+                continue
 
-            if new_lines:
-                self.logger.debug(
-                    f"Collected {len(new_lines)} new log lines "
-                    f"(from line {last_synced_line} to {last_synced_line + len(new_lines)})"
+            try:
+                # Read file and calculate hash
+                with open(log_path, "rb") as f:
+                    content_bytes = f.read()
+
+                file_hash = hashlib.sha256(content_bytes).hexdigest()
+                log_hashes[log_name] = file_hash
+
+            except Exception as e:
+                self.logger.error(f"Failed to hash {log_name}: {e}")
+
+        return log_hashes
+
+    def _upload_changed_log_files(
+        self, local_hashes: dict[str, str], remote_hashes: dict[str, str]
+    ):
+        """Upload log files that have changed
+
+        Args:
+            local_hashes: Local log file hashes
+            remote_hashes: Remote log file hashes from server (may be empty on first sync)
+        """
+        logs_dir = self.board_dir / "logs"
+
+        for log_name, local_hash in local_hashes.items():
+            remote_hash = remote_hashes.get(log_name)
+
+            if remote_hash and local_hash == remote_hash:
+                # File exists on server and hash matches - skip
+                self.logger.debug(f"Log file unchanged: {log_name}")
+                continue
+
+            # File changed or new or server doesn't have it - upload
+            log_path = logs_dir / log_name
+
+            if not log_path.exists():
+                self.logger.warning(f"Log file disappeared: {log_name}")
+                continue
+
+            try:
+                with open(log_path, "rb") as f:
+                    content_bytes = f.read()
+
+                # Upload via binary endpoint
+                url = f"{self.remote_url}/api/projects/{self.project}/runs/{self.run_id}/logs/{log_name}"
+
+                response = self.session.put(
+                    url,
+                    data=content_bytes,
+                    headers={"Content-Type": "application/octet-stream"},
+                    timeout=60,  # Longer timeout for large log files
                 )
 
-            return new_lines
-        except Exception as e:
-            self.logger.error(f"Failed to read output.log: {e}")
-            return []
+                response.raise_for_status()
+
+                # Update local state
+                self.state[f"log_hash_{log_name}"] = local_hash
+
+                if remote_hash:
+                    self.logger.info(
+                        f"Updated log file: {log_name} ({len(content_bytes)} bytes)"
+                    )
+                else:
+                    self.logger.info(
+                        f"Uploaded new log file: {log_name} ({len(content_bytes)} bytes)"
+                    )
+
+            except Exception as e:
+                self.logger.error(f"Failed to upload {log_name}: {e}")
 
     def _sync_logs(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Send log data to remote server
@@ -785,31 +853,31 @@ class SyncWorker:
         if not self.state_file.exists():
             return {
                 "last_synced_step": -1,
-                "last_synced_log_line": 0,
                 "metadata_synced": False,
                 "last_sync_at": None,
                 "remote_url": self.remote_url,
                 "project": self.project,
                 "run_id": self.run_id,
+                # Log file hashes stored as: log_hash_<filename>
             }
 
         try:
             with open(self.state_file, "r") as f:
                 state = json.load(f)
                 # Add new fields if missing (for backward compatibility)
-                state.setdefault("last_synced_log_line", 0)
+                # Log file hashes are managed separately per file
                 state.setdefault("metadata_synced", False)
                 return state
         except Exception as e:
             self.logger.warning(f"Failed to load sync state: {e}, using defaults")
             return {
                 "last_synced_step": -1,
-                "last_synced_log_line": 0,
                 "metadata_synced": False,
                 "last_sync_at": None,
                 "remote_url": self.remote_url,
                 "project": self.project,
                 "run_id": self.run_id,
+                # Log file hashes stored as: log_hash_<filename>
             }
 
     def _save_state(self):

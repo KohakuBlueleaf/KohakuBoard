@@ -92,8 +92,8 @@ class LogSyncRequest(BaseModel):
     metadata: Optional[Dict[str, Any]] = Field(
         None, description="Board metadata (name, config, etc.)"
     )
-    log_lines: Optional[List[str]] = Field(
-        None, description="New log lines from output.log"
+    log_hashes: Optional[dict[str, str]] = Field(
+        None, description="Log file hashes for change detection {filename: hash}"
     )
 
 
@@ -102,6 +102,9 @@ class LogSyncResponse(BaseModel):
 
     status: str = Field(..., description="Sync status (synced, partial, error)")
     synced_range: SyncRange = Field(..., description="Range that was synced")
+    log_hashes: dict[str, str] = Field(
+        default_factory=dict, description="Server-side log file hashes {filename: hash}"
+    )
     missing_media: List[str] = Field(
         default_factory=list,
         description="List of media hashes that need to be uploaded",
