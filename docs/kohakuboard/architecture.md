@@ -37,10 +37,10 @@ graph TB
     end
 
     subgraph "Storage Layer"
-        H --> M[Lance Metrics]
+        H --> M[KohakuVault Metrics]
         I --> N[SQLite + Media Files]
         J --> N
-        K --> O[Lance Histograms]
+        K --> O[KohakuVault Histograms]
         L --> P{Split by Type}
         P --> M
         P --> N
@@ -142,9 +142,9 @@ graph TB
 
 ---
 
-## Storage Architecture: Hybrid Lance + SQLite
+## Storage Architecture: Hybrid KohakuVault + SQLite
 
-KohakuBoard uses a **hybrid storage system** combining Lance (columnar) and SQLite (row-oriented) for optimal performance. After trying various approaches including DuckDB and Parquet, we found this combination works best.
+KohakuBoard uses a **hybrid storage system** combining KohakuVault (columnar) and SQLite (row-oriented) for optimal performance. After trying various approaches including DuckDB and Parquet, we found this combination works best.
 
 ### Design Philosophy
 
@@ -157,7 +157,7 @@ loss_values = read_metric("train/loss")
 # → [0.5, 0.48, 0.45, 0.42, ...] (entire column)
 ```
 
-This is a **column-oriented access pattern** → Perfect for Lance!
+This is a **column-oriented access pattern** → Perfect for KohakuVault!
 
 **Metadata = Row-Oriented Queries**
 
@@ -174,7 +174,7 @@ This is a **row-oriented access pattern** → Perfect for SQLite!
 graph TB
     A[Storage Decision] --> B{Access Pattern?}
 
-    B -->|Read whole column<br/>at once| C[Use Lance]
+    B -->|Read whole column<br/>at once| C[Use KohakuVault]
     B -->|Random row<br/>access| D[Use SQLite]
 
     C --> E[Metrics<br/>Histograms]
@@ -191,27 +191,27 @@ graph TB
 
 ```mermaid
 graph TB
-    subgraph "Hybrid Storage (Lance + SQLite)"
+    subgraph "Hybrid Storage (KohakuVault + SQLite)"
         A[Writer Process] --> B{Data Type}
 
-        B -->|Scalars| C[LanceMetricsStorage]
+        B -->|Scalars| C[ColumnVaultMetricsStorage]
         B -->|Media Metadata| D[SQLiteMetadataStorage]
         B -->|Tables| D
         B -->|Step Info| D
         B -->|Histograms| E[HistogramStorage]
 
-        C --> F[Per-Metric Lance Files]
-        F --> F1[train__loss.lance]
-        F --> F2[val__accuracy.lance]
+        C --> F[Per-Metric DB Files]
+        F --> F1[train__loss.db]
+        F --> F2[val__accuracy.db]
 
         D --> G[metadata.db<br/>SQLite WAL mode]
         G --> G1[media table]
         G --> G2[tables table]
         G --> G3[step_info table]
 
-        E --> H[Namespace-Grouped Lance]
-        H --> H1[gradients_i32.lance]
-        H --> H2[params_u8.lance]
+        E --> H[Namespace-Grouped DBs]
+        H --> H1[gradients_i32.db]
+        H --> H2[params_u8.db]
     end
 
     subgraph "Media Files"
@@ -228,16 +228,16 @@ graph TB
 ```
 data/
 ├── metrics/
-│   ├── train__loss.lance       # Per-metric Lance files (column-oriented)
-│   ├── val__accuracy.lance
+│   ├── train__loss.db       # Per-metric KohakuVault files (column-oriented)
+│   ├── val__accuracy.db
 │   └── ...
 ├── metadata.db                 # SQLite WAL (row-oriented metadata)
 │   ├── media table             # Media file references
 │   ├── tables table            # Table data
 │   └── step_info table         # Step timestamps
 └── histograms/
-    ├── gradients_i32.lance     # Namespace-grouped histograms
-    ├── params_u8.lance
+    ├── gradients_i32.db     # Namespace-grouped histograms
+    ├── params_u8.db
     └── ...
 media/
 ├── sample_image_00000100_a1b2c3d4.png
@@ -247,7 +247,7 @@ media/
 
 ---
 
-### Why Lance for Metrics & Histograms?
+### Why KohakuVault for Metrics & Histograms?
 
 **Column-Oriented Benefits:**
 - ✅ **Non-blocking incremental writes:** No locks, multiple readers possible
@@ -256,13 +256,13 @@ media/
 - ✅ **Compression:** Efficient storage for numeric data
 
 **Trade-offs:**
-- ⚠️ NaN/Inf converted to None (Lance limitation)
+- ⚠️ NaN/Inf converted to None (handled by KohakuVault)
 - ⚠️ Not ideal for row-oriented random access
 
-**Why we chose Lance over alternatives:**
+**Why we chose KohakuVault over alternatives:**
 - DuckDB: Great for SQL but had locking issues with high-frequency writes (if you want to support multiple reader you need to keep start/close connection which is slow)
 - Parquet: Read-concat-write pattern too slow for real-time logging
-- **Lance**: Perfect balance of write performance and read efficiency
+- **KohakuVault**: Perfect balance of write performance and read efficiency
 
 ---
 
@@ -286,16 +286,16 @@ media/
 
 ### Performance Comparison
 
-| Operation | Lance | SQLite | Best For |
+| Operation | KohakuVault | SQLite | Best For |
 |-----------|-------|--------|----------|
-| **Sequential column read** | Fastest | Slow | Lance ✅ |
+| **Sequential column read** | Fastest | Slow | KohakuVault ✅ |
 | **Random row access** | Slow | Fast | SQLite ✅ |
-| **Incremental append** | Non-blocking | Single writer | Lance ✅ |
+| **Incremental append** | Non-blocking | Single writer | KohakuVault ✅ |
 | **Concurrent reads** | Excellent | Excellent (WAL) | Both ✅ |
-| **Schema evolution** | Automatic | ALTER TABLE | Lance ✅ |
+| **Schema evolution** | Automatic | ALTER TABLE | KohakuVault ✅ |
 | **Relational queries** | ❌ | ✅ SQL | SQLite ✅ |
 
-**Result:** Use Lance where Lance excels, SQLite where SQLite excels!
+**Result:** Use KohakuVault where KohakuVault excels, SQLite where SQLite excels!
 
 ---
 
@@ -305,7 +305,7 @@ media/
 
 ```mermaid
 graph LR
-    A[Hybrid Storage] --> B[Lance<br/>Column-oriented]
+    A[Hybrid Storage] --> B[KohakuVault<br/>Column-oriented]
     A --> C[SQLite<br/>Metadata]
     A --> D[KohakuVault<br/>Media blobs]
 
@@ -681,7 +681,7 @@ graph TB
 | Queue (empty) | ~1 MB |
 | Queue (40k messages) | ~50-100 MB |
 | Writer process | ~100-200 MB |
-| Lance writer cache | ~50 MB |
+| KohakuVault writer cache | ~50 MB |
 | SQLite cache | ~10 MB |
 
 ### Latency
@@ -781,10 +781,10 @@ print(f"Queue size: {board.queue.qsize()}")
 KohakuBoard's architecture provides:
 
 - ✅ **Non-blocking logging** via background writer
-- ✅ **Hybrid storage** combining Lance (columnar) + SQLite (row-oriented)
+- ✅ **Hybrid storage** combining KohakuVault (columnar) + SQLite (row-oriented)
 - ✅ **Efficient batching** for mixed-type logs
 - ✅ **Histogram optimization** via client-side precomputation
 - ✅ **Graceful shutdown** with full queue draining
 - ✅ **High throughput** (~20,000 metrics/second sustained)
 
-The design prioritizes **training performance** (zero blocking) while maintaining **data integrity** (graceful shutdown, queue monitoring). The Lance+SQLite combination leverages each database's strengths for optimal performance.
+The design prioritizes **training performance** (zero blocking) while maintaining **data integrity** (graceful shutdown, queue monitoring). The KohakuVault+SQLite combination leverages each database's strengths for optimal performance.

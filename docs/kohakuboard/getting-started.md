@@ -280,14 +280,14 @@ kohakuboard/
 └── {board_id}/                           # e.g., 20250129_150423_abc123
     ├── metadata.json                     # Board config
     ├── data/                             # Storage backend files
-    │   ├── metrics/                      # (hybrid) Lance files
-    │   │   ├── train__loss.lance
-    │   │   ├── val__accuracy.lance
+    │   ├── metrics/                      # (hybrid) KohakuVault DB files
+    │   │   ├── train__loss.db
+    │   │   ├── val__accuracy.db
     │   │   └── ...
     │   ├── metadata.db                   # (hybrid) SQLite metadata
     │   └── histograms/
-    │       ├── gradients_i32.lance       # int32 precision
-    │       └── params_u8.lance           # uint8 precision
+    │       ├── gradients_i32.db       # int32 precision
+    │       └── params_u8.db           # uint8 precision
     ├── media/                            # Images, videos, audio
     │   ├── sample_image_00000000_a1b2c3d4.png
     │   └── ...
@@ -307,16 +307,16 @@ KohakuBoard supports 3 storage backends:
 ```python
 # Hybrid (default, recommended)
 board = Board(name="exp", backend="hybrid")
-# - Metrics: Lance (fastest)
+# - Metrics: KohakuVault (fastest)
 # - Media/Tables: SQLite (best concurrency)
 
 # DuckDB
-board = Board(name="exp", backend="duckdb")
+board = Board(name="exp", backend="hybrid")
 # - NaN/inf preservation
 # - SQL query support
 
 # Parquet
-board = Board(name="exp", backend="parquet")
+board = Board(name="exp", backend="sqlite")
 # - Maximum compatibility
 # - Good for post-processing
 ```

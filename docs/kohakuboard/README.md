@@ -1,6 +1,6 @@
 # KohakuBoard - Lightweight ML Experiment Tracking
 
-**Non-blocking, file-based experiment tracking with DuckDB backend**
+**Non-blocking, file-based experiment tracking with KohakuVault + SQLite backend**
 
 **Status:** ✅ Production Ready
 **License:** Kohaku Software License 1.0 (Non-Commercial with Trial)
@@ -9,7 +9,7 @@
 
 ## Overview
 
-KohakuBoard is a lightweight experiment tracking system designed for ML/AI training workflows. Unlike WandB or MLflow, it uses a **file-based approach** with DuckDB for storage, making it perfect for:
+KohakuBoard is a lightweight experiment tracking system designed for ML/AI training workflows. Unlike WandB or MLflow, it uses a **file-based approach** with KohakuVault for storage, making it perfect for:
 
 - **Local development** - No server required during training
 - **Offline training** - Works without internet
@@ -120,7 +120,7 @@ Multiprocessing Queue (10K capacity)
     ↓ Background process
 LogWriter Process
     ↓ Batch writes every 10 items
-DuckDB File (board.duckdb)
+KohakuVault File (metrics/*.db)
     ↓ Columnar storage, true incremental append
 File System (./kohakuboard/{board_id}/)
 ```
@@ -129,18 +129,18 @@ File System (./kohakuboard/{board_id}/)
 - **Non-blocking**: `log()` returns in < 1µs
 - **Queue**: 10,000 message buffer
 - **Batch writes**: Writes every 10 metrics (configurable)
-- **True incremental**: DuckDB's `connection.append()` - no read overhead
+- **True incremental**: KohakuVault's `connection.append()` - no read overhead
 - **Automatic flush**: Every 5 seconds + on shutdown
 
 ### Backend (Visualization Server)
 
 ```
 FastAPI Backend (Port 48889)
-    ↓ Read-only DuckDB connections
+    ↓ Read-only KohakuVault connections
 Board Files (./kohakuboard/)
     ├── {board_id}/
     │   ├── metadata.json
-    │   ├── data/board.duckdb  ← SQL queries here
+    │   ├── data/metrics/*.db  ← SQL queries here
     │   └── media/*.png
     └── ...
         ↓ REST API
@@ -148,7 +148,7 @@ Vue 3 Frontend (WebGL Charts)
 ```
 
 **Key Features:**
-- **Zero-copy serving**: Reads DuckDB files directly
+- **Zero-copy serving**: Reads KohakuVault files directly
 - **Concurrent reads**: Multiple connections supported
 - **SQL queries**: Efficient columnar storage
 - **Static file serving**: Media files served directly
@@ -157,7 +157,7 @@ Vue 3 Frontend (WebGL Charts)
 
 ## Data Model
 
-### DuckDB Schema
+### KohakuVault Schema
 
 ```sql
 -- Metrics table (dynamic columns added automatically)
@@ -206,7 +206,7 @@ CREATE TABLE tables (
 └── {board_id_timestamp}/
     ├── metadata.json           # Board info, config, timestamps
     ├── data/
-    │   └── board.duckdb        # Single DuckDB file
+    │   └── metrics/*.db        # Single KohakuVault file
     ├── media/
     │   ├── {name}_{idx}_{step}_{hash}.png
     │   ├── {name}_{idx}_{step}_{hash}.mp4
@@ -429,7 +429,7 @@ for batch_idx, batch in enumerate(dataloader):
 | Throughput | 100K+ logs/sec |
 | Queue capacity | 10K messages (80 MB) |
 | Memory overhead | ~50 MB |
-| DuckDB append (1K rows) | ~10 ms |
+| KohakuVault append (1K rows) | ~10 ms |
 | Final flush | ~100-500 ms |
 
 ### Backend Performance
@@ -437,7 +437,7 @@ for batch_idx, batch in enumerate(dataloader):
 | Operation | Performance |
 |-----------|-------------|
 | List boards | ~10ms (file system scan) |
-| Load summary | ~50ms (DuckDB query) |
+| Load summary | ~50ms (KohakuVault query) |
 | Load 10K metric points | ~100ms |
 | Load 100K metric points | ~500ms |
 | Serve media file | Instant (static file) |
@@ -488,7 +488,7 @@ export KOHAKU_BOARD_DATA_DIR="./kohakuboard"
 board = Board(
     name="my_training",
     base_dir="./my_boards",  # Override default
-    backend="duckdb",         # or "parquet" (legacy)
+    backend="hybrid",         # or "parquet" (legacy)
     capture_output=True       # Capture stdout/stderr
 )
 ```
@@ -548,7 +548,7 @@ See `examples/` directory:
 | **Latency** | ~10ms | ~1ms | ~5ms | < 1µs |
 | **Offline** | ❌ No | ✅ Yes | ✅ Yes | ✅ Yes |
 | **File-based** | ❌ No | ✅ Yes | ❌ No | ✅ Yes |
-| **SQL Queries** | ❌ No | ❌ No | ✅ Yes | ✅ Yes (DuckDB) |
+| **SQL Queries** | ❌ No | ❌ No | ✅ Yes | ✅ Yes (KohakuVault) |
 | **WebGL Charts** | ❌ No | ❌ No | ❌ No | ✅ Yes |
 | **Non-blocking** | ❌ No | ❌ No | ❌ No | ✅ Yes |
 | **Self-hosted** | Limited | ✅ Yes | ✅ Yes | ✅ Yes |
@@ -578,7 +578,7 @@ KohakuBoard is part of the KohakuHub project.
 ## Roadmap
 
 **Current (v0.1):**
-- ✅ DuckDB backend
+- ✅ KohakuVault + SQLite backend
 - ✅ Non-blocking logging
 - ✅ WebGL visualization
 - ✅ Media logging

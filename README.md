@@ -97,21 +97,33 @@ board.log(
 - **Tables** - Structured data with embedded images
 - **Histograms** - Weight/gradient distributions with compression (99.8% size reduction)
 
-### Hybrid Storage System
+### Three-Tier SQLite Storage Architecture
 
-**Lance + SQLite** for optimal performance:
+**Powered by [KohakuVault](https://github.com/KohakuBlueleaf/KohakuVault)** - A high-performance storage library with dual interfaces over SQLite:
 
 ```
-Lance (Columnar)              SQLite (Row-Oriented)
-├─ Metrics                    ├─ Media metadata
-├─ Histograms                 ├─ Tables
-└─ Fast column scans          └─ Relational queries
+Three Specialized SQLite Implementations:
+
+1. KohakuVault KVault        2. KohakuVault ColumnVault     3. Standard SQLite
+   (K-V Store)                   (Columnar Storage)             (Relational)
+   ├─ Media blobs                ├─ Metrics                     ├─ Media metadata
+   ├─ B+Tree index on K          ├─ Histograms                  ├─ Tables
+   ├─ Content-addressable        ├─ Blob-based columnar         └─ Step info
+   └─ .cache() for bulk ops      └─ Dynamic chunk growth
 ```
 
-**Why Hybrid?**
-- Metrics are read as columns → Lance excels (non-blocking incremental writes)
-- Metadata needs row access → SQLite excels (WAL mode for concurrency)
-- Both support non-blocking concurrent reads
+**Why KohakuVault?**
+- **Zero dependencies** - Single SQLite file, no external services
+- **Simple deployment** - Just .db files, no infrastructure
+- **Dual-interface design** - Dict-like for blobs, list-like for sequences
+- **High performance** - Native speed with Pythonic API
+- **Memory efficient** - Streaming support, dynamic chunk growth
+- **True SWMR** - Multiple readers, single writer via SQLite WAL
+
+**Why Three Tiers?**
+- **KVault**: Optimized for blob storage with B+Tree index, content-addressable
+- **ColumnVault**: Optimized for append-heavy time-series with columnar layout
+- **Standard SQLite**: Optimized for structured metadata with ACID guarantees
 
 ### Advanced Visualization
 
@@ -276,7 +288,7 @@ Main Process (Training)          Background Writer Process
 - **Non-blocking**: `log()` returns in <0.1ms
 - **Message Queue**: 50,000 message capacity
 - **Writer Process**: Background process drains queue
-- **Storage Layer**: Hybrid Lance + SQLite for optimal performance
+- **Storage Layer**: Three-tier SQLite architecture (KohakuVault KVault + ColumnVault + Standard SQLite)
 - **Graceful Shutdown**: atexit hooks + signal handlers ensure no data loss
 
 ### Backend (Visualization Server)
@@ -288,7 +300,7 @@ Board Files (./kohakuboard/)
     ├── {board_id}/
     │   ├── metadata.json
     │   ├── data/           ← SQL/columnar queries here
-    │   │   ├── metrics/    ← Lance files
+    │   │   ├── metrics/    ← KohakuVault DB files
     │   │   └── metadata.db ← SQLite database
     │   └── media/
     │       └── *.png, *.mp4
@@ -313,14 +325,14 @@ Vue 3 Frontend (WebGL Charts)
 └── {board_id_timestamp}/
     ├── metadata.json           # Board info, config, timestamps
     ├── data/                   # Storage backend files
-    │   ├── metrics/            # (hybrid) Lance columnar files
-    │   │   ├── train__loss.lance
-    │   │   ├── val__accuracy.lance
+    │   ├── metrics/            # (hybrid) KohakuVault columnar files
+    │   │   ├── train__loss.db
+    │   │   ├── val__accuracy.db
     │   │   └── ...
     │   ├── metadata.db         # (hybrid) SQLite metadata
     │   └── histograms/
-    │       ├── gradients_i32.lance  # int32 precision
-    │       └── params_u8.lance      # uint8 precision (compact)
+    │       ├── gradients_i32.db  # int32 precision
+    │       └── params_u8.db      # uint8 precision (compact)
     ├── media/                  # Content-addressed storage
     │   ├── {name}_{idx}_{step}_{sha256}.png
     │   ├── {name}_{idx}_{step}_{sha256}.mp4
@@ -373,7 +385,7 @@ kobo sync board_id -r https://kohakuboard.example.com
 ```python
 # Hybrid (default, recommended)
 board = Board(name="exp", backend="hybrid")
-# - Metrics: Lance (fastest)
+# - Metrics: KohakuVault (fastest)
 # - Media/Tables: SQLite (best concurrency)
 
 # DuckDB
@@ -603,7 +615,7 @@ See `examples/` directory:
 **Client Library:**
 - Non-blocking logging architecture
 - Rich data types (scalars, media, tables, histograms)
-- Hybrid storage backend (Lance + SQLite)
+- Three-tier SQLite architecture (KohakuVault KVault + ColumnVault + Standard SQLite)
 - Alternative backends (DuckDB, Parquet)
 - Graceful shutdown with queue draining
 - Content-addressed media storage
@@ -704,8 +716,7 @@ KohakuBoard is part of the KohakuHub ecosystem. We welcome contributions!
 
 ## Acknowledgments
 
-- [KohakuVault](https://github.com/KohakuBlueleaf/KohakuVault) - High-performance SQLite KV store for media blobs
-- [Lance](https://lancedb.github.io/lance/) - Columnar storage for metrics
+- [KohakuVault](https://github.com/KohakuBlueleaf/KohakuVault) - High-performance storage library with dual SQLite interfaces (KVault for blobs, ColumnVault for sequences)
 - [DuckDB](https://duckdb.org/) - Alternative storage backend
 - [Plotly.js](https://plotly.com/javascript/) - WebGL charts
 - [Vue 3](https://vuejs.org/) - Modern UI framework

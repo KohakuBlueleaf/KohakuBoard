@@ -203,7 +203,7 @@ Python Script                    Local Viewer
      │                                │
 Writer Process                        │
      ├─ Drain queue                   │
-     ├─ Write to Lance/DuckDB         │
+     ├─ Write to KohakuVault/DuckDB         │
      └─ Flush to disk                 │
                                       │
                     kobo open ./kohakuboard
