@@ -150,15 +150,42 @@ class BoardContentView(ctk.CTkFrame):
 
     def show_media_view(self):
         """Show media view"""
-        self.show_placeholder("Media")
+        try:
+            from kohakuboard.inspector.views.media_view import MediaView
+
+            font_scale = getattr(self.app, "current_font_scale", 1.0)
+            view = MediaView(self.content_container, self.data_service, font_scale)
+            view.grid(row=0, column=0, sticky="nsew")
+            self.current_view_widget = view
+        except Exception as e:
+            logger.error(f"Failed to show media view: {e}", exc_info=True)
+            raise
 
     def show_sql_view(self):
         """Show SQL query view"""
-        self.show_placeholder("SQL")
+        try:
+            from kohakuboard.inspector.views.sql_view import SQLView
+
+            font_scale = getattr(self.app, "current_font_scale", 1.0)
+            view = SQLView(self.content_container, self.data_service, font_scale)
+            view.grid(row=0, column=0, sticky="nsew")
+            self.current_view_widget = view
+        except Exception as e:
+            logger.error(f"Failed to show SQL view: {e}", exc_info=True)
+            raise
 
     def show_export_view(self):
         """Show export view"""
-        self.show_placeholder("Export")
+        try:
+            from kohakuboard.inspector.views.export_view import ExportView
+
+            font_scale = getattr(self.app, "current_font_scale", 1.0)
+            view = ExportView(self.content_container, self.data_service, font_scale)
+            view.grid(row=0, column=0, sticky="nsew")
+            self.current_view_widget = view
+        except Exception as e:
+            logger.error(f"Failed to show export view: {e}", exc_info=True)
+            raise
 
     def show_placeholder(self, view_name: str):
         """Show placeholder for not-yet-implemented view

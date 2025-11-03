@@ -312,13 +312,13 @@ class HybridBoardReader:
         finally:
             conn.close()
 
-    def get_media_data(
+    def get_media_entries(
         self, name: str, limit: int | None = None
     ) -> list[dict[str, Any]]:
-        """Get media data for a name
+        """Get media entries for a media log name
 
         Args:
-            name: Media name
+            name: Media log name
             limit: Optional limit
 
         Returns:

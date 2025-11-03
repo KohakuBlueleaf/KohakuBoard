@@ -76,6 +76,16 @@ class MetricsView(ctk.CTkFrame):
         )
         self.refresh_btn.pack(side="right")
 
+        # Status bar
+        self.status_bar = ctk.CTkLabel(
+            table_container,
+            text="",
+            anchor="w",
+            text_color="gray",
+            font=ctk.CTkFont(size=10),
+        )
+        self.status_bar.grid(row=0, column=1, sticky="e", padx=15, pady=(15, 10))
+
         # Fast table (ttk.Treeview - NO resize lag!)
         self.data_table = DataTable(
             table_container,
@@ -181,7 +191,8 @@ class MetricsView(ctk.CTkFrame):
         if not self.current_metric:
             return
 
-        self.metric_title.configure(text=f"Loading {self.current_metric}...")
+        self.metric_title.configure(text=f"{self.current_metric}")
+        self.status_bar.configure(text="⏳ Loading data...")
         self.refresh_btn.configure(state="disabled")
 
         def load():
@@ -249,6 +260,7 @@ class MetricsView(ctk.CTkFrame):
         self.metric_title.configure(
             text=f"{self.current_metric} ({start + 1}-{end} of {total_rows})"
         )
+        self.status_bar.configure(text="✅ Loaded")
         self.refresh_btn.configure(state="normal")
 
     def prev_page(self):

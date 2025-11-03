@@ -64,7 +64,7 @@ class DataService:
         """
         return self.reader.get_available_media_names()
 
-    def get_media_data(self, name: str, limit: int | None = None) -> list[dict]:
+    def get_media_entries(self, name: str, limit: int | None = None) -> list[dict]:
         """Get media log entries
 
         Args:
@@ -74,7 +74,7 @@ class DataService:
         Returns:
             List of media entry dicts
         """
-        return self.reader.get_media_data(name, limit)
+        return self.reader.get_media_entries(name, limit)
 
     def get_media_binary(self, filename: str) -> bytes | None:
         """Get media binary data
