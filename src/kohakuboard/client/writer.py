@@ -27,33 +27,21 @@ from kohakuboard.storage.sqlite import SQLiteMetadataStorage
 class LogWriter:
     """Background process that handles all disk I/O operations"""
 
-    def __init__(
-        self, board_dir: Path, queue: Any, stop_event: Any, backend: str = "duckdb"
-    ):
+    def __init__(self, board_dir: Path, queue: Any, stop_event: Any):
         """Initialize log writer
 
         Args:
             board_dir: Board directory path
             queue: Queue for receiving log messages (mp.Queue)
             stop_event: Event to signal shutdown (mp.Event)
-            backend: Storage backend ("duckdb" or "parquet")
         """
         self.board_dir = board_dir
         self.queue = queue
         self.stop_event = stop_event
-        self.backend = backend
         self.logger = None  # Will be set by writer_process_main
 
-        # Initialize storage backend based on selection (v0.2.0+: sqlite or hybrid only)
-        if backend == "hybrid":
-            self.storage = HybridStorage(board_dir / "data")
-        elif backend == "sqlite":
-            self.storage = SQLiteMetadataStorage(board_dir / "data")
-        else:
-            raise ValueError(
-                f"Unsupported backend: '{backend}'. "
-                f"Only 'sqlite' and 'hybrid' are supported in v0.2.0+."
-            )
+        # Initialize hybrid storage (KohakuVault + SQLite)
+        self.storage = HybridStorage(board_dir / "data")
 
         # Initialize KVault for media storage
         media_kv_path = board_dir / "media" / "blobs.db"
@@ -551,16 +539,13 @@ class LogWriter:
             self.logger.error(f"Error during final flush: {e}")
 
 
-def writer_process_main(
-    board_dir: Path, queue: Any, stop_event: Any, backend: str = "duckdb"
-):
+def writer_process_main(board_dir: Path, queue: Any, stop_event: Any):
     """Entry point for writer process
 
     Args:
         board_dir: Board directory
         queue: Message queue (mp.Queue)
         stop_event: Stop event (mp.Event)
-        backend: Storage backend ("duckdb" or "parquet")
     """
     # Configure logger for this process (file only, no stdout)
     from kohakuboard.logger import get_logger
@@ -569,6 +554,6 @@ def writer_process_main(
     logger = get_logger("WRITER", file_only=True, log_file=log_file)
 
     # Create and run writer
-    writer = LogWriter(board_dir, queue, stop_event, backend)
+    writer = LogWriter(board_dir, queue, stop_event)
     writer.logger = logger
     writer.run()

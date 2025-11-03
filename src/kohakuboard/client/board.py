@@ -83,7 +83,6 @@ class Board:
         config: Optional[Dict[str, Any]] = None,
         base_dir: Optional[Union[str, Path]] = None,
         capture_output: bool = True,
-        backend: str = "hybrid",
         remote_url: Optional[str] = None,
         remote_token: Optional[str] = None,
         remote_project: Optional[str] = None,
@@ -98,32 +97,17 @@ class Board:
             config: Configuration dict for this run (hyperparameters, etc.)
             base_dir: Base directory for boards (default: ./kohakuboard)
             capture_output: Whether to capture stdout/stderr to log file
-            backend: Storage backend ("sqlite" or "hybrid", default: "hybrid")
-                - "sqlite": Pure standard SQLite storage (simple, reliable)
-                - "hybrid": Three-tier SQLite architecture (recommended, best performance)
-                  1. KohakuVault KVault (K-V table with B+Tree index) - Media blobs
-                  2. KohakuVault ColumnVault (blob-based columnar) - Metrics/histograms
-                  3. Standard SQLite (traditional tables) - Metadata
-                Note: DuckDB and Parquet backends are deprecated in v0.2.0+
             remote_url: Remote server base URL for sync (e.g., https://board.example.com)
             remote_token: Authentication token for remote server
             remote_project: Project name on remote server (default: "local")
             sync_enabled: Whether to enable real-time sync to remote server
             sync_interval: Sync check interval in seconds (default: 10)
         """
-        # Validate backend (v0.2.0+: only sqlite and hybrid are supported)
-        if backend not in ("sqlite", "hybrid"):
-            raise ValueError(
-                f"Unsupported backend: '{backend}'. "
-                f"Only 'sqlite' and 'hybrid' are supported in v0.2.0+. "
-                f"DuckDB and Parquet backends have been deprecated."
-            )
 
         # Board metadata
         self.name = name
         self.board_id = board_id or self._generate_id()
         self.config = config or {}
-        self.backend = backend
         self.created_at = datetime.now(timezone.utc)
 
         # Setup directories
@@ -171,7 +155,7 @@ class Board:
         # Start single writer process
         self.writer_process = mp.Process(
             target=writer_process_main,
-            args=(self.board_dir, self.queue, self.stop_event, self.backend),
+            args=(self.board_dir, self.queue, self.stop_event),
             daemon=False,
         )
         self.writer_process.start()
@@ -904,7 +888,6 @@ class Board:
             "name": self.name,
             "board_id": self.board_id,
             "config": self.config,
-            "backend": self.backend,
             "created_at": self.created_at.isoformat(),
         }
 

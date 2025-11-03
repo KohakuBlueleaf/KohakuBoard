@@ -1,8 +1,4 @@
 """Board reader factory for SQLite/Lance backends
-
-v0.2.0+: Only SQLite and Hybrid (Lance+SQLite) backends are supported.
-DuckDB and Parquet backends have been completely removed.
-
 Auto-detects backend type and delegates to HybridBoardReader.
 """
 

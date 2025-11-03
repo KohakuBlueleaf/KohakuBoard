@@ -255,11 +255,9 @@ def main():
     else:
         print("\nLocal logging only (use --remote-url to enable sync)")
 
-    # Create board with hybrid backend
     board = Board(
         name="performance_showcase",
-        config={"benchmark": "v0.3.0", "backend": "hybrid + SQLite KV + SharedMemory"},
-        backend="hybrid",
+        config={"benchmark": "v0.3.0"},
         remote_url=args.remote_url,
         remote_token=args.remote_token,
         remote_project=args.remote_project,

@@ -434,7 +434,6 @@ def main():
             "features": ["scalars", "media", "tables", "histograms"],
             "storage": "hybrid (Lance + SQLite + SQLite KV)",
         },
-        backend="hybrid",
         remote_url=args.remote_url,
         remote_token=args.remote_token,
         remote_project=args.remote_project,

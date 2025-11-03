@@ -111,7 +111,7 @@ Main Process              Background Writer
 
 ```
 src/kohakuboard/
-├── client/                    # Python client library
+├── client/                   # Python client library
 │   ├── board.py              # Main Board class
 │   ├── writer.py             # Background writer process
 │   ├── types/                # Data types (Media, Table, Histogram)
@@ -121,7 +121,7 @@ src/kohakuboard/
 │   │   └── media_handler.py
 │   └── storage/              # Storage backends
 │       ├── hybrid.py         # KohakuVault + SQLite (default)
-│       ├── columnar.py          # KohakuVault metrics storage
+│       ├── columnar.py       # KohakuVault metrics storage
 │       ├── sqlite.py         # SQLite metadata storage
 │       └── columnar_histogram.py      # Histogram storage (KohakuVault)
 ├── api/                      # FastAPI server (WIP)
