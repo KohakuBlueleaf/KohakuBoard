@@ -83,6 +83,25 @@ class MediaView(ctk.CTkFrame):
         self.step_label = ctk.CTkLabel(slider_frame, text="0 / 0", width=80)
         self.step_label.pack(side="left", padx=5)
 
+        # Delete buttons
+        ctk.CTkButton(
+            slider_frame,
+            text="🗑️ Delete This",
+            width=100,
+            fg_color="red",
+            hover_color="darkred",
+            command=self.delete_current_image,
+        ).pack(side="left", padx=10)
+
+        ctk.CTkButton(
+            slider_frame,
+            text="🗑️ Delete All",
+            width=100,
+            fg_color="darkred",
+            hover_color="#8B0000",
+            command=self.delete_media_log,
+        ).pack(side="left", padx=5)
+
         self.step_slider.configure(state="disabled")
 
         # Image preview area (fills available space)
@@ -292,6 +311,93 @@ class MediaView(ctk.CTkFrame):
     def show_error(self, msg: str):
         """Show error"""
         self.title_label.configure(text=f"Error: {msg}")
+
+    def delete_current_image(self):
+        """Delete current image"""
+        if not self.current_media_entries or self.current_step_index >= len(
+            self.current_media_entries
+        ):
+            return
+
+        entry = self.current_media_entries[self.current_step_index]
+
+        from kohakuboard.inspector.widgets import ConfirmDialog
+
+        dialog = ConfirmDialog(
+            self,
+            title="Delete Image",
+            message=f"Delete image at step {entry.get('step')}?\n\nThis cannot be undone!",
+            confirm_text="Delete",
+        )
+
+        if dialog.get_result():
+            from kohakuboard.inspector.services.deletion_service import DeletionService
+
+            try:
+                board_path = self.data_service.board_path
+                DeletionService.delete_media_entry(
+                    board_path, entry["media_hash"], entry["format"]
+                )
+
+                self.status_bar.configure(text="✅ Deleted image")
+
+                # Remove from current list and reload
+                self.current_media_entries.pop(self.current_step_index)
+
+                if self.current_media_entries:
+                    # Adjust index if at end
+                    if self.current_step_index >= len(self.current_media_entries):
+                        self.current_step_index = len(self.current_media_entries) - 1
+
+                    # Reload slider
+                    self.setup_slider(
+                        self.current_media_name, self.current_media_entries
+                    )
+                else:
+                    # No more images
+                    self.title_label.configure(text=f"{self.current_media_name}: Empty")
+                    self.image_label.configure(text="No more images")
+                    self.step_slider.configure(state="disabled")
+
+            except Exception as e:
+                self.status_bar.configure(text=f"❌ Error: {e}")
+
+    def delete_media_log(self):
+        """Delete entire media log"""
+        if not self.current_media_name:
+            return
+
+        from kohakuboard.inspector.widgets import ConfirmDialog
+
+        dialog = ConfirmDialog(
+            self,
+            title="Delete Media Log",
+            message=f"Delete entire media log '{self.current_media_name}'?\n\n"
+            f"This will delete {len(self.current_media_entries)} images permanently!\n\n"
+            f"This cannot be undone!",
+            confirm_text="Delete All",
+        )
+
+        if dialog.get_result():
+            from kohakuboard.inspector.services.deletion_service import DeletionService
+
+            try:
+                board_path = self.data_service.board_path
+                deleted = DeletionService.delete_media_log(
+                    board_path, self.current_media_name
+                )
+
+                self.status_bar.configure(text=f"✅ Deleted {deleted} images")
+                self.current_media_name = None
+                self.current_media_entries = []
+                self.image_label.configure(text="Select a media log")
+                self.step_slider.configure(state="disabled")
+
+                # Reload media list
+                self.load_media_list()
+
+            except Exception as e:
+                self.status_bar.configure(text=f"❌ Error: {e}")
 
     def update_font_scale(self, scale: float):
         """Update font scale"""

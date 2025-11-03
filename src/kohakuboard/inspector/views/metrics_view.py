@@ -5,6 +5,7 @@ import threading
 import customtkinter as ctk
 
 from kohakuboard.inspector.widgets import DataTable, TreeExplorer
+from kohakuboard.inspector.widgets.step_range_dialog import StepRangeDialog
 
 
 class MetricsView(ctk.CTkFrame):
@@ -71,6 +72,17 @@ class MetricsView(ctk.CTkFrame):
         )
         self.metric_title.pack(side="left")
 
+        # Delete button
+        self.delete_btn = ctk.CTkButton(
+            header,
+            text="🗑️ Delete Metric",
+            width=120,
+            fg_color="red",
+            hover_color="darkred",
+            command=self.delete_metric,
+        )
+        self.delete_btn.pack(side="right", padx=5)
+
         self.refresh_btn = ctk.CTkButton(
             header, text="🔄", width=40, command=self.refresh_data
         )
@@ -122,6 +134,16 @@ class MetricsView(ctk.CTkFrame):
         )
         self.page_size_selector.set("500")
         self.page_size_selector.pack(side="left")
+
+        # Delete range button
+        ctk.CTkButton(
+            pag,
+            text="🗑️ Delete Range",
+            width=110,
+            fg_color="orange",
+            hover_color="darkorange",
+            command=self.delete_step_range,
+        ).pack(side="right", padx=5)
 
     def load_metrics_tree(self):
         """Load metrics tree"""
@@ -291,6 +313,83 @@ class MetricsView(ctk.CTkFrame):
     def show_error(self, msg: str):
         self.metric_title.configure(text=f"Error: {msg}")
         self.refresh_btn.configure(state="normal")
+
+    def delete_metric(self):
+        """Delete entire metric with confirmation"""
+        if not self.current_metric:
+            self.status_bar.configure(text="❌ No metric selected")
+            return
+
+        from kohakuboard.inspector.widgets import ConfirmDialog
+
+        dialog = ConfirmDialog(
+            self,
+            title="Delete Metric",
+            message=f"Delete entire metric '{self.current_metric}'?\n\nThis will delete the metric file permanently.\nThis cannot be undone!",
+            confirm_text="Delete Metric",
+        )
+
+        if dialog.get_result():
+            # Delete the metric
+            from kohakuboard.inspector.services.deletion_service import DeletionService
+
+            try:
+                board_path = self.data_service.board_path
+                success = DeletionService.delete_entire_metric(
+                    board_path, self.current_metric
+                )
+
+                if success:
+                    self.status_bar.configure(text=f"✅ Deleted {self.current_metric}")
+                    self.current_metric = None
+                    self.data_table.clear()
+                    self.metric_title.configure(text="Metric deleted - select another")
+                    # Reload tree
+                    self.load_metrics_tree()
+                else:
+                    self.status_bar.configure(text="❌ Failed to delete")
+
+            except Exception as e:
+                self.status_bar.configure(text=f"❌ Error: {e}")
+
+    def delete_step_range(self):
+        """Delete metric values in step range"""
+        if not self.current_metric or not self.all_data:
+            self.status_bar.configure(text="❌ No data loaded")
+            return
+
+        # Create dialog to get step range
+        dialog = StepRangeDialog(self, self.all_data["steps"])
+
+        if dialog.result:
+            start_step, end_step = dialog.result
+
+            from kohakuboard.inspector.widgets import ConfirmDialog
+
+            confirm = ConfirmDialog(
+                self,
+                title="Delete Step Range",
+                message=f"Delete steps {start_step} to {end_step} from '{self.current_metric}'?\n\nThis cannot be undone!",
+                confirm_text="Delete Range",
+            )
+
+            if confirm.get_result():
+                from kohakuboard.inspector.services.deletion_service import (
+                    DeletionService,
+                )
+
+                try:
+                    board_path = self.data_service.board_path
+                    deleted = DeletionService.delete_metric_by_step_range(
+                        board_path, self.current_metric, start_step, end_step
+                    )
+
+                    self.status_bar.configure(text=f"✅ Deleted {deleted} rows")
+                    # Reload data
+                    self.load_metric_data()
+
+                except Exception as e:
+                    self.status_bar.configure(text=f"❌ Error: {e}")
 
     def update_font_scale(self, scale: float):
         """Update font scale for tree and table

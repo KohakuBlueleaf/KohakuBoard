@@ -10,7 +10,9 @@ class DeletionService:
     """Service for deleting data from boards"""
 
     @staticmethod
-    def delete_metric_by_step_range(board_path: Path, metric: str, start_step: int, end_step: int) -> int:
+    def delete_metric_by_step_range(
+        board_path: Path, metric: str, start_step: int, end_step: int
+    ) -> int:
         """Delete metric values in step range
 
         Args:
@@ -37,8 +39,7 @@ class DeletionService:
 
         # Find indices to keep (inverse of delete range)
         indices_to_keep = [
-            i for i, step in enumerate(steps)
-            if not (start_step <= step <= end_step)
+            i for i, step in enumerate(steps) if not (start_step <= step <= end_step)
         ]
 
         deleted_count = len(steps) - len(indices_to_keep)
@@ -48,7 +49,8 @@ class DeletionService:
 
         # Recreate file with filtered data
         import os
-        temp_db = metric_db.with_suffix('.db.tmp')
+
+        temp_db = metric_db.with_suffix(".db.tmp")
 
         # Create new DB with kept data
         cv_new = ColumnVault(str(temp_db))
@@ -93,7 +95,9 @@ class DeletionService:
         return False
 
     @staticmethod
-    def delete_media_entry(board_path: Path, media_hash: str, media_format: str) -> bool:
+    def delete_media_entry(
+        board_path: Path, media_hash: str, media_format: str
+    ) -> bool:
         """Delete a specific media entry and its binary
 
         Args:
@@ -140,7 +144,9 @@ class DeletionService:
         conn = sqlite3.connect(str(db_path))
 
         # Get media hashes to delete from KVault
-        cursor = conn.execute("SELECT media_hash, format FROM media WHERE name = ?", (media_name,))
+        cursor = conn.execute(
+            "SELECT media_hash, format FROM media WHERE name = ?", (media_name,)
+        )
         media_files = cursor.fetchall()
 
         # Delete from metadata

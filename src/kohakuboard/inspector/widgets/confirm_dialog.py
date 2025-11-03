@@ -13,7 +13,7 @@ class ConfirmDialog(ctk.CTkToplevel):
 
         # Window config
         self.title(title)
-        self.geometry("400x200")
+        self.geometry("500x250")
         self.resizable(False, False)
 
         # Make modal
@@ -24,30 +24,40 @@ class ConfirmDialog(ctk.CTkToplevel):
         self.after(100, lambda: self.lift())
         self.after(100, lambda: self.focus())
 
+        # Configure grid for better layout control
+        self.grid_rowconfigure(0, weight=1)  # Message (expandable)
+        self.grid_rowconfigure(1, weight=0)  # Buttons (fixed)
+        self.grid_columnconfigure(0, weight=1)
+
         # Message
         message_label = ctk.CTkLabel(
             self,
             text=message,
-            wraplength=350,
+            wraplength=440,
             font=ctk.CTkFont(size=13),
+            justify="center",
         )
-        message_label.pack(pady=30, padx=20)
+        message_label.grid(row=0, column=0, pady=(30, 20), padx=30)
 
-        # Buttons
+        # Buttons (fixed at bottom)
         button_frame = ctk.CTkFrame(self, fg_color="transparent")
-        button_frame.pack(pady=(0, 20))
+        button_frame.grid(row=1, column=0, pady=(10, 30))
 
         ctk.CTkButton(
             button_frame,
             text="Cancel",
-            width=100,
+            width=170,
+            height=50,
+            font=ctk.CTkFont(size=14),
             command=self.cancel,
         ).pack(side="left", padx=10)
 
         ctk.CTkButton(
             button_frame,
             text=confirm_text,
-            width=100,
+            width=170,
+            height=50,
+            font=ctk.CTkFont(size=14),
             fg_color="red",
             hover_color="darkred",
             command=self.confirm,

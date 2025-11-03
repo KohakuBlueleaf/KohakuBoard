@@ -78,9 +78,16 @@ class SQLView(ctk.CTkFrame):
         query_frame.grid(row=3, column=0, sticky="ew", padx=20, pady=10)
         query_frame.grid_columnconfigure(0, weight=1)
 
-        ctk.CTkLabel(query_frame, text="Query (SELECT only):").grid(
-            row=0, column=0, sticky="w", pady=(0, 5)
-        )
+        query_header = ctk.CTkFrame(query_frame, fg_color="transparent")
+        query_header.grid(row=0, column=0, sticky="ew", pady=(0, 5))
+
+        ctk.CTkLabel(query_header, text="Query:").pack(side="left")
+        ctk.CTkLabel(
+            query_header,
+            text="⚠️ All queries allowed - be careful!",
+            text_color="orange",
+            font=ctk.CTkFont(size=10),
+        ).pack(side="left", padx=10)
 
         self.query_text = ctk.CTkTextbox(query_frame, height=100, font=("Consolas", 11))
         self.query_text.grid(row=1, column=0, sticky="ew", pady=(0, 10))
@@ -166,12 +173,23 @@ class SQLView(ctk.CTkFrame):
             self.status_label.configure(text="❌ Empty query")
             return
 
-        # Validate SELECT only
-        if not query.upper().startswith("SELECT"):
-            self.status_label.configure(text="❌ Only SELECT queries allowed")
-            return
+        # WARNING: All queries allowed (local app)
+        if any(keyword in query.upper() for keyword in ["DROP", "DELETE", "UPDATE"]):
+            # Show warning for destructive queries
+            from kohakuboard.inspector.widgets import ConfirmDialog
 
-        self.status_label.configure(text="")
+            dialog = ConfirmDialog(
+                self,
+                title="Confirm Destructive Query",
+                message=f"This query will modify the database:\n\n{query[:100]}...\n\nAre you sure?",
+                confirm_text="Execute",
+            )
+
+            if not dialog.get_result():
+                self.status_label.configure(text="❌ Cancelled")
+                return
+
+        self.status_label.configure(text="⏳ Executing...")
         self.execute_btn.configure(state="disabled")
 
         def execute():
