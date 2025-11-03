@@ -197,12 +197,7 @@ class ColumnVaultHistogramStorage:
                 suffix = "_i32"
 
         # Serialize counts to fixed-size bytes
-        if suffix == "_u8":
-            # uint8: 1 byte per bin
-            counts_bytes = final_counts.tobytes()
-        else:
-            # int32: 4 bytes per bin, little-endian
-            counts_bytes = final_counts.tobytes()
+        counts_bytes = final_counts.tobytes()
 
         # Extract namespace
         namespace = name.split("/")[0] if "/" in name else name.replace("/", "__")
