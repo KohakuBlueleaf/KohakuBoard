@@ -404,6 +404,11 @@ def main():
         default=1,
         help="Sync interval in seconds (default: 10)",
     )
+    parser.add_argument(
+        "--memory-mode",
+        action="store_true",
+        help="Use in-memory storage (default: will log to local + remote)",
+    )
     args = parser.parse_args()
 
     # Enable sync if remote URL is provided
@@ -439,6 +444,7 @@ def main():
         remote_project=args.remote_project,
         sync_enabled=sync_enabled,
         sync_interval=args.sync_interval,
+        memory_mode=args.memory_mode,
     )
 
     print(f"\nBoard created: {board.board_id}")
