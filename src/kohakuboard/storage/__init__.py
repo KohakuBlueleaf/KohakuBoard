@@ -7,10 +7,12 @@ from kohakuboard.storage.columnar import ColumnVaultMetricsStorage
 from kohakuboard.storage.columnar_histogram import ColumnVaultHistogramStorage
 from kohakuboard.storage.hybrid import HybridStorage
 from kohakuboard.storage.sqlite import SQLiteMetadataStorage
+from kohakuboard.storage.tensor import TensorKVStorage
 
 __all__ = [
     "HybridStorage",
     "SQLiteMetadataStorage",
     "ColumnVaultMetricsStorage",
     "ColumnVaultHistogramStorage",
+    "TensorKVStorage",
 ]

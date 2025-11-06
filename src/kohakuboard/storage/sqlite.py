@@ -112,6 +112,60 @@ class SQLiteMetadataStorage:
         self.step_buffer: list[tuple] = []
         self.table_buffer: list[tuple] = []
 
+        # Ensure tensors table exists
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS tensors (
+                step INTEGER NOT NULL,
+                global_step INTEGER,
+                name TEXT NOT NULL,
+                namespace TEXT NOT NULL,
+                kv_file TEXT NOT NULL,
+                kv_key TEXT NOT NULL,
+                dtype TEXT,
+                shape TEXT,
+                size_bytes INTEGER,
+                metadata TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """
+        )
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_tensors_name ON tensors(name)"
+        )
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_tensors_step ON tensors(step)"
+        )
+
+        # Kernel density metadata table
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS kernel_density (
+                step INTEGER NOT NULL,
+                global_step INTEGER,
+                name TEXT NOT NULL,
+                kv_file TEXT NOT NULL,
+                kv_key TEXT NOT NULL,
+                kernel TEXT,
+                bandwidth TEXT,
+                sample_count INTEGER,
+                range_min REAL,
+                range_max REAL,
+                num_points INTEGER,
+                metadata TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """
+        )
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_kde_name ON kernel_density(name)"
+        )
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_kde_step ON kernel_density(step)"
+        )
+
+        self.conn.commit()
+
         # Flush thresholds
         self.step_flush_threshold = 1000
         self.table_flush_threshold = 100
@@ -271,6 +325,87 @@ class SQLiteMetadataStorage:
         self.logger.debug(f"Flushed {len(self.table_buffer)} table rows to SQLite")
         self.table_buffer.clear()
 
+    def append_tensor_metadata(
+        self,
+        step: int,
+        global_step: int | None,
+        name: str,
+        namespace: str,
+        kv_file: str,
+        kv_key: str,
+        tensor_meta: dict[str, Any],
+        size_bytes: int,
+    ):
+        """Insert tensor metadata row."""
+        metadata_json = json.dumps(tensor_meta.get("metadata", {}))
+        shape_json = json.dumps(tensor_meta.get("shape", []))
+        dtype = tensor_meta.get("dtype")
+
+        self.conn.execute(
+            """
+            INSERT INTO tensors (
+                step, global_step, name, namespace, kv_file, kv_key, dtype,
+                shape, size_bytes, metadata
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+            (
+                step,
+                global_step,
+                name,
+                namespace,
+                kv_file,
+                kv_key,
+                dtype,
+                shape_json,
+                size_bytes,
+                metadata_json,
+            ),
+        )
+        self.conn.commit()
+
+    def append_kernel_density_metadata(
+        self,
+        step: int,
+        global_step: int | None,
+        name: str,
+        kv_file: str,
+        kv_key: str,
+        kde_meta: dict[str, Any],
+        num_points: int,
+    ):
+        """Insert kernel density metadata row."""
+        metadata_json = json.dumps(kde_meta.get("metadata", {}))
+        bandwidth = kde_meta.get("bandwidth")
+
+        if bandwidth is not None and not isinstance(bandwidth, str):
+            bandwidth_str = f"{bandwidth}"
+        else:
+            bandwidth_str = bandwidth
+
+        self.conn.execute(
+            """
+            INSERT INTO kernel_density (
+                step, global_step, name, kv_file, kv_key, kernel, bandwidth,
+                sample_count, range_min, range_max, num_points, metadata
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+            (
+                step,
+                global_step,
+                name,
+                kv_file,
+                kv_key,
+                kde_meta.get("kernel"),
+                bandwidth_str,
+                kde_meta.get("sample_count"),
+                kde_meta.get("range_min"),
+                kde_meta.get("range_max"),
+                num_points,
+                metadata_json,
+            ),
+        )
+        self.conn.commit()
+
     def fetch_steps_range(self, start_step: int, end_step: int) -> list[dict[str, Any]]:
         """Fetch steps within range inclusive."""
         cursor = self.conn.execute(
@@ -346,6 +481,81 @@ class SQLiteMetadataStorage:
                 }
             )
         return tables
+
+    def list_tensor_names(self) -> list[str]:
+        """Return sorted tensor log names."""
+        cursor = self.conn.execute(
+            "SELECT DISTINCT name FROM tensors ORDER BY name ASC"
+        )
+        return [row[0] for row in cursor.fetchall()]
+
+    def fetch_tensors_by_name(self, name: str) -> list[dict[str, Any]]:
+        """Fetch tensor metadata rows for a given log name ordered by step."""
+        cursor = self.conn.execute(
+            """
+            SELECT step, global_step, namespace, kv_file, kv_key,
+                   dtype, shape, size_bytes, metadata
+            FROM tensors
+            WHERE name = ?
+            ORDER BY step ASC
+            """,
+            (name,),
+        )
+        results: list[dict[str, Any]] = []
+        for row in cursor.fetchall():
+            results.append(
+                {
+                    "step": int(row[0]),
+                    "global_step": int(row[1]) if row[1] is not None else None,
+                    "namespace": row[2],
+                    "kv_file": row[3],
+                    "kv_key": row[4],
+                    "dtype": row[5],
+                    "shape": json.loads(row[6]) if row[6] else [],
+                    "size_bytes": int(row[7]) if row[7] is not None else None,
+                    "metadata": json.loads(row[8]) if row[8] else {},
+                }
+            )
+        return results
+
+    def list_kernel_density_names(self) -> list[str]:
+        """Return sorted KDE log names."""
+        cursor = self.conn.execute(
+            "SELECT DISTINCT name FROM kernel_density ORDER BY name ASC"
+        )
+        return [row[0] for row in cursor.fetchall()]
+
+    def fetch_kernel_density_by_name(self, name: str) -> list[dict[str, Any]]:
+        """Fetch KDE metadata rows for a given log name ordered by step."""
+        cursor = self.conn.execute(
+            """
+            SELECT step, global_step, kv_file, kv_key, kernel, bandwidth,
+                   sample_count, range_min, range_max, num_points, metadata
+            FROM kernel_density
+            WHERE name = ?
+            ORDER BY step ASC
+            """,
+            (name,),
+        )
+        rows = cursor.fetchall()
+        results: list[dict[str, Any]] = []
+        for row in rows:
+            results.append(
+                {
+                    "step": int(row[0]),
+                    "global_step": int(row[1]) if row[1] is not None else None,
+                    "kv_file": row[2],
+                    "kv_key": row[3],
+                    "kernel": row[4],
+                    "bandwidth": row[5],
+                    "sample_count": int(row[6]) if row[6] is not None else None,
+                    "range_min": float(row[7]) if row[7] is not None else None,
+                    "range_max": float(row[8]) if row[8] is not None else None,
+                    "num_points": int(row[9]) if row[9] is not None else None,
+                    "metadata": json.loads(row[10]) if row[10] else {},
+                }
+            )
+        return results
 
     def fetch_media_info_by_hashes(
         self, hashes: Iterable[str]

@@ -379,6 +379,68 @@ class MemoryHistogramStorage:
                 self.histograms.pop(name, None)
 
 
+class MemoryTensorStorage:
+    """In-memory tensor and KDE storage."""
+
+    def __init__(self, logger=None):
+        self.logger = logger or get_logger("MEMORY_STORAGE_TENSOR", drop=True)
+        self.tensors: Dict[str, List[dict[str, Any]]] = defaultdict(list)
+        self.kde_logs: Dict[str, List[dict[str, Any]]] = defaultdict(list)
+
+    def append_tensor(
+        self,
+        step: int,
+        global_step: Optional[int],
+        name: str,
+        payload: bytes,
+        tensor_meta: dict[str, Any],
+    ) -> None:
+        self.tensors[name].append(
+            {
+                "step": step,
+                "global_step": global_step,
+                "payload": payload,
+                "tensor_meta": tensor_meta,
+            }
+        )
+
+    def append_kernel_density(
+        self,
+        step: int,
+        global_step: Optional[int],
+        name: str,
+        payload: bytes,
+        kde_meta: dict[str, Any],
+    ) -> None:
+        self.kde_logs[name].append(
+            {
+                "step": step,
+                "global_step": global_step,
+                "payload": payload,
+                "kde_meta": kde_meta,
+            }
+        )
+
+    def close(self) -> None:
+        self.tensors.clear()
+        self.kde_logs.clear()
+
+    def prune_up_to(self, max_step: int) -> None:
+        for name in list(self.tensors.keys()):
+            entries = [e for e in self.tensors[name] if e["step"] > max_step]
+            if entries:
+                self.tensors[name] = entries
+            else:
+                self.tensors.pop(name, None)
+
+        for name in list(self.kde_logs.keys()):
+            entries = [e for e in self.kde_logs[name] if e["step"] > max_step]
+            if entries:
+                self.kde_logs[name] = entries
+            else:
+                self.kde_logs.pop(name, None)
+
+
 class MemoryHybridStorage:
     """Hybrid storage variant backed entirely by in-memory structures."""
 
@@ -387,6 +449,7 @@ class MemoryHybridStorage:
         self.metadata_storage = MemoryMetadataStorage(logger=self.logger)
         self.metrics_storage = MemoryMetricsStorage(logger=self.logger)
         self.histogram_storage = MemoryHistogramStorage(logger=self.logger)
+        self.tensor_storage = MemoryTensorStorage(logger=self.logger)
 
     def append_metrics(
         self,
@@ -452,6 +515,32 @@ class MemoryHybridStorage:
             counts=counts,
         )
 
+    def append_tensor(
+        self,
+        step: int,
+        global_step: Optional[int],
+        name: str,
+        payload: bytes,
+        tensor_meta: dict[str, Any],
+    ) -> None:
+        timestamp_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+        self.metadata_storage.append_step_info(step, global_step, timestamp_ms)
+        self.tensor_storage.append_tensor(step, global_step, name, payload, tensor_meta)
+
+    def append_kernel_density(
+        self,
+        step: int,
+        global_step: Optional[int],
+        name: str,
+        payload: bytes,
+        kde_meta: dict[str, Any],
+    ) -> None:
+        timestamp_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+        self.metadata_storage.append_step_info(step, global_step, timestamp_ms)
+        self.tensor_storage.append_kernel_density(
+            step, global_step, name, payload, kde_meta
+        )
+
     def flush_metrics(self) -> None:
         self.metrics_storage.flush()
 
@@ -475,9 +564,11 @@ class MemoryHybridStorage:
         self.metrics_storage.close()
         self.metadata_storage.close()
         self.histogram_storage.close()
+        self.tensor_storage.close()
 
     def prune_up_to(self, max_step: int) -> None:
         """Remove all entries whose step <= max_step."""
         self.metadata_storage.prune_up_to(max_step)
         self.metrics_storage.prune_up_to(max_step)
         self.histogram_storage.prune_up_to(max_step)
+        self.tensor_storage.prune_up_to(max_step)

@@ -8,6 +8,7 @@ Reads from three specialized SQLite implementations:
 All powered by KohakuVault for efficient data access.
 """
 
+import io
 import json
 import math
 import sqlite3
@@ -50,6 +51,7 @@ class HybridBoardReader:
         )  # Per-metric .db files (ColumnVault)
         self.sqlite_db = self.board_dir / "data" / "metadata.db"
         self.media_kv_path = self.board_dir / "media" / "blobs.db"
+        self.tensors_dir = self.board_dir / "data" / "tensors"
 
         # Validate
         if not self.board_dir.exists():
@@ -59,6 +61,8 @@ class HybridBoardReader:
         self.media_kv = None
         if self.media_kv_path.exists():
             self.media_kv = KVault(str(self.media_kv_path))
+
+        self._tensor_vaults: dict[str, KVault] = {}
 
         # Retry configuration (for SQLite locks)
         self.max_retries = 5
@@ -150,6 +154,24 @@ class HybridBoardReader:
 
         raise last_error
 
+    def _get_tensor_vault(self, kv_file: str) -> KVault:
+        """Get or open tensor KVault by sanitized filename (without extension)."""
+        if kv_file in self._tensor_vaults:
+            return self._tensor_vaults[kv_file]
+
+        db_path = self.tensors_dir / f"{kv_file}.db"
+        if not db_path.exists():
+            raise FileNotFoundError(f"Tensor vault not found: {db_path}")
+
+        kv = KVault(str(db_path))
+        self._tensor_vaults[kv_file] = kv
+        return kv
+
+    def _load_tensor_blob(self, kv_file: str, kv_key: str) -> bytes:
+        """Load raw tensor bytes from KVault."""
+        kv = self._get_tensor_vault(kv_file)
+        return kv.get(kv_key)
+
     def get_available_metrics(self) -> list[str]:
         """Get list of available scalar metrics from ColumnVault DB files
 
@@ -176,6 +198,70 @@ class HybridBoardReader:
         except Exception as e:
             logger.error(f"Failed to list metrics: {e}")
             return ["step", "global_step", "timestamp"]
+
+    def get_available_tensor_names(self) -> list[str]:
+        """Get list of tensor log names from SQLite metadata."""
+        if not self.sqlite_db.exists():
+            return []
+
+        try:
+            conn = self._get_sqlite_connection()
+            cursor = conn.execute("SELECT DISTINCT name FROM tensors ORDER BY name ASC")
+            names = [row[0] for row in cursor.fetchall()]
+            conn.close()
+            return names
+        except Exception as exc:
+            logger.error(f"Failed to list tensor names: {exc}")
+            return []
+
+    def get_tensor_data(
+        self, name: str, include_payload: bool = True
+    ) -> list[dict[str, Any]]:
+        """Retrieve tensor metadata (and optionally payload) for a given log name."""
+        if not self.sqlite_db.exists():
+            return []
+
+        try:
+            conn = self._get_sqlite_connection()
+            cursor = conn.execute(
+                """
+                SELECT step, global_step, namespace, kv_file, kv_key, dtype,
+                       shape, size_bytes, metadata
+                FROM tensors
+                WHERE name = ?
+                ORDER BY step ASC
+                """,
+                (name,),
+            )
+            rows = cursor.fetchall()
+            conn.close()
+        except Exception as exc:
+            logger.error(f"Failed to read tensors for {name}: {exc}")
+            return []
+
+        results: list[dict[str, Any]] = []
+        for row in rows:
+            metadata = json.loads(row[8]) if row[8] else {}
+            shape = json.loads(row[6]) if row[6] else []
+            entry = {
+                "step": int(row[0]),
+                "global_step": int(row[1]) if row[1] is not None else None,
+                "namespace": row[2],
+                "kv_file": row[3],
+                "kv_key": row[4],
+                "dtype": row[5],
+                "shape": shape,
+                "size_bytes": int(row[7]) if row[7] is not None else None,
+                "metadata": metadata,
+            }
+
+            if include_payload:
+                payload = self._load_tensor_blob(row[3], row[4])
+                entry["payload"] = payload
+
+            results.append(entry)
+
+        return results
 
     def get_scalar_data(self, metric: str, limit: int | None = None) -> dict[str, list]:
         """Get scalar data for a metric
@@ -437,29 +523,51 @@ class HybridBoardReader:
 
         except Exception as e:
             logger.error(f"Failed to list histogram names: {e}")
+            names = []
+
+        # Merge with KDE names from SQLite metadata
+        all_names = set(names)
+        all_names.update(self.get_available_kernel_density_names())
+        return sorted(all_names)
+
+    def get_available_kernel_density_names(self) -> list[str]:
+        """Get kernel density log names from metadata."""
+        if not self.sqlite_db.exists():
             return []
+
+        try:
+            conn = self._get_sqlite_connection()
+            cursor = conn.execute(
+                "SELECT DISTINCT name FROM kernel_density ORDER BY name ASC"
+            )
+            names = [row[0] for row in cursor.fetchall()]
+            conn.close()
+        except Exception as exc:
+            logger.error(f"Failed to list KDE names: {exc}")
+            names = []
+
+        return names
 
     def get_histogram_data(
         self, name: str, limit: int | None = None
     ) -> list[dict[str, Any]]:
-        """Get histogram data
+        """Get histogram-like data for both classic histograms and KDE logs."""
+        hist_result = self._get_columnvault_histograms(name, limit=limit)
+        if hist_result:
+            return hist_result
+        return self._get_kernel_density_histograms(name, limit=limit)
 
-        Args:
-            name: Histogram name
-            limit: Optional limit
-
-        Returns:
-            List of histogram entries
-        """
+    def _get_columnvault_histograms(
+        self, name: str, limit: int | None = None
+    ) -> list[dict[str, Any]]:
         histograms_dir = self.board_dir / "data" / "histograms"
         if not histograms_dir.exists():
             return []
 
         try:
-            # Determine which file
             namespace = name.split("/")[0] if "/" in name else name.replace("/", "__")
+            name_bytes = name.encode("utf-8")
 
-            # Try both precisions
             for suffix in ["_i32", "_u8"]:
                 db_file = histograms_dir / f"{namespace}{suffix}.db"
                 if not db_file.exists():
@@ -467,7 +575,6 @@ class HybridBoardReader:
 
                 cv = ColumnVault(str(db_file))
 
-                # Read all data from columns
                 steps = list(cv["step"])
                 global_steps = list(cv["global_step"])
                 names = list(cv["name"])
@@ -475,45 +582,37 @@ class HybridBoardReader:
                 mins = list(cv["min"])
                 maxs = list(cv["max"])
 
-                # Filter by name and build result
                 result = []
-                name_bytes = name.encode("utf-8")
 
-                for i in range(len(steps)):
-                    if names[i] != name_bytes:
+                for idx in range(len(steps)):
+                    if names[idx] != name_bytes:
                         continue
 
-                    # Deserialize counts from fixed-size bytes
-                    counts_bytes = counts_bytes_list[i]
+                    counts_bytes = counts_bytes_list[idx]
                     if suffix == "_u8":
-                        # uint8: 1 byte per bin
                         counts = list(
                             struct.unpack(f"{len(counts_bytes)}B", counts_bytes)
                         )
                     else:
-                        # int32: 4 bytes per bin, little-endian
                         num_bins = len(counts_bytes) // 4
                         counts = list(struct.unpack(f"<{num_bins}i", counts_bytes))
 
-                    min_val = float(mins[i])
-                    max_val = float(maxs[i])
+                    min_val = float(mins[idx])
+                    max_val = float(maxs[idx])
                     num_bins = len(counts)
-
-                    # Reconstruct bin edges from min/max/num_bins
                     bin_edges = np.linspace(min_val, max_val, num_bins + 1).tolist()
 
                     result.append(
                         {
-                            "step": int(steps[i]),
+                            "step": int(steps[idx]),
                             "global_step": (
-                                int(global_steps[i]) if global_steps[i] else None
+                                int(global_steps[idx]) if global_steps[idx] else None
                             ),
-                            "bins": bin_edges,  # Bin EDGES (K+1 values)
-                            "counts": counts,  # Counts (K values)
+                            "bins": bin_edges,
+                            "counts": counts,
                         }
                     )
 
-                    # Apply limit
                     if limit and len(result) >= limit:
                         break
 
@@ -521,10 +620,157 @@ class HybridBoardReader:
                     return result
 
             return []
-
-        except Exception as e:
-            logger.error(f"Failed to read histogram '{name}': {e}")
+        except Exception as exc:
+            logger.error(f"Failed to read histogram '{name}': {exc}")
             return []
+
+    def _get_kernel_density_histograms(
+        self, name: str, limit: int | None = None
+    ) -> list[dict[str, Any]]:
+        if not self.sqlite_db.exists():
+            return []
+
+        try:
+            conn = self._get_sqlite_connection()
+            cursor = conn.execute(
+                """
+                SELECT step, global_step, kv_file, kv_key, kernel, bandwidth,
+                       sample_count, range_min, range_max, num_points, metadata
+                FROM kernel_density
+                WHERE name = ?
+                ORDER BY step ASC
+                """,
+                (name,),
+            )
+            rows = cursor.fetchall()
+            conn.close()
+        except Exception as exc:
+            logger.error(f"Failed to read KDE metadata for '{name}': {exc}")
+            return []
+
+        if not rows:
+            return []
+
+        range_candidates_min: list[float] = []
+        range_candidates_max: list[float] = []
+        num_points_list: list[int] = []
+        parsed_rows: list[dict[str, Any]] = []
+
+        for row in rows:
+            meta = json.loads(row[10]) if row[10] else {}
+            entry = {
+                "step": int(row[0]),
+                "global_step": int(row[1]) if row[1] is not None else None,
+                "kv_file": row[2],
+                "kv_key": row[3],
+                "kernel": row[4],
+                "bandwidth": row[5],
+                "sample_count": int(row[6]) if row[6] is not None else None,
+                "range_min": float(row[7]) if row[7] is not None else None,
+                "range_max": float(row[8]) if row[8] is not None else None,
+                "num_points": int(row[9]) if row[9] is not None else None,
+                "metadata": meta,
+            }
+
+            try:
+                blob = self._load_tensor_blob(entry["kv_file"], entry["kv_key"])
+            except Exception as exc:
+                logger.error(
+                    f"Failed to load KDE payload {entry['kv_file']}[{entry['kv_key']}]: {exc}"
+                )
+                continue
+
+            try:
+                with np.load(io.BytesIO(blob)) as data:
+                    grid = np.asarray(data["grid"], dtype=np.float32)
+                    density = np.asarray(data["density"], dtype=np.float32)
+            except Exception as exc:
+                logger.error(f"Invalid KDE payload for '{name}': {exc}")
+                continue
+
+            if grid.ndim != 1 or density.ndim != 1 or grid.size != density.size:
+                logger.warning(
+                    f"Skipping malformed KDE entry for '{name}' (shape mismatch)"
+                )
+                continue
+
+            entry["grid"] = grid
+            entry["density"] = density
+
+            range_candidates_min.append(
+                entry["range_min"]
+                if entry["range_min"] is not None
+                else float(grid.min())
+            )
+            range_candidates_max.append(
+                entry["range_max"]
+                if entry["range_max"] is not None
+                else float(grid.max())
+            )
+
+            if entry["num_points"] is None:
+                entry["num_points"] = int(grid.size)
+            num_points_list.append(entry["num_points"])
+
+            parsed_rows.append(entry)
+
+        if not parsed_rows:
+            return []
+
+        canonical_min = min(range_candidates_min)
+        canonical_max = max(range_candidates_max)
+        if canonical_min == canonical_max:
+            canonical_min -= 0.5
+            canonical_max += 0.5
+
+        if num_points_list:
+            base_points = max(min(min(num_points_list), 256), 32)
+        else:
+            base_points = 128
+
+        canonical_bins = max(base_points - 1, 32)
+        bins = np.linspace(canonical_min, canonical_max, canonical_bins + 1)
+        centers = 0.5 * (bins[:-1] + bins[1:])
+        widths = np.diff(bins)
+
+        results: list[dict[str, Any]] = []
+
+        for entry in parsed_rows:
+            grid = entry["grid"]
+            density = entry["density"]
+
+            interpolated = np.interp(
+                centers,
+                grid,
+                density,
+                left=float(density[0]),
+                right=float(density[-1]),
+            )
+
+            multiplier = entry["sample_count"] if entry["sample_count"] else 1.0
+            counts = interpolated * widths * multiplier
+            counts = np.clip(counts, a_min=0.0, a_max=None)
+            counts = counts.astype(float).tolist()
+
+            results.append(
+                {
+                    "step": entry["step"],
+                    "global_step": entry["global_step"],
+                    "bins": bins.tolist(),
+                    "counts": counts,
+                    "precision": "kde",
+                    "kernel": entry["kernel"],
+                    "bandwidth": entry["bandwidth"],
+                    "sample_count": entry["sample_count"],
+                    "range_min": entry["range_min"],
+                    "range_max": entry["range_max"],
+                }
+            )
+
+            if limit and len(results) >= limit:
+                break
+
+        return results
 
     def get_media_file_path(self, filename: str) -> Path | None:
         """Get full path to media file (DEPRECATED - use get_media_data instead)
@@ -615,6 +861,8 @@ class HybridBoardReader:
         # Count from SQLite
         media_count = 0
         tables_count = 0
+        tensor_count = 0
+        kde_count = 0
 
         if self.sqlite_db.exists():
             try:
@@ -625,6 +873,12 @@ class HybridBoardReader:
                 cursor = conn.execute("SELECT COUNT(*) FROM tables")
                 tables_count = cursor.fetchone()[0]
 
+                cursor = conn.execute("SELECT COUNT(*) FROM tensors")
+                tensor_count = cursor.fetchone()[0]
+
+                cursor = conn.execute("SELECT COUNT(*) FROM kernel_density")
+                kde_count = cursor.fetchone()[0]
+
                 conn.close()
             except Exception as e:
                 logger.warning(f"Failed to count metadata: {e}")
@@ -634,9 +888,13 @@ class HybridBoardReader:
             "metrics_count": metrics_count,
             "media_count": media_count,
             "tables_count": tables_count,
+            "tensors_count": tensor_count,
+            "kernel_density_count": kde_count,
             "histograms_count": len(self.get_available_histogram_names()),
             "available_metrics": self.get_available_metrics(),
             "available_media": self.get_available_media_names(),
             "available_tables": self.get_available_table_names(),
             "available_histograms": self.get_available_histogram_names(),
+            "available_tensors": self.get_available_tensor_names(),
+            "available_kernel_density": self.get_available_kernel_density_names(),
         }

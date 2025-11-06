@@ -17,7 +17,13 @@ from typing import Any, Dict, List, Optional, Union
 import numpy as np
 
 from kohakuboard.client.capture import MemoryOutputCapture, OutputCapture
-from kohakuboard.client.types import Media, Table, Histogram
+from kohakuboard.client.types import (
+    Histogram,
+    KernelDensity,
+    Media,
+    Table,
+    TensorLog,
+)
 from kohakuboard.client.types.media import is_media
 from kohakuboard.client.writer import writer_process_main
 
@@ -275,12 +281,18 @@ class Board:
 
         # Categorize values by type
         scalars = {}
-        media_logs = []
-        table_logs = []
-        histogram_logs = []
+        media_logs: list[tuple[str, Media]] = []
+        table_logs: list[tuple[str, Table]] = []
+        histogram_logs: list[tuple[str, Histogram]] = []
+        tensor_logs: list[tuple[str, TensorLog]] = []
+        kde_logs: list[tuple[str, KernelDensity]] = []
 
         for key, value in metrics.items():
-            if isinstance(value, Histogram):
+            if isinstance(value, TensorLog):
+                tensor_logs.append((key, value))
+            elif isinstance(value, KernelDensity):
+                kde_logs.append((key, value))
+            elif isinstance(value, Histogram):
                 # Histogram object
                 histogram_logs.append((key, value))
             elif isinstance(value, Table):
@@ -294,17 +306,21 @@ class Board:
                 scalars[key] = self._to_python_number(value)
 
         # Use batched message if we have multiple types
-        if (
+        multi_category = (
             sum(
                 [
                     bool(scalars),
                     bool(media_logs),
                     bool(table_logs),
                     bool(histogram_logs),
+                    bool(tensor_logs),
+                    bool(kde_logs),
                 ]
             )
             > 1
-        ):
+        )
+
+        if multi_category and not (tensor_logs or kde_logs):
             # Send single batched message
             self._send_batch_message(scalars, media_logs, table_logs, histogram_logs)
         else:
@@ -320,6 +336,12 @@ class Board:
             if histogram_logs:
                 for hist_name, hist_obj in histogram_logs:
                     self._send_histogram_message(hist_name, hist_obj)
+            if tensor_logs:
+                for tensor_name, tensor_obj in tensor_logs:
+                    self._send_tensor_message(tensor_name, tensor_obj)
+            if kde_logs:
+                for kde_name, kde_obj in kde_logs:
+                    self._send_kernel_density_message(kde_name, kde_obj)
 
     def _send_scalar_message(self, scalars: Dict[str, Union[int, float]]):
         """Send scalar metrics message"""
@@ -442,6 +464,61 @@ class Board:
                     "values_shape": values_array.shape,
                 },
             }
+        self.queue.put(message)
+
+    def _send_tensor_message(self, name: str, tensor_obj: TensorLog):
+        """Send tensor payload via SharedMemory."""
+        tensor_array = tensor_obj.to_numpy()
+        tensor_meta = tensor_obj.summary()
+
+        shm_name, shm_size, shm_dtype = self._create_shared_memory(
+            tensor_array, "tensor"
+        )
+
+        message = {
+            "type": "tensor",
+            "step": self._step,
+            "global_step": self._global_step,
+            "name": name,
+            "tensor_meta": tensor_meta,
+            "shared_memory": {
+                "values_name": shm_name,
+                "values_size": shm_size,
+                "values_dtype": shm_dtype,
+                "values_shape": tensor_array.shape,
+            },
+        }
+        self.queue.put(message)
+
+    def _send_kernel_density_message(self, name: str, kde_obj: KernelDensity):
+        """Send kernel density coefficients via SharedMemory."""
+        grid_array, density_array = kde_obj.to_arrays()
+        kde_meta = kde_obj.summary()
+
+        grid_shm_name, grid_size, grid_dtype = self._create_shared_memory(
+            grid_array, "kde_grid"
+        )
+        density_shm_name, density_size, density_dtype = self._create_shared_memory(
+            density_array, "kde_density"
+        )
+
+        message = {
+            "type": "kernel_density",
+            "step": self._step,
+            "global_step": self._global_step,
+            "name": name,
+            "kde_meta": kde_meta,
+            "shared_memory": {
+                "grid_name": grid_shm_name,
+                "grid_size": grid_size,
+                "grid_dtype": grid_dtype,
+                "grid_shape": grid_array.shape,
+                "density_name": density_shm_name,
+                "density_size": density_size,
+                "density_dtype": density_dtype,
+                "density_shape": density_array.shape,
+            },
+        }
         self.queue.put(message)
 
     def _send_batch_message(
@@ -698,7 +775,95 @@ class Board:
         # Send flush signal
         flush_msg = {"type": "flush"}
         self.queue.put(flush_msg)
-        time.sleep(0.5)  # Give writer time to flush
+
+    def log_tensor(
+        self,
+        name: str,
+        values: Any,
+        precision: Any | None = None,
+        metadata: Optional[dict[str, Any]] = None,
+    ):
+        """Log full tensor payload (non-blocking).
+
+        Args:
+            name: Log name (supports namespaces via '/')
+            values: Tensor/array-like payload
+            precision: Optional dtype override during serialization
+            metadata: Optional metadata dict stored alongside tensor
+        """
+        self._step += 1
+
+        try:
+            queue_size = self.queue.qsize()
+            if queue_size > 40000:
+                self.logger.warning(
+                    f"Queue size is {queue_size}/50000. Consider reducing logging frequency."
+                )
+        except NotImplementedError:
+            pass
+
+        tensor_obj = TensorLog(values, precision=precision, metadata=metadata)
+        self._send_tensor_message(name, tensor_obj)
+
+    def log_kernel_density(
+        self,
+        name: str,
+        grid: Any | None = None,
+        density: Any | None = None,
+        *,
+        values: Any | None = None,
+        num_points: int = 256,
+        kernel: str = "gaussian",
+        bandwidth: float | str | None = None,
+        sample_count: int | None = None,
+        range_min: float | None = None,
+        range_max: float | None = None,
+        percentile_clip: tuple[float, float] = (1.0, 99.0),
+        metadata: Optional[dict[str, Any]] = None,
+    ):
+        """Log kernel density data (non-blocking).
+
+        Args:
+            name: Log name (namespace supported via '/')
+            grid: Optional precomputed grid positions (1D array-like)
+            density: Optional precomputed density values aligned with `grid`
+            values: Optional raw samples; if provided the KDE is computed automatically
+            num_points: Number of evaluation points when computing from raw samples
+            kernel: Kernel name (currently only 'gaussian' is supported)
+            bandwidth: Bandwidth override (float) or "auto"/None for Scott's rule
+            sample_count: Optional explicit sample count metadata
+            range_min: Optional recommended minimum range
+            range_max: Optional recommended maximum range
+            percentile_clip: Percentile bounds (min, max) used when deriving range
+            metadata: Optional metadata dict persisted alongside KDE
+        """
+        self._step += 1
+
+        try:
+            queue_size = self.queue.qsize()
+            if queue_size > 40000:
+                self.logger.warning(
+                    f"Queue size is {queue_size}/50000. Consider reducing logging frequency."
+                )
+        except NotImplementedError:
+            pass
+
+        perc_min, perc_max = percentile_clip
+        kde_obj = KernelDensity(
+            raw_values=values,
+            grid=grid,
+            density=density,
+            kernel=kernel,
+            bandwidth=bandwidth,
+            num_points=num_points,
+            percentile_min=float(perc_min),
+            percentile_max=float(perc_max),
+            sample_count=sample_count,
+            range_min=range_min,
+            range_max=range_max,
+            metadata=metadata,
+        )
+        self._send_kernel_density_message(name, kde_obj)
 
     def finish(self):
         """Finish logging and clean up

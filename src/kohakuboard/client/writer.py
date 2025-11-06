@@ -238,6 +238,10 @@ class LogWriter:
             self._handle_table(message)
         elif msg_type == "histogram":
             self._handle_histogram(message)
+        elif msg_type == "tensor":
+            self._handle_tensor(message)
+        elif msg_type == "kernel_density":
+            self._handle_kernel_density(message)
         elif msg_type == "batch":
             self._handle_batch(message)
         elif msg_type == "log":
@@ -478,6 +482,108 @@ class LogWriter:
                     self.storage.append_histogram(
                         step, global_step, name, values, num_bins, precision
                     )
+
+    def _handle_tensor(self, message: dict):
+        """Handle tensor logging."""
+        step = message["step"]
+        global_step = message.get("global_step")
+        name = message["name"]
+        tensor_meta = message.get("tensor_meta", {})
+
+        payload_bytes = None
+        shm = None
+
+        try:
+            if "shared_memory" in message:
+                shm_info = message["shared_memory"]
+                shm = shared_memory.SharedMemory(name=shm_info["values_name"])
+                dtype = np.dtype(shm_info["values_dtype"])
+                array = np.ndarray(
+                    shm_info["values_shape"], dtype=dtype, buffer=shm.buf
+                )
+                local_array = array.copy()
+            else:
+                values = message.get("values")
+                if values is None:
+                    self.logger.warning("Tensor message missing values payload")
+                    return
+                local_array = np.array(values)
+
+            buffer = io.BytesIO()
+            np.save(buffer, local_array, allow_pickle=False)
+            payload_bytes = buffer.getvalue()
+
+            with self.storage_lock:
+                self.storage.append_tensor(
+                    step,
+                    global_step,
+                    name,
+                    payload_bytes,
+                    tensor_meta,
+                )
+        finally:
+            if shm:
+                try:
+                    shm.close()
+                    shm.unlink()
+                except Exception as exc:
+                    self.logger.warning(f"Error cleaning tensor SharedMemory: {exc}")
+
+    def _handle_kernel_density(self, message: dict):
+        """Handle kernel density logging."""
+        step = message["step"]
+        global_step = message.get("global_step")
+        name = message["name"]
+        kde_meta = message.get("kde_meta", {})
+
+        grid_shm = None
+        density_shm = None
+
+        try:
+            if "shared_memory" in message:
+                shm_info = message["shared_memory"]
+
+                grid_shm = shared_memory.SharedMemory(name=shm_info["grid_name"])
+                grid_dtype = np.dtype(shm_info["grid_dtype"])
+                grid_array = np.ndarray(
+                    shm_info["grid_shape"], dtype=grid_dtype, buffer=grid_shm.buf
+                ).copy()
+
+                density_shm = shared_memory.SharedMemory(name=shm_info["density_name"])
+                density_dtype = np.dtype(shm_info["density_dtype"])
+                density_array = np.ndarray(
+                    shm_info["density_shape"],
+                    dtype=density_dtype,
+                    buffer=density_shm.buf,
+                ).copy()
+            else:
+                grid_array = np.array(message.get("grid"), dtype=np.float32)
+                density_array = np.array(message.get("density"), dtype=np.float32)
+
+            buffer = io.BytesIO()
+            np.savez_compressed(
+                buffer,
+                grid=grid_array.astype(np.float32, copy=False),
+                density=density_array.astype(np.float32, copy=False),
+            )
+            payload_bytes = buffer.getvalue()
+
+            with self.storage_lock:
+                self.storage.append_kernel_density(
+                    step,
+                    global_step,
+                    name,
+                    payload_bytes,
+                    kde_meta,
+                )
+        finally:
+            for shm_ref in (grid_shm, density_shm):
+                if shm_ref:
+                    try:
+                        shm_ref.close()
+                        shm_ref.unlink()
+                    except Exception as exc:
+                        self.logger.warning(f"Error cleaning KDE SharedMemory: {exc}")
 
     def _handle_log(self, message: dict):
         """Handle stdout/stderr chunks in memory mode."""

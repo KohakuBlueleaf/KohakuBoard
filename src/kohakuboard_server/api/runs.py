@@ -5,6 +5,7 @@ Works in both local and remote modes with project-based organization.
 """
 
 import asyncio
+import base64
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -169,6 +170,8 @@ async def get_run_summary(
             "media": summary["available_media"],
             "tables": summary["available_tables"],
             "histograms": summary["available_histograms"],
+            "tensors": summary.get("available_tensors", []),
+            "kernel_density": summary.get("available_kernel_density", []),
         },
     }
 
@@ -386,6 +389,48 @@ async def get_histogram_data(
     return {"experiment_id": run_id, "histogram_name": name, "data": data}
 
 
+@router.get("/projects/{project}/runs/{run_id}/tensors")
+async def get_available_tensors(
+    project: str,
+    run_id: str,
+    current_user: User | None = Depends(get_optional_user),
+):
+    """Get list of available tensor log names."""
+    logger_api.info(f"Fetching tensor list for {project}/{run_id}")
+
+    run_path, _ = get_run_path(project, run_id, current_user)
+    reader = BoardReader(run_path)
+    tensor_names = reader.get_available_tensor_names()
+
+    return {"tensors": tensor_names}
+
+
+@router.get("/projects/{project}/runs/{run_id}/tensors/{name:path}")
+async def get_tensor_data(
+    project: str,
+    run_id: str,
+    name: str,
+    include_data: bool = Query(
+        False, description="When true, include base64-encoded tensor payloads"
+    ),
+    current_user: User | None = Depends(get_optional_user),
+):
+    """Get tensor metadata (and optionally payload) for a specific log name."""
+    logger_api.info(f"Fetching tensor data for {project}/{run_id}/{name}")
+
+    run_path, _ = get_run_path(project, run_id, current_user)
+    reader = BoardReader(run_path)
+    entries = reader.get_tensor_data(name, include_payload=include_data)
+
+    for entry in entries:
+        payload = entry.pop("payload", None)
+        if include_data and payload is not None:
+            entry["encoding"] = "npy_base64"
+            entry["data_base64"] = base64.b64encode(payload).decode("ascii")
+
+    return {"experiment_id": run_id, "tensor_name": name, "entries": entries}
+
+
 def should_include_metric(metric_name: str) -> bool:
     """Filter out params/ and gradients/ metrics."""
     return not metric_name.startswith("params/") and not metric_name.startswith(
@@ -436,6 +481,16 @@ async def batch_get_run_summaries(
             filtered_summary["available_histograms"] = [
                 m for m in summary["available_histograms"] if should_include_metric(m)
             ]
+            filtered_summary["available_tensors"] = [
+                m
+                for m in summary.get("available_tensors", [])
+                if should_include_metric(m)
+            ]
+            filtered_summary["available_kernel_density"] = [
+                m
+                for m in summary.get("available_kernel_density", [])
+                if should_include_metric(m)
+            ]
 
             # Return in same format as single summary endpoint
             metadata = filtered_summary["metadata"]
@@ -458,6 +513,10 @@ async def batch_get_run_summaries(
                     "media": filtered_summary["available_media"],
                     "tables": filtered_summary["available_tables"],
                     "histograms": filtered_summary["available_histograms"],
+                    "tensors": filtered_summary.get("available_tensors", []),
+                    "kernel_density": filtered_summary.get(
+                        "available_kernel_density", []
+                    ),
                 },
             }
         except Exception as e:

@@ -28,6 +28,7 @@ from kohakuboard.logger import get_logger
 from kohakuboard.storage.columnar import ColumnVaultMetricsStorage
 from kohakuboard.storage.columnar_histogram import ColumnVaultHistogramStorage
 from kohakuboard.storage.sqlite import SQLiteMetadataStorage
+from kohakuboard.storage.tensor import TensorKVStorage
 
 
 class HybridStorage:
@@ -82,6 +83,7 @@ class HybridStorage:
         self.histogram_storage = ColumnVaultHistogramStorage(
             base_dir, num_bins=64, logger=self.logger
         )
+        self.tensor_storage = TensorKVStorage(base_dir, logger=self.logger)
 
         self.logger.debug(
             "Hybrid storage initialized (Three-tier SQLite: KVault + ColumnVault + Standard)"
@@ -204,6 +206,65 @@ class HybridStorage:
             counts=counts,
         )
 
+    def append_tensor(
+        self,
+        step: int,
+        global_step: int | None,
+        name: str,
+        payload: bytes,
+        tensor_meta: dict[str, Any],
+    ):
+        """Append tensor payload to KVault + metadata table."""
+        namespace = name.split("/", 1)[0] if "/" in name else name
+        namespace_file, kv_key, size_bytes = self.tensor_storage.store_tensor(
+            name, step, payload
+        )
+
+        self.metadata_storage.append_step_info(
+            step, global_step, int(datetime.now(timezone.utc).timestamp() * 1000)
+        )
+
+        self.metadata_storage.append_tensor_metadata(
+            step,
+            global_step,
+            name,
+            namespace,
+            namespace_file,
+            kv_key,
+            tensor_meta,
+            size_bytes,
+        )
+
+    def append_kernel_density(
+        self,
+        step: int,
+        global_step: int | None,
+        name: str,
+        payload: bytes,
+        kde_meta: dict[str, Any],
+    ):
+        """Append kernel density coefficients."""
+        namespace_file, kv_key, _ = self.tensor_storage.store_tensor(
+            name, step, payload
+        )
+
+        timestamp_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+        self.metadata_storage.append_step_info(step, global_step, timestamp_ms)
+
+        num_points = kde_meta.get("num_points")
+        if not num_points and "num_points" in kde_meta:
+            num_points = int(kde_meta["num_points"])
+
+        self.metadata_storage.append_kernel_density_metadata(
+            step,
+            global_step,
+            name,
+            namespace_file,
+            kv_key,
+            kde_meta,
+            num_points=num_points or 0,
+        )
+
     def get_latest_step(self) -> dict[str, Any] | None:
         """Return latest step info from metadata storage."""
         return self.metadata_storage.get_latest_step()
@@ -238,4 +299,5 @@ class HybridStorage:
         self.metrics_storage.close()
         self.metadata_storage.close()
         self.histogram_storage.close()
+        self.tensor_storage.close()
         self.logger.debug("Hybrid storage closed")
