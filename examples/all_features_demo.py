@@ -5,12 +5,16 @@ This example demonstrates all logging capabilities:
 - Media (images, videos, audio)
 - Tables (with and without embedded media)
 - Histograms (raw values and precomputed)
+- Tensors (full payload snapshotting via SQLite KVault)
+- Kernel density functions (precomputed KDE coefficients with dynamic range)
 - Unified logging API
 
 NEW in v0.3.0:
 - SQLite KV media storage (no filesystem overhead, dynamic size)
 - SharedMemory for histogram data transfer (zero-copy)
 - mp.Queue for better performance
+- Tensor logging powered by KohakuVault (namespace/scoped K-V store)
+- Kernel density coefficient logging with on-demand resampling
 
 Usage:
     # Default: syncs to local server (localhost:48889)
@@ -30,7 +34,7 @@ import numpy as np
 import time
 from pathlib import Path
 
-from kohakuboard.client import Board, Media, Table, Histogram
+from kohakuboard.client import Board, Histogram, KernelDensity, Media, Table
 
 
 def generate_sample_image(step: int, size=(64, 64, 3)):
@@ -307,10 +311,80 @@ def demo_histograms_multi(board: Board):
     print("✓ All histograms share same step (prevents step inflation)")
 
 
-def demo_unified_logging(board: Board):
-    """Demo 10: Unified API - Mix all data types"""
+def demo_tensor_logging(board: Board):
+    """Demo 10: Tensor logging via KohakuVault."""
     print("\n" + "=" * 60)
-    print("DEMO 10: Unified Logging - Mix All Data Types")
+    print("DEMO 10: Tensor Logging (KVault-backed)")
+    print("=" * 60)
+
+    for block in range(2):
+        board.step()
+
+        tensor = (np.random.randn(128, 128) * (block + 1)).astype(np.float32)
+        metadata = {
+            "block": block,
+            "description": "Random weight snapshot for demo",
+            "shape": list(tensor.shape),
+        }
+
+        board.log_tensor(
+            f"tensors/block_{block}",
+            tensor,
+            metadata=metadata,
+        )
+
+        print(
+            f"Step {board._global_step}: Logged tensor tensors/block_{block} "
+            f"(shape={tensor.shape}, dtype=float32)"
+        )
+
+    print("✓ Tensor payloads stored in data/tensors/*.db via KohakuVault")
+
+
+def demo_kernel_density_logging(board: Board):
+    """Demo 11: Kernel density coefficient logging."""
+    print("\n" + "=" * 60)
+    print("DEMO 11: Kernel Density Logging (KDE coefficients)")
+    print("=" * 60)
+
+    rng = np.random.default_rng(42)
+
+    for i in range(3):
+        board.step()
+
+        # Simulate activation distribution with evolving mean/variance
+        samples = np.concatenate(
+            [
+                rng.normal(loc=-1.5 + 0.4 * i, scale=0.4, size=1024),
+                rng.normal(loc=1.2 + 0.3 * i, scale=0.6, size=1024),
+            ]
+        ).astype(np.float32)
+
+        kde = KernelDensity(
+            raw_values=samples,
+            num_points=256,
+            percentile_min=1.0,
+            percentile_max=99.0,
+            metadata={"demo_step": i, "components": 2},
+        )
+
+        summary = kde.summary()
+        board.log(**{"activations/kde_flow": kde})
+
+        print(
+            f"Step {board._global_step}: Logged KDE activations/kde_flow "
+            f"(samples={samples.size}, bandwidth={summary['bandwidth']:.4f})"
+        )
+
+    print(
+        "✓ KDE coefficients stored alongside recommended ranges for consistent heatmaps"
+    )
+
+
+def demo_unified_logging(board: Board):
+    """Demo 12: Unified API - Mix all data types"""
+    print("\n" + "=" * 60)
+    print("DEMO 12: Unified Logging - Mix All Data Types")
     print("=" * 60)
 
     for i in range(3):
@@ -345,9 +419,9 @@ def demo_unified_logging(board: Board):
 
 
 def demo_performance_large_histograms(board: Board):
-    """Demo 11: Performance test with large histograms"""
+    """Demo 13: Performance test with large histograms"""
     print("\n" + "=" * 60)
-    print("DEMO 11: Performance - Large Histograms (1M values)")
+    print("DEMO 13: Performance - Large Histograms (1M values)")
     print("=" * 60)
 
     for i in range(3):
@@ -422,6 +496,8 @@ def main():
     print("  • SharedMemory histogram transfer (zero-copy)")
     print("  • mp.Queue (better performance than manager.Queue)")
     print("  • Unified logging API (all data types together)")
+    print("  • Tensor snapshots stored in KohakuVault (data/tensors/*.db)")
+    print("  • Kernel density coefficients for smooth histogram flows")
 
     if sync_enabled:
         print(f"\nRemote sync enabled:")
@@ -436,7 +512,14 @@ def main():
         name="all_features_demo",
         config={
             "demo": "comprehensive",
-            "features": ["scalars", "media", "tables", "histograms"],
+            "features": [
+                "scalars",
+                "media",
+                "tables",
+                "histograms",
+                "tensors",
+                "kernel_density",
+            ],
             "storage": "hybrid (Lance + SQLite + SQLite KV)",
         },
         remote_url=args.remote_url,
@@ -462,6 +545,8 @@ def main():
     demo_histograms_raw(board)
     demo_histograms_precomputed(board)
     demo_histograms_multi(board)
+    demo_tensor_logging(board)
+    demo_kernel_density_logging(board)
     demo_unified_logging(board)
     demo_performance_large_histograms(board)
 
@@ -476,7 +561,9 @@ def main():
     print("  • Namespaces: train/, val/, gallery/, gradients/, weights/")
     print("  • Media: Images stored in SQLite KV (media/blobs.db)")
     print("  • Tables: With and without embedded media")
-    print("  • Histograms: Raw and precomputed (via SharedMemory)")
+    print("  • Histograms: Raw, precomputed, and KDE-derived flows")
+    print("  • Tensors: Stored in data/tensors/{namespace}.db via KohakuVault")
+    print("  • Kernel density: activations/kde_flow with recommended ranges")
     print("\nView results:")
     print(f"  Local: python -m kohakuboard.main → http://localhost:48889")
     if sync_enabled:

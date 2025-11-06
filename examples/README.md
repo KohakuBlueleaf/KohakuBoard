@@ -26,6 +26,8 @@ A minimal example showing the most common use cases:
 - Logging images
 - Logging histograms
 - Logging tables
+- Logging tensor snapshots (stored in `data/tensors/*.db`)
+- Logging kernel density coefficients for smooth histogram flows
 
 ## Comprehensive Examples
 
@@ -47,6 +49,8 @@ python examples/all_features_demo.py
 - ✅ Histograms: Raw values (SharedMemory)
 - ✅ Histograms: Precomputed bins/counts
 - ✅ Histograms: Batch logging (multiple at once)
+- ✅ Tensors: Full payload snapshots via KohakuVault
+- ✅ Kernel density: Precomputed KDE coefficients with recommended ranges
 - ✅ Unified API: Mix all data types in one call
 - ✅ Performance: Large histograms (1M values)
 
@@ -85,10 +89,44 @@ python examples/performance_showcase.py
 **What it benchmarks:**
 - **SQLite KV media storage**: 100+ images
 - **SharedMemory histograms**: 10K, 100K, 1M values
+- **Tensor logging**: KohakuVault throughput with 100+ payloads
+- **Kernel density logging**: KDE coefficient generation/resampling
 - **Mixed workload**: Scalars + media + histograms
 - **Queue performance**: 1000+ messages/sec
 
 **Best for:** Understanding performance characteristics
+
+---
+
+### 4. `non_blocking_benchmark.py` - Queue/Writer Stress Test
+
+Runs seven phases to profile the non-blocking client:
+1. Scalar-only logging
+2. Histogram-only (1e4 values per hist)
+3. Media-only (random RGB images)
+4. Tensor-only (large float32 blobs)
+5. KDE-only (raw samples automatically converted)
+6. Mixed scalar + tensor workload
+7. Mixed scalar + tensor + KDE workload
+
+Each phase reports throughput in **values/sec**.
+
+```bash
+# Reuse the same board directory; wipe once at the start if desired
+python examples/non_blocking_benchmark.py --clean-start \
+    --scalar-steps 4000 \
+    --tensor-size 131072
+```
+
+Key flags:
+- `--base-dir`, `--board-id` for deterministic storage paths
+- `--clean-start` to delete any previous run before the suite begins
+- `--purge-after-phase` to delete the board directory after each scenario (default: keep data to avoid Windows file locks)
+- `--tensor-size`, `--hist-values`, `--media-width`/`--media-height`, `--kde-samples` to scale load
+- `--mix-tensor-interval`, `--mix2-tensor-interval`, `--mix2-kde-interval` to control the mixed phases
+- `--skip-*` flags (e.g., `--skip-media`, `--skip-kde`) to disable individual tests
+
+**Best for:** Understanding how each data type stresses the queue and verifying the writer keeps up.
 
 ---
 
@@ -128,6 +166,36 @@ board.log(**{"weights/dist": Histogram(values)})
 # Automatically uses mp.Queue (no code changes needed)
 board = Board(name="my_experiment")
 # Queue cleanup happens automatically in board.finish()
+```
+
+### 🚀 Tensor Logging via KohakuVault
+- **Before:** No first-class tensor storage
+- **Now:** Namespace-scoped KVault files in `data/tensors/`
+- **Benefits:** Efficient binary storage with SQLite metadata for discovery
+
+```python
+weights = np.random.randn(128, 128).astype(np.float32)
+board.log_tensor(
+    "tensors/block0",
+    weights,
+    metadata={"layer": "block0", "shape": list(weights.shape)},
+)
+# Data stored in: {board_dir}/data/tensors/tensors.db (namespaced)
+```
+
+### 🚀 Kernel Density Logging
+- **Before:** Histograms with varying ranges across steps
+- **Now:** Store KDE coefficients + recommended ranges, resample on demand
+- **Benefits:** Smooth distribution flows with consistent binning in the UI
+
+```python
+activations = np.random.randn(4096).astype(np.float32)
+board.log_kernel_density(
+    "activations/kde_flow",
+    values=activations,
+    num_points=256,
+    percentile_clip=(1.0, 99.0),
+)
 ```
 
 ---

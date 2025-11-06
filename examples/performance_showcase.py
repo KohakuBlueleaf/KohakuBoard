@@ -3,7 +3,10 @@
 Demonstrates the performance benefits of:
 1. SQLite KV media storage (vs filesystem)
 2. SharedMemory histogram transfer (vs queue serialization)
-3. mp.Queue (vs manager.Queue)
+3. Tensor logging backed by KohakuVault
+4. Kernel density coefficient logging with percentile ranges
+5. Mixed workload stress with unified logging
+6. mp.Queue (vs manager.Queue)
 
 NEW in v0.3.0
 
@@ -23,7 +26,7 @@ Usage:
 import argparse
 import numpy as np
 import time
-from kohakuboard.client import Board, Media, Histogram
+from kohakuboard.client import Board, Media, Histogram, KernelDensity, TensorLog
 
 
 def benchmark_media_logging(board: Board, num_images: int = 100):
@@ -109,15 +112,95 @@ def benchmark_histogram_logging(board: Board, num_histograms: int = 100):
     print(f"    • Proper cleanup prevents memory leaks")
 
 
+def benchmark_tensor_logging(
+    board: Board, num_tensors: int = 50, tensor_shape: tuple[int, int] = (128, 128)
+):
+    """Benchmark tensor logging throughput."""
+    print("\n" + "=" * 60)
+    print(
+        f"Benchmark 3: Tensor Logging ({num_tensors} tensors of shape {tensor_shape})"
+    )
+    print("=" * 60)
+
+    start_time = time.time()
+
+    for i in range(num_tensors):
+        board.step()
+        tensor = (np.random.randn(*tensor_shape) * 0.1).astype(np.float32)
+        board.log_tensor(
+            f"tensors/benchmark_{i}",
+            tensor,
+            metadata={"index": i, "shape": list(tensor_shape)},
+        )
+
+    elapsed = time.time() - start_time
+    avg_time_ms = (elapsed / num_tensors) * 1000
+    throughput = num_tensors / elapsed
+
+    total_mb = np.prod(tensor_shape) * 4 * num_tensors / (1024 * 1024)
+
+    print(f"\nResults:")
+    print(f"  Total data: {total_mb:.2f} MB (stored in data/tensors/*.db)")
+    print(f"  Total time: {elapsed:.3f}s")
+    print(f"  Avg per tensor: {avg_time_ms:.2f}ms")
+    print(f"  Throughput: {throughput:.1f} tensors/sec")
+    print("\n✓ Tensor logging benefits:")
+    print("    • Namespaced KV files (one per namespace)")
+    print("    • Single write per tensor via KohakuVault")
+    print("    • Metadata stored in SQLite for fast lookups")
+
+
+def benchmark_kernel_density_logging(board: Board, num_entries: int = 50):
+    """Benchmark KDE coefficient logging and resampling cost."""
+    print("\n" + "=" * 60)
+    print(f"Benchmark 4: Kernel Density Logging ({num_entries} entries)")
+    print("=" * 60)
+
+    rng = np.random.default_rng(123)
+    start_time = time.time()
+
+    for i in range(num_entries):
+        board.step()
+        samples = np.concatenate(
+            [
+                rng.normal(loc=-1.0 + 0.1 * i, scale=0.6, size=2048),
+                rng.normal(loc=1.5 + 0.15 * i, scale=0.5, size=2048),
+            ]
+        )
+
+        board.log_kernel_density(
+            "kde/performance",
+            values=samples,
+            num_points=256,
+            percentile_clip=(1.0, 99.0),
+            metadata={"entry": i},
+        )
+
+    elapsed = time.time() - start_time
+    avg_time_ms = (elapsed / num_entries) * 1000
+    throughput = num_entries / elapsed
+
+    print("\nResults:")
+    print(f"  Total time: {elapsed:.3f}s")
+    print(f"  Avg per KDE: {avg_time_ms:.2f}ms")
+    print(f"  Throughput: {throughput:.1f} KDEs/sec")
+    print("\n✓ KDE logging benefits:")
+    print("    • Store grid+density once, resample anywhere at read time")
+    print("    • Consistent heatmaps via recommended percentile ranges")
+    print("    • Backed by tensor KV store (shared infrastructure)")
+
+
 def benchmark_mixed_workload(board: Board, num_iterations: int = 50):
     """Benchmark realistic mixed workload"""
     print("\n" + "=" * 60)
-    print(f"Benchmark 3: Mixed Workload ({num_iterations} iterations)")
+    print(f"Benchmark 5: Mixed Workload ({num_iterations} iterations)")
     print("=" * 60)
     print("Each iteration logs:")
     print("  • 5 scalar metrics")
     print("  • 2 images (128x128)")
     print("  • 3 histograms (10K values each)")
+    print("  • 1 tensor snapshot (64x64)")
+    print("  • 1 KDE coefficient set")
 
     start_time = time.time()
 
@@ -144,12 +227,27 @@ def benchmark_mixed_workload(board: Board, num_iterations: int = 50):
             "params/weights": Histogram(np.random.randn(10000), num_bins=64),
         }
 
+        # Tensor + KDE
+        tensor = (np.random.randn(64, 64) * 0.1).astype(np.float32)
+        kde_obj = KernelDensity(
+            raw_values=tensor.flatten(),
+            num_points=192,
+            percentile_min=1.0,
+            percentile_max=99.0,
+            metadata={"iteration": i},
+        )
+
         # Log everything together
         board.log(
             **scalars,
             image1=Media(img1, media_type="image"),
             image2=Media(img2, media_type="image"),
             **hist_data,
+            tensor_snapshot=TensorLog(
+                tensor,
+                metadata={"iteration": i, "shape": list(tensor.shape)},
+            ),
+            kde_flow=kde_obj,
         )
 
     elapsed = time.time() - start_time
@@ -172,7 +270,7 @@ def benchmark_mixed_workload(board: Board, num_iterations: int = 50):
 def stress_test_queue(board: Board, num_messages: int = 1000):
     """Stress test mp.Queue performance"""
     print("\n" + "=" * 60)
-    print(f"Benchmark 4: Queue Performance ({num_messages} messages)")
+    print(f"Benchmark 6: Queue Performance ({num_messages} messages)")
     print("=" * 60)
 
     start_time = time.time()
@@ -244,8 +342,10 @@ def main():
     print("\nTesting v0.3.0 improvements:")
     print("  1. SQLite KV media storage")
     print("  2. SharedMemory histogram transfer")
-    print("  3. mp.Queue performance")
-    print("  4. Mixed workload")
+    print("  3. Tensor logging throughput (KVault-backed)")
+    print("  4. Kernel density coefficient logging")
+    print("  5. Mixed workload with unified logging")
+    print("  6. mp.Queue / writer throughput")
 
     if sync_enabled:
         print(f"\nRemote sync enabled:")
@@ -274,6 +374,8 @@ def main():
         # Run benchmarks
         benchmark_media_logging(board, num_images=100)
         benchmark_histogram_logging(board, num_histograms=50)
+        benchmark_tensor_logging(board, num_tensors=50)
+        benchmark_kernel_density_logging(board, num_entries=50)
         benchmark_mixed_workload(board, num_iterations=50)
         stress_test_queue(board, num_messages=1000)
 
@@ -285,6 +387,8 @@ def main():
         print(f"  ✓ SQLite KV: Single database file replaces thousands of media files")
         print(f"  ✓ SQLite KV: Dynamic size with incremental BLOB I/O")
         print(f"  ✓ SharedMemory: Zero-copy transfer for large histogram arrays")
+        print(f"  ✓ Tensor logging: Namespaced KVault shards for large payloads")
+        print(f"  ✓ KDE logging: Consistent histogram flows across steps")
         print(f"  ✓ mp.Queue: Better performance than manager.Queue")
         print(f"  ✓ Proper cleanup: No memory leaks or resource issues")
         print(f"\nLocal storage: {board.board_dir}")

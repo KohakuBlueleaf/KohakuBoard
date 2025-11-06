@@ -3,6 +3,11 @@
 A minimal example showing the most common use cases.
 For comprehensive examples, see all_features_demo.py
 
+Highlights:
+- Scalars, media, tables, histograms
+- Tensor snapshots saved to KohakuVault
+- Kernel density coefficients computed automatically from raw samples
+
 Usage:
     # Default: syncs to local server (localhost:48889)
     python quick_start.py
@@ -114,6 +119,22 @@ def main():
         weights = np.random.randn(10000) * 0.01
         board.log(
             **{"params/layer1": Histogram(weights, num_bins=64, precision="exact")}
+        )
+
+        # Log tensor snapshot (stored in KohakuVault tensor store)
+        weights_matrix = weights.reshape(100, 100).astype(np.float32)
+        board.log_tensor(
+            "params/layer1_snapshot",
+            weights_matrix,
+            metadata={"epoch": epoch + 1, "shape": list(weights_matrix.shape)},
+        )
+
+        # Log kernel density coefficients directly from raw values
+        board.log_kernel_density(
+            "params/layer1_kde",
+            values=weights,
+            num_points=128,
+            percentile_clip=(1.0, 99.0),
         )
 
         # Log metrics table
