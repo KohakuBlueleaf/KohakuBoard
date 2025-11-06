@@ -7,7 +7,7 @@ Fixed schema - no dynamic columns needed.
 import json
 import sqlite3
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 from kohakuboard.logger import get_logger
 
@@ -43,7 +43,7 @@ class SQLiteMetadataStorage:
         self.db_file = base_dir / "metadata.db"
 
         # Use WAL mode for better concurrent access
-        self.conn = sqlite3.connect(str(self.db_file))
+        self.conn = sqlite3.connect(str(self.db_file), check_same_thread=False)
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA synchronous=NORMAL")  # Faster writes
 
@@ -270,6 +270,129 @@ class SQLiteMetadataStorage:
         self.conn.commit()
         self.logger.debug(f"Flushed {len(self.table_buffer)} table rows to SQLite")
         self.table_buffer.clear()
+
+    def fetch_steps_range(self, start_step: int, end_step: int) -> list[dict[str, Any]]:
+        """Fetch steps within range inclusive."""
+        cursor = self.conn.execute(
+            """
+            SELECT step, global_step, timestamp
+            FROM steps
+            WHERE step >= ? AND step <= ?
+            ORDER BY step ASC
+            """,
+            (start_step, end_step),
+        )
+        return [
+            {
+                "step": int(row[0]),
+                "global_step": int(row[1]) if row[1] is not None else None,
+                "timestamp": int(row[2]) if row[2] is not None else None,
+            }
+            for row in cursor.fetchall()
+        ]
+
+    def fetch_media_range(self, start_step: int, end_step: int) -> list[dict[str, Any]]:
+        """Fetch media metadata within range inclusive."""
+        cursor = self.conn.execute(
+            """
+            SELECT id, media_hash, format, step, global_step, name,
+                   caption, type, width, height, size_bytes
+            FROM media
+            WHERE step >= ? AND step <= ?
+            ORDER BY step ASC
+            """,
+            (start_step, end_step),
+        )
+        return [
+            {
+                "id": int(row[0]),
+                "media_hash": row[1],
+                "format": row[2],
+                "step": int(row[3]),
+                "global_step": int(row[4]) if row[4] is not None else None,
+                "name": row[5],
+                "caption": row[6],
+                "type": row[7],
+                "width": int(row[8]) if row[8] is not None else None,
+                "height": int(row[9]) if row[9] is not None else None,
+                "size_bytes": int(row[10]) if row[10] is not None else None,
+            }
+            for row in cursor.fetchall()
+        ]
+
+    def fetch_tables_range(
+        self, start_step: int, end_step: int
+    ) -> list[dict[str, Any]]:
+        """Fetch tables within step range inclusive."""
+        cursor = self.conn.execute(
+            """
+            SELECT step, global_step, name, columns, column_types, rows
+            FROM tables
+            WHERE step >= ? AND step <= ?
+            ORDER BY step ASC
+            """,
+            (start_step, end_step),
+        )
+        tables: list[dict[str, Any]] = []
+        for row in cursor.fetchall():
+            tables.append(
+                {
+                    "step": int(row[0]),
+                    "global_step": int(row[1]) if row[1] is not None else None,
+                    "name": row[2],
+                    "columns": json.loads(row[3]) if row[3] else [],
+                    "column_types": json.loads(row[4]) if row[4] else [],
+                    "rows": json.loads(row[5]) if row[5] else [],
+                }
+            )
+        return tables
+
+    def fetch_media_info_by_hashes(
+        self, hashes: Iterable[str]
+    ) -> dict[str, dict[str, Any]]:
+        """Fetch media info (format/size) by hash values."""
+        hashes = list(hashes)
+        if not hashes:
+            return {}
+
+        placeholders = ",".join("?" * len(hashes))
+        cursor = self.conn.execute(
+            f"""
+            SELECT media_hash, format, size_bytes
+            FROM media
+            WHERE media_hash IN ({placeholders})
+            """,
+            hashes,
+        )
+        info: dict[str, dict[str, Any]] = {}
+        for media_hash, fmt, size in cursor.fetchall():
+            info[media_hash] = {
+                "format": fmt,
+                "size_bytes": int(size) if size is not None else None,
+            }
+        return info
+
+    def get_latest_step(self) -> dict[str, Any] | None:
+        """Return latest step record."""
+        cursor = self.conn.execute(
+            "SELECT step, global_step, timestamp FROM steps ORDER BY step DESC LIMIT 1"
+        )
+        row = cursor.fetchone()
+        if not row:
+            return None
+        return {
+            "step": int(row[0]),
+            "global_step": int(row[1]) if row[1] is not None else None,
+            "timestamp": int(row[2]) if row[2] is not None else None,
+        }
+
+    def get_latest_step_value(self) -> int | None:
+        """Return latest step number or None."""
+        cursor = self.conn.execute("SELECT MAX(step) FROM steps")
+        row = cursor.fetchone()
+        if row and row[0] is not None:
+            return int(row[0])
+        return None
 
     def flush_all(self):
         """Flush all buffers"""

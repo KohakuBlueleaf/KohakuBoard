@@ -25,7 +25,7 @@ class MediaHandler:
     VIDEO_EXTS = {".mp4", ".avi", ".mov", ".mkv", ".webm", ".flv", ".wmv", ".m4v"}
     AUDIO_EXTS = {".mp3", ".wav", ".flac", ".ogg", ".m4a", ".aac", ".wma"}
 
-    def __init__(self, media_dir: Path, kv_storage: KVault):
+    def __init__(self, media_dir: Path, kv_storage: KVault, logger=None):
         """Initialize media handler
 
         Args:
@@ -36,8 +36,11 @@ class MediaHandler:
         self.kv_storage = kv_storage
 
         # Setup file-only logger for media
-        log_file = media_dir.parent / "logs" / "media.log"
-        self.logger = get_logger("MEDIA", file_only=True, log_file=log_file)
+        if logger is not None:
+            self.logger = logger
+        else:
+            log_file = media_dir.parent / "logs" / "media.log"
+            self.logger = get_logger("MEDIA", file_only=True, log_file=log_file)
 
     def process_media(
         self, media: Any, name: str, step: int, media_type: str = "image"

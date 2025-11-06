@@ -72,6 +72,40 @@ class OutputCapture:
         logger.info("Stopped capturing stdout/stderr")
 
 
+class MemoryOutputCapture:
+    """Capture stdout/stderr and forward chunks to a sink callback (no files)."""
+
+    def __init__(self, sink):
+        """Initialize in-memory capture.
+
+        Args:
+            sink: Callable accepting (stream_name: str, text_chunk: str)
+        """
+        self.sink = sink
+        self.original_stdout = sys.stdout
+        self.original_stderr = sys.stderr
+        self.active = False
+
+    def start(self):
+        if self.active:
+            logger.warning("Output capture already active")
+            return
+
+        sys.stdout = MemoryTeeStream(self.original_stdout, self.sink, "stdout")
+        sys.stderr = MemoryTeeStream(self.original_stderr, self.sink, "stderr")
+
+        self.active = True
+        atexit.register(self.stop)
+
+    def stop(self):
+        if not self.active:
+            return
+
+        sys.stdout = self.original_stdout
+        sys.stderr = self.original_stderr
+        self.active = False
+
+
 class TeeStream:
     """Stream that writes to multiple outputs (terminal + file) with ANSI and \r handling"""
 
@@ -187,3 +221,27 @@ class TeeStream:
                     self.stream2.flush()
             except:
                 pass  # Ignore errors during cleanup
+
+
+class MemoryTeeStream:
+    """Simplified tee stream that forwards chunks to a sink callback."""
+
+    def __init__(self, primary_stream, sink, stream_name: str):
+        self.primary_stream = primary_stream
+        self.sink = sink
+        self.stream_name = stream_name
+
+    def write(self, data):
+        self.primary_stream.write(data)
+        if isinstance(data, bytes):
+            text = data.decode("utf-8", errors="replace")
+        else:
+            text = str(data)
+        if text:
+            self.sink(self.stream_name, text)
+
+    def flush(self):
+        self.primary_stream.flush()
+
+    def isatty(self):
+        return self.primary_stream.isatty()

@@ -5,13 +5,15 @@ new data to remote server using JSON payloads.
 """
 
 import hashlib
+import io
 import json
 import sqlite3
 import threading
 import time
+from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 import numpy as np
 import orjson
@@ -47,6 +49,12 @@ class SyncWorker:
         project: str,
         run_id: str,
         sync_interval: int = 10,
+        storage: Any = None,
+        storage_lock: Optional[threading.RLock] = None,
+        media_kv: Optional[KVault] = None,
+        memory_mode: bool = False,
+        log_buffers: Optional[dict[str, io.StringIO]] = None,
+        metadata: Optional[dict[str, Any]] = None,
     ):
         """Initialize sync worker
 
@@ -57,6 +65,12 @@ class SyncWorker:
             project: Project name on remote server
             run_id: Run ID
             sync_interval: Sync check interval in seconds (default: 10)
+            storage: Optional shared HybridStorage instance (from writer process)
+            storage_lock: Optional threading lock coordinating storage access
+            media_kv: Optional shared KVault instance for media data
+            memory_mode: Whether writer is operating in memory-only mode
+            log_buffers: Optional dict of in-memory log buffers for stdout/stderr
+            metadata: Optional metadata snapshot for memory mode
         """
         self.board_dir = Path(board_dir)
         self.remote_url = remote_url.rstrip("/")
@@ -64,19 +78,30 @@ class SyncWorker:
         self.project = project
         self.run_id = run_id
         self.sync_interval = sync_interval
+        self.storage = storage
+        self.storage_lock = storage_lock or threading.RLock()
+        self.memory_mode = memory_mode
+        self._uses_shared_storage = storage is not None
+        self.initial_metadata = deepcopy(metadata) if metadata else None
+        self._memory_state: Optional[dict[str, Any]] = None
+        self.log_buffers = log_buffers
 
         # Paths
-        self.state_file = self.board_dir / "sync_state.json"
+        self.state_file = (
+            self.board_dir / "sync_state.json" if not self.memory_mode else None
+        )
         self.sqlite_db = self.board_dir / "data" / "metadata.db"
         self.metrics_dir = self.board_dir / "data" / "metrics"
         self.histograms_dir = self.board_dir / "data" / "histograms"
         self.media_dir = self.board_dir / "media"
         self.media_kv_path = self.board_dir / "media" / "blobs.db"
 
-        # Initialize KVault storage for reading media
-        self.media_kv = None
-        if self.media_kv_path.exists():
+        # Initialize KVault storage for reading media (shared if provided)
+        self.media_kv = media_kv
+        self._owns_media_kv = False
+        if self.media_kv is None and self.media_kv_path.exists():
             self.media_kv = KVault(str(self.media_kv_path))
+            self._owns_media_kv = True
 
         # Sync state
         self.state = self._load_state()
@@ -99,20 +124,23 @@ class SyncWorker:
         # Setup dedicated logger for sync worker (write to file, not stdout)
         self._setup_logger()
 
+        storage_mode = "shared" if self._uses_shared_storage else "filesystem"
         self.logger.info(
             f"SyncWorker initialized: {project}/{run_id} -> {remote_url} "
-            f"(interval: {sync_interval}s)"
+            f"(interval: {sync_interval}s, storage={storage_mode})"
         )
 
     def _setup_logger(self):
         """Setup dedicated logger for sync worker that writes to file ONLY"""
         from kohakuboard.logger import get_logger
 
-        log_dir = self.board_dir / "logs"
-        log_dir.mkdir(exist_ok=True)
-        log_file = log_dir / "sync_worker.log"
+        if self.memory_mode:
+            self.logger = get_logger("SYNC", drop=True)
+            return
 
-        # Get file-only logger instance
+        log_dir = self.board_dir / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_file = log_dir / "sync_worker.log"
         self.logger = get_logger("SYNC", file_only=True, log_file=log_file)
 
     def start(self):
@@ -151,8 +179,8 @@ class SyncWorker:
             else:
                 self.logger.info("SyncWorker stopped")
 
-        # Clean up SQLite KV connection
-        if self.media_kv is not None:
+        # Clean up SQLite KV connection if owned
+        if self._owns_media_kv and self.media_kv is not None:
             try:
                 self.logger.debug("Closing SQLite KV connection...")
                 self.media_kv.close()
@@ -237,12 +265,19 @@ class SyncWorker:
 
     def _sync_new_data(self):
         """Collect and sync new data since last sync"""
-        if not self.sqlite_db.exists():
+        if not self._uses_shared_storage and not self.sqlite_db.exists():
             self.logger.debug("SQLite DB not found, skipping sync")
             return
 
-        # Get latest step from local storage
-        latest_step = self._get_latest_local_step()
+        # Determine latest step from local storage
+        if self._uses_shared_storage:
+            with self.storage_lock:
+                self.storage.flush_all()
+                latest_info = self.storage.metadata_storage.get_latest_step()
+                latest_step = latest_info["step"] if latest_info else None
+        else:
+            latest_step = self._get_latest_local_step()
+
         if latest_step is None:
             self.logger.debug("No data to sync yet")
             return
@@ -261,8 +296,23 @@ class SyncWorker:
         )
 
         try:
+            start_step = last_synced_step + 1
+            end_step = latest_step
+
             # Collect new data
-            payload = self._collect_sync_payload(last_synced_step + 1, latest_step)
+            if self._uses_shared_storage:
+                with self.storage_lock:
+                    payload = self._collect_sync_payload_from_storage(
+                        start_step, end_step
+                    )
+                if not self.state.get("metadata_synced", False):
+                    payload["metadata"] = self._collect_metadata()
+            else:
+                payload = self._collect_sync_payload(start_step, end_step)
+
+            # Collect log hashes outside the storage lock
+            if "log_hashes" not in payload:
+                payload["log_hashes"] = self._collect_log_hashes()
 
             # Send log data
             response = self._sync_logs(payload)
@@ -287,6 +337,12 @@ class SyncWorker:
                 self._upload_changed_log_files(
                     payload.get("log_hashes", {}), response.get("log_hashes", {})
                 )
+
+            if self.memory_mode and self._uses_shared_storage:
+                with self.storage_lock:
+                    prune_fn = getattr(self.storage, "prune_up_to", None)
+                    if callable(prune_fn):
+                        prune_fn(latest_step)
 
             self._save_state()
 
@@ -346,6 +402,32 @@ class SyncWorker:
         payload["log_hashes"] = self._collect_log_hashes()
 
         return payload
+
+    def _collect_sync_payload_from_storage(
+        self, start_step: int, end_step: int
+    ) -> dict[str, Any]:
+        """Collect sync payload using shared storage (lock must be held)."""
+        if not self.storage:
+            raise RuntimeError("Shared storage not available")
+
+        steps = self.storage.metadata_storage.fetch_steps_range(start_step, end_step)
+        scalars = self.storage.metrics_storage.collect_metrics_range(
+            start_step, end_step
+        )
+        media = self.storage.metadata_storage.fetch_media_range(start_step, end_step)
+        tables = self.storage.metadata_storage.fetch_tables_range(start_step, end_step)
+        histograms = self.storage.histogram_storage.collect_histograms_range(
+            start_step, end_step
+        )
+
+        return {
+            "sync_range": {"start_step": start_step, "end_step": end_step},
+            "steps": steps,
+            "scalars": scalars,
+            "media": media,
+            "tables": tables,
+            "histograms": histograms,
+        }
 
     def _collect_steps(self, start_step: int, end_step: int) -> list[dict[str, Any]]:
         """Collect steps from SQLite"""
@@ -487,58 +569,90 @@ class SyncWorker:
             import struct
 
             for db_file in self.histograms_dir.glob("*.db"):
-                # Read ColumnVault dataset
-                cv = ColumnVault(str(db_file))
+                parts = db_file.stem.split("_")
+                if parts and parts[-1] in ("u8", "i32"):
+                    precision = parts[-1]
+                elif db_file.stem.endswith("_i32"):
+                    precision = "i32"
+                else:
+                    precision = "u8"
 
-                # Read all data
-                all_steps = list(cv["step"])
-                all_global_steps = list(cv["global_step"])
-                all_names = list(cv["name"])
-                all_counts_bytes = list(cv["counts"])
-                all_mins = list(cv["min"])
-                all_maxs = list(cv["max"])
+                expected_size = None
+                if len(parts) >= 3 and parts[-2].isdigit():
+                    bin_count = int(parts[-2])
+                    expected_size = bin_count if precision == "u8" else bin_count * 4
 
-                # Determine precision from filename
-                precision = "i32" if "_i32" in db_file.stem else "u8"
+                try:
+                    cv = ColumnVault(str(db_file))
+                    all_steps = list(cv["step"])
+                    all_global_steps = list(cv["global_step"])
+                    all_names = list(cv["name"])
+                    all_counts_bytes = list(cv["counts"])
+                    all_mins = list(cv["min"])
+                    all_maxs = list(cv["max"])
+                except Exception as exc:
+                    self.logger.error(f"Failed to read histogram DB {db_file}: {exc}")
+                    continue
+                finally:
+                    try:
+                        cv.close()
+                    except Exception:
+                        pass
 
-                # Filter by step range and convert
-                for i in range(len(all_steps)):
-                    step = all_steps[i]
+                iterator = zip(
+                    all_steps,
+                    all_global_steps,
+                    all_names,
+                    all_counts_bytes,
+                    all_mins,
+                    all_maxs,
+                )
+
+                for (
+                    step,
+                    global_step,
+                    raw_name,
+                    counts_bytes,
+                    min_val,
+                    max_val,
+                ) in iterator:
                     if not (start_step <= step <= end_step):
                         continue
 
-                    # Deserialize counts from fixed-size bytes
-                    counts_bytes = all_counts_bytes[i]
+                    if expected_size and len(counts_bytes) != expected_size:
+                        self.logger.warning(
+                            f"Counts size mismatch for {db_file.name}: "
+                            f"expected {expected_size}, got {len(counts_bytes)}"
+                        )
+
                     if precision == "u8":
-                        # uint8: 1 byte per bin
                         counts = list(
                             struct.unpack(f"{len(counts_bytes)}B", counts_bytes)
                         )
                     else:
-                        # int32: 4 bytes per bin, little-endian
                         num_bins = len(counts_bytes) // 4
+                        if num_bins == 0:
+                            continue
                         counts = list(struct.unpack(f"<{num_bins}i", counts_bytes))
 
-                    min_val = float(all_mins[i])
-                    max_val = float(all_maxs[i])
-                    num_bins = len(counts)
+                    if not counts:
+                        continue
 
-                    # Reconstruct bin edges
-                    bin_edges = np.linspace(min_val, max_val, num_bins + 1).tolist()
-
-                    # Decode name from bytes
-                    name = all_names[i].decode("utf-8")
+                    bins = np.linspace(min_val, max_val, len(counts) + 1).tolist()
+                    name = (
+                        raw_name.decode("utf-8")
+                        if isinstance(raw_name, (bytes, bytearray))
+                        else str(raw_name)
+                    )
 
                     histograms.append(
                         {
                             "step": int(step),
                             "global_step": (
-                                int(all_global_steps[i])
-                                if all_global_steps[i]
-                                else None
+                                int(global_step) if global_step is not None else None
                             ),
                             "name": name,
-                            "bins": bin_edges,
+                            "bins": bins,
                             "counts": counts,
                             "precision": precision,
                         }
@@ -556,18 +670,21 @@ class SyncWorker:
             Metadata dict or None if file doesn't exist
         """
         metadata_file = self.board_dir / "metadata.json"
-        if not metadata_file.exists():
-            self.logger.debug("metadata.json not found")
-            return None
+        if metadata_file.exists():
+            try:
+                with open(metadata_file, "r") as f:
+                    metadata = json.load(f)
+                self.logger.debug("Collected metadata.json")
+                return metadata
+            except Exception as e:
+                self.logger.error(f"Failed to read metadata.json: {e}")
 
-        try:
-            with open(metadata_file, "r") as f:
-                metadata = json.load(f)
-            self.logger.debug("Collected metadata.json")
-            return metadata
-        except Exception as e:
-            self.logger.error(f"Failed to read metadata.json: {e}")
-            return None
+        if self.initial_metadata:
+            self.logger.debug("Using in-memory metadata snapshot")
+            return deepcopy(self.initial_metadata)
+
+        self.logger.debug("metadata.json not found and no in-memory metadata")
+        return None
 
     def _collect_log_hashes(self) -> dict[str, str]:
         """Collect hashes of ALL log files for change detection
@@ -575,6 +692,18 @@ class SyncWorker:
         Returns:
             Dict of {filename: hash}
         """
+        if self.memory_mode:
+            if not self.log_buffers:
+                return {}
+
+            hashes = {}
+            with self.storage_lock:
+                for log_name, buffer in self.log_buffers.items():
+                    content = buffer.getvalue().encode("utf-8")
+                    if content:
+                        hashes[log_name] = hashlib.sha256(content).hexdigest()
+            return hashes
+
         logs_dir = self.board_dir / "logs"
         if not logs_dir.exists():
             return {}
@@ -617,6 +746,33 @@ class SyncWorker:
             local_hashes: Local log file hashes
             remote_hashes: Remote log file hashes from server (may be empty on first sync)
         """
+        if self.memory_mode:
+            if not self.log_buffers:
+                return
+
+            with self.storage_lock:
+                for log_name, local_hash in local_hashes.items():
+                    remote_hash = remote_hashes.get(log_name)
+                    if remote_hash and local_hash == remote_hash:
+                        continue
+
+                    buffer = self.log_buffers.get(log_name)
+                    if buffer is None:
+                        continue
+
+                    content_bytes = buffer.getvalue().encode("utf-8")
+                    if not content_bytes:
+                        continue
+
+                    try:
+                        self._upload_memory_log(log_name, content_bytes)
+                        self.state[f"log_hash_{log_name}"] = local_hash
+                    except Exception as e:
+                        self.logger.error(
+                            f"Failed to upload in-memory log {log_name}: {e}"
+                        )
+            return
+
         logs_dir = self.board_dir / "logs"
 
         for log_name, local_hash in local_hashes.items():
@@ -665,6 +821,19 @@ class SyncWorker:
             except Exception as e:
                 self.logger.error(f"Failed to upload {log_name}: {e}")
 
+    def _upload_memory_log(self, log_name: str, content_bytes: bytes) -> None:
+        url = f"{self.remote_url}/api/projects/{self.project}/runs/{self.run_id}/logs/{log_name}"
+        response = self.session.put(
+            url,
+            data=content_bytes,
+            headers={"Content-Type": "application/octet-stream"},
+            timeout=60,
+        )
+        response.raise_for_status()
+        self.logger.info(
+            f"Uploaded in-memory log file: {log_name} ({len(content_bytes)} bytes)"
+        )
+
     def _sync_logs(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Send log data to remote server
 
@@ -700,49 +869,70 @@ class SyncWorker:
         if not missing_hashes:
             return
 
-        # Check if KVault is available
         if self.media_kv is None:
-            # Try to initialize if file exists now
-            if self.media_kv_path.exists():
+            if self.media_kv_path.exists() and not self._uses_shared_storage:
                 self.media_kv = KVault(str(self.media_kv_path))
+                self._owns_media_kv = True
             else:
                 self.logger.warning("KVault not available, cannot upload media")
                 return
 
         url = f"{self.remote_url}/api/projects/{self.project}/runs/{self.run_id}/media"
 
-        # Query SQLite metadata to get format for each hash
-        conn = sqlite3.connect(str(self.sqlite_db))
-        media_info = {}
-        try:
-            placeholders = ",".join("?" * len(missing_hashes))
-            cursor = conn.execute(
-                f"SELECT DISTINCT media_hash, format FROM media WHERE media_hash IN ({placeholders})",
-                missing_hashes,
-            )
-            for row in cursor.fetchall():
-                media_hash, format = row
-                media_info[media_hash] = format
-        finally:
-            conn.close()
+        files_data: list[tuple[str, bytes]] = []
 
-        # Collect media data from SQLite KV
-        files_data = []
-        for media_hash in missing_hashes:
-            if media_hash not in media_info:
-                self.logger.warning(f"Media metadata not found for hash: {media_hash}")
-                continue
+        if self._uses_shared_storage:
+            with self.storage_lock:
+                media_info = self.storage.metadata_storage.fetch_media_info_by_hashes(
+                    missing_hashes
+                )
 
-            format = media_info[media_hash]
-            key = f"{media_hash}.{format}"
+                for media_hash in missing_hashes:
+                    if media_hash not in media_info:
+                        self.logger.warning(
+                            f"Media metadata not found for hash: {media_hash}"
+                        )
+                        continue
 
-            # Read from KVault
-            data = self.media_kv.get(key)
-            if data is None:
-                self.logger.warning(f"Media data not found in KVault: {key}")
-                continue
+                    fmt = media_info[media_hash]["format"]
+                    key = f"{media_hash}.{fmt}"
+                    data = self.media_kv.get(key)
+                    if data is None:
+                        self.logger.warning(f"Media data not found in KVault: {key}")
+                        continue
 
-            files_data.append((key, data))
+                    files_data.append((key, data))
+        else:
+            # Query SQLite metadata to get format for each hash
+            conn = sqlite3.connect(str(self.sqlite_db))
+            media_info = {}
+            try:
+                placeholders = ",".join("?" * len(missing_hashes))
+                cursor = conn.execute(
+                    f"SELECT DISTINCT media_hash, format FROM media WHERE media_hash IN ({placeholders})",
+                    missing_hashes,
+                )
+                for row in cursor.fetchall():
+                    media_hash, format = row
+                    media_info[media_hash] = format
+            finally:
+                conn.close()
+
+            for media_hash in missing_hashes:
+                if media_hash not in media_info:
+                    self.logger.warning(
+                        f"Media metadata not found for hash: {media_hash}"
+                    )
+                    continue
+
+                fmt = media_info[media_hash]
+                key = f"{media_hash}.{fmt}"
+                data = self.media_kv.get(key)
+                if data is None:
+                    self.logger.warning(f"Media data not found in KVault: {key}")
+                    continue
+
+                files_data.append((key, data))
 
         if not files_data:
             self.logger.warning("No media data to upload")
@@ -850,6 +1040,18 @@ class SyncWorker:
         Returns:
             State dict with defaults
         """
+        if self.memory_mode or self.state_file is None:
+            if self._memory_state is None:
+                self._memory_state = {
+                    "last_synced_step": -1,
+                    "metadata_synced": False,
+                    "last_sync_at": None,
+                    "remote_url": self.remote_url,
+                    "project": self.project,
+                    "run_id": self.run_id,
+                }
+            return self._memory_state
+
         if not self.state_file.exists():
             return {
                 "last_synced_step": -1,
@@ -882,6 +1084,10 @@ class SyncWorker:
 
     def _save_state(self):
         """Save sync state to JSON file"""
+        if self.memory_mode or self.state_file is None:
+            self._memory_state = self.state.copy()
+            return
+
         try:
             with open(self.state_file, "w") as f:
                 json.dump(self.state, f, indent=2)

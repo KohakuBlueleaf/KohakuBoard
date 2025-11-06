@@ -187,11 +187,44 @@ class Logger:
         self.trace(f"└{'─' * 99}")
 
 
+class _NullLogger:
+    """No-op logger used to suppress output."""
+
+    def __init__(self, api_name: str = "NULL"):
+        self.api_name = api_name
+
+    def debug(self, message: str) -> None:
+        pass
+
+    def info(self, message: str) -> None:
+        pass
+
+    def success(self, message: str) -> None:
+        pass
+
+    def warning(self, message: str) -> None:
+        pass
+
+    def error(self, message: str) -> None:
+        pass
+
+    def critical(self, message: str) -> None:
+        pass
+
+    def trace(self, message: str) -> None:
+        pass
+
+    def exception(self, message: str, exc: Optional[Exception] = None) -> None:
+        pass
+
+
 class LoggerFactory:
     """Factory to create loguru loggers."""
 
     _loggers = {}
     _file_only_names = set()  # Track api_names that should not go to stdout
+    _dropped_names = set()
+    _dropped_names = set()
 
     @classmethod
     def init_logger_settings(
@@ -233,7 +266,8 @@ class LoggerFactory:
                 level="DEBUG",
                 colorize=True,
                 filter=lambda record: record["extra"].get("api_name")
-                not in cls._file_only_names,
+                not in cls._file_only_names
+                and record["extra"].get("api_name") not in cls._dropped_names,
             )
 
         # Add file logger if specified
@@ -260,17 +294,31 @@ class LoggerFactory:
                 _logger.propagate = True
 
     @classmethod
-    def get_logger(cls, api_name: str) -> Logger:
+    def get_logger(cls, api_name: str, *, drop: bool = False) -> Logger:
         """Get or create logger for API name.
 
         Args:
             api_name: Name of the API/module
+            drop: If True, create a logger that ignores all messages
 
         Returns:
             Logger instance
         """
+        if drop:
+            cls._dropped_names.add(api_name)
+            cls._loggers[api_name] = _NullLogger(api_name)
+            return cls._loggers[api_name]
+
+        if api_name in cls._loggers and isinstance(cls._loggers[api_name], _NullLogger):
+            # Previously dropped, recreate real logger
+            cls._loggers[api_name] = Logger(api_name)
+            cls._dropped_names.discard(api_name)
+            return cls._loggers[api_name]
+
         if api_name not in cls._loggers:
             cls._loggers[api_name] = Logger(api_name)
+            cls._dropped_names.discard(api_name)
+
         return cls._loggers[api_name]
 
 
@@ -285,7 +333,10 @@ def init_logger_settings(log_file: Optional[Path] = None, file_only: bool = Fals
 
 
 def get_logger(
-    api_name: str, file_only: bool = False, log_file: Optional[Path] = None
+    api_name: str,
+    file_only: bool = False,
+    log_file: Optional[Path] = None,
+    drop: bool = False,
 ) -> Logger:
     """Get logger for specific API.
 
@@ -297,12 +348,15 @@ def get_logger(
     Returns:
         Logger instance
     """
+    if drop:
+        return LoggerFactory.get_logger(api_name, drop=True)
+
     if file_only and log_file:
         # Create a separate logger instance with file-only configuration
         return create_file_only_logger(log_file, api_name)
     else:
         # Use shared logger configuration
-        return LoggerFactory.get_logger(api_name)
+        return LoggerFactory.get_logger(api_name, drop=False)
 
 
 def create_file_only_logger(log_file: Path, api_name: str = "WORKER") -> Logger:

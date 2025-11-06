@@ -59,12 +59,11 @@ class ColumnVaultHistogramStorage:
 
         self.num_bins = num_bins
 
-        # Cache of ColumnVault instances
-        self.vaults: dict[str, ColumnVault] = {}
+        # Cache of ColumnVault instances keyed by (namespace, bin_count, precision)
+        self.vaults: dict[tuple[str, int, str], ColumnVault] = {}
 
-        # Buffers grouped by namespace + precision
-        # Key: "{namespace}_{u8|i32}"
-        self.buffers: dict[str, list[dict[str, Any]]] = {}
+        # Buffers grouped by namespace + bin_count + precision
+        self.buffers: dict[tuple[str, int, str], list[dict[str, Any]]] = {}
 
         # Fixed-size bytes for counts
         # uint8: 1 byte per bin → bytes:num_bins
@@ -72,44 +71,49 @@ class ColumnVaultHistogramStorage:
         self.counts_size_u8 = num_bins
         self.counts_size_i32 = num_bins * 4
 
-    def _get_or_create_vault(self, buffer_key: str) -> ColumnVault:
-        """Get or create ColumnVault instance for a namespace+precision
+    def _get_or_create_vault(
+        self, namespace: str, bin_count: int, precision: str
+    ) -> ColumnVault:
+        """Get or create ColumnVault instance for namespace/bin_count/precision."""
+        key = (namespace, bin_count, precision)
+        if key not in self.vaults:
+            filename = f"{namespace}_{bin_count}_{precision}.db"
+            db_path = self.histograms_dir / filename
+            legacy_path = self.histograms_dir / f"{namespace}_{precision}.db"
 
-        Args:
-            buffer_key: Key like "gradients_i32" or "params_u8"
+            if (
+                not db_path.exists()
+                and legacy_path.exists()
+                and bin_count == self.num_bins
+            ):
+                db_path = legacy_path
 
-        Returns:
-            ColumnVault instance
-        """
-        if buffer_key not in self.vaults:
-            db_path = self.histograms_dir / f"{buffer_key}.db"
-
-            # Check if database file exists before creating ColumnVault
             is_new_db = not db_path.exists()
+            counts_size = bin_count if precision == "u8" else bin_count * 4
+            counts_dtype = f"bytes:{counts_size}"
 
-            # Create ColumnVault (WAL is default in SQLite)
-            suffix = buffer_key.split("_")[-1]
-            if suffix == "u8":
-                cv = ColumnVault(str(db_path))
-                counts_dtype = f"bytes:{self.counts_size_u8}"
-            else:
-                cv = ColumnVault(str(db_path))
-                counts_dtype = f"bytes:{self.counts_size_i32}"
+            cv = ColumnVault(str(db_path))
 
-            # Create columns only if database is new
             if is_new_db:
-                # New database - create schema
                 cv.create_column("step", "i64")
                 cv.create_column("global_step", "i64")
-                cv.create_column("name", "bytes")  # Variable-size for names
-                cv.create_column("counts", counts_dtype)  # Fixed-size!
+                cv.create_column("name", "bytes")
+                cv.create_column("counts", counts_dtype)
                 cv.create_column("min", "f64")
                 cv.create_column("max", "f64")
+                self.logger.debug(
+                    f"Created ColumnVault for histograms: {db_path.name} "
+                    f"(bins={bin_count}, precision={precision})"
+                )
+            else:
+                self.logger.debug(
+                    f"Opened ColumnVault for histograms: {db_path.name} "
+                    f"(bins={bin_count}, precision={precision})"
+                )
 
-            self.vaults[buffer_key] = cv
-            self.logger.debug(f"Opened ColumnVault for histograms: {buffer_key}")
+            self.vaults[key] = cv
 
-        return self.vaults[buffer_key]
+        return self.vaults[key]
 
     def append_histogram(
         self,
@@ -129,14 +133,15 @@ class ColumnVaultHistogramStorage:
             global_step: Global step
             name: Histogram name (e.g., "gradients/layer1")
             values: Raw values (if not precomputed)
-            num_bins: Ignored (uses self.num_bins)
-            precision: "exact" (int32, default) or "compact" (uint8)
+        num_bins: Number of bins to use when computing from raw values (defaults to self.num_bins)
+        precision: "exact" (int32) or "compact" (uint8)
             bins: Precomputed bin edges (optional)
             counts: Precomputed bin counts (optional)
         """
-        # Check if precomputed
+        # Determine effective number of bins and encode counts
+        precision_tag = "u8" if precision == "compact" else "i32"
+
         if bins is not None and counts is not None:
-            # Precomputed histogram - use provided bins/counts
             bins_array = np.array(bins, dtype=np.float32)
             counts_array = np.array(counts, dtype=np.int32)
 
@@ -144,20 +149,18 @@ class ColumnVaultHistogramStorage:
             p1 = float(bins_array[0])
             p99 = float(bins_array[-1])
 
-            # Convert counts based on precision
-            if precision == "compact":
+            if precision_tag == "u8":
                 max_count = counts_array.max()
                 final_counts = (
                     (counts_array / max_count * 255).astype(np.uint8)
                     if max_count > 0
                     else counts_array.astype(np.uint8)
                 )
-                suffix = "_u8"
             else:
                 final_counts = counts_array.astype(np.int32)
-                suffix = "_i32"
+
+            bin_count = len(final_counts)
         else:
-            # Compute histogram from raw values
             if not values:
                 return
 
@@ -179,36 +182,36 @@ class ColumnVaultHistogramStorage:
                     p99 += 0.5
 
             # Compute histogram
+            effective_bins = num_bins or self.num_bins
             counts_array, _ = np.histogram(
-                values_array, bins=self.num_bins, range=(p1, p99)
+                values_array, bins=effective_bins, range=(p1, p99)
             )
 
-            # Convert based on precision
-            if precision == "compact":
+            if precision_tag == "u8":
                 max_count = counts_array.max()
                 final_counts = (
                     (counts_array / max_count * 255).astype(np.uint8)
                     if max_count > 0
                     else counts_array.astype(np.uint8)
                 )
-                suffix = "_u8"
             else:
                 final_counts = counts_array.astype(np.int32)
-                suffix = "_i32"
+
+            bin_count = len(final_counts)
 
         # Serialize counts to fixed-size bytes
         counts_bytes = final_counts.tobytes()
 
         # Extract namespace
         namespace = name.split("/")[0] if "/" in name else name.replace("/", "__")
-        buffer_key = f"{namespace}{suffix}"
+        key = (namespace, bin_count, precision_tag)
 
         # Initialize buffer
-        if buffer_key not in self.buffers:
-            self.buffers[buffer_key] = []
+        if key not in self.buffers:
+            self.buffers[key] = []
 
         # Add to buffer
-        self.buffers[buffer_key].append(
+        self.buffers[key].append(
             {
                 "step": step,
                 "global_step": global_step if global_step is not None else step,
@@ -227,14 +230,14 @@ class ColumnVaultHistogramStorage:
         total_entries = sum(len(buf) for buf in self.buffers.values())
         total_files = len(self.buffers)
 
-        for buffer_key, buffer in list(self.buffers.items()):
+        for key, buffer in list(self.buffers.items()):
             if not buffer:
                 continue
 
             try:
-                cv = self._get_or_create_vault(buffer_key)
+                namespace, bin_count, precision_tag = key
+                cv = self._get_or_create_vault(namespace, bin_count, precision_tag)
 
-                # Extract columns for batch extend
                 steps = [row["step"] for row in buffer]
                 global_steps = [row["global_step"] for row in buffer]
                 names = [row["name"] for row in buffer]
@@ -242,7 +245,6 @@ class ColumnVaultHistogramStorage:
                 mins = [row["min"] for row in buffer]
                 maxs = [row["max"] for row in buffer]
 
-                # Batch append with .extend()
                 cv["step"].extend(steps)
                 cv["global_step"].extend(global_steps)
                 cv["name"].extend(names)
@@ -251,12 +253,15 @@ class ColumnVaultHistogramStorage:
                 cv["max"].extend(maxs)
 
                 self.logger.debug(
-                    f"Flushed {len(buffer)} histograms to {buffer_key}.db"
+                    f"Flushed {len(buffer)} histograms to "
+                    f"{namespace}_{bin_count}_{precision_tag}.db"
                 )
                 buffer.clear()
 
             except Exception as e:
-                self.logger.error(f"Failed to flush {buffer_key}: {e}")
+                self.logger.error(
+                    f"Failed to flush {namespace}_{bin_count}_{precision_tag}: {e}"
+                )
 
         self.logger.debug(
             f"Flushed {total_entries} histograms to {total_files} ColumnVault files"
@@ -275,3 +280,90 @@ class ColumnVaultHistogramStorage:
 
         self.vaults.clear()
         self.logger.debug("Histogram storage closed")
+
+    def collect_histograms_range(
+        self, start_step: int, end_step: int
+    ) -> list[dict[str, Any]]:
+        """Collect histogram entries for the given step range."""
+        results: list[dict[str, Any]] = []
+
+        if not self.histograms_dir.exists():
+            return results
+
+        for db_file in self.histograms_dir.glob("*.db"):
+            parts = db_file.stem.split("_")
+            if len(parts) >= 3 and parts[-2].isdigit():
+                precision = parts[-1]
+                bin_count = int(parts[-2])
+                namespace = "_".join(parts[:-2])
+            else:
+                precision = parts[-1]
+                bin_count = self.num_bins
+                namespace = "_".join(parts[:-1])
+
+            counts_size = bin_count if precision == "u8" else bin_count * 4
+            dtype = np.uint8 if precision == "u8" else np.dtype("<i4")
+
+            try:
+                cv = ColumnVault(str(db_file))
+                steps = list(cv["step"])
+                global_steps = list(cv["global_step"])
+                names = list(cv["name"])
+                counts_list = list(cv["counts"])
+                mins = list(cv["min"])
+                maxs = list(cv["max"])
+            except Exception as exc:
+                self.logger.error(f"Failed to read histogram DB {db_file}: {exc}")
+                continue
+            finally:
+                try:
+                    cv.close()
+                except Exception:
+                    pass
+
+            iterator = zip(
+                steps,
+                global_steps,
+                names,
+                counts_list,
+                mins,
+                maxs,
+            )
+
+            for step, global_step, raw_name, counts_bytes, min_val, max_val in iterator:
+                if not (start_step <= step <= end_step):
+                    continue
+
+                if len(counts_bytes) != counts_size:
+                    self.logger.warning(
+                        f"Counts size mismatch for {db_file.name}: "
+                        f"expected {counts_size}, got {len(counts_bytes)}"
+                    )
+
+                counts_array = np.frombuffer(counts_bytes, dtype=dtype)
+                counts = [int(x) for x in counts_array.tolist()]
+
+                if not counts:
+                    continue
+
+                bins = np.linspace(min_val, max_val, len(counts) + 1).tolist()
+                hist_name = (
+                    raw_name.decode("utf-8")
+                    if isinstance(raw_name, (bytes, bytearray))
+                    else str(raw_name)
+                )
+
+                results.append(
+                    {
+                        "step": int(step),
+                        "global_step": (
+                            int(global_step) if global_step is not None else None
+                        ),
+                        "name": hist_name,
+                        "bins": bins,
+                        "counts": counts,
+                        "precision": precision,
+                    }
+                )
+
+        return results

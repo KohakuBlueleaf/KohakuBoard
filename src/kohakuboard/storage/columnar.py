@@ -169,11 +169,11 @@ class ColumnVaultMetricsStorage:
             timestamps = [row["timestamp"] for row in buffer]
             values = [row["value"] for row in buffer]
 
-            # Batch append with .extend() for efficiency
-            cv["step"].extend(steps)
-            cv["global_step"].extend(global_steps)
-            cv["timestamp"].extend(timestamps)
-            cv["value"].extend(values)
+            with cv.cache():
+                cv["step"].extend(steps)
+                cv["global_step"].extend(global_steps)
+                cv["timestamp"].extend(timestamps)
+                cv["value"].extend(values)
 
             self.logger.debug(f"Flushed {len(buffer)} rows to {metric_name}.db")
             buffer.clear()
@@ -190,6 +190,54 @@ class ColumnVaultMetricsStorage:
         """Flush all metric buffers"""
         for metric_name in list(self.buffers.keys()):
             self._flush_metric(metric_name)
+
+    def get_metric_names(self) -> list[str]:
+        """Return list of metric names (with namespaces)."""
+        names = set()
+        names.update(name.replace("__", "/") for name in self.vaults.keys())
+        if self.metrics_dir.exists():
+            for db_file in self.metrics_dir.glob("*.db"):
+                names.add(db_file.stem.replace("__", "/"))
+        return sorted(names)
+
+    def collect_metrics_range(
+        self, start_step: int, end_step: int
+    ) -> dict[str, list[dict[str, Any]]]:
+        """Collect metric data for all metrics within the step range."""
+        result: dict[str, list[dict[str, Any]]] = {}
+        metric_names = self.get_metric_names()
+
+        for metric_name in metric_names:
+            escaped = metric_name.replace("/", "__")
+            db_path = self.metrics_dir / f"{escaped}.db"
+
+            if not db_path.exists():
+                continue
+
+            try:
+                cv = ColumnVault(str(db_path))
+            except Exception as e:
+                self.logger.error(f"Failed to open ColumnVault for {metric_name}: {e}")
+                continue
+
+            try:
+                steps = list(cv["step"])
+                values = list(cv["value"])
+            finally:
+                try:
+                    cv.close()
+                except Exception:
+                    pass
+
+            metric_rows = []
+            for step_value, value in zip(steps, values):
+                if start_step <= step_value <= end_step:
+                    metric_rows.append({"step": int(step_value), "value": float(value)})
+
+            if metric_rows:
+                result[metric_name] = metric_rows
+
+        return result
 
     def close(self):
         """Close storage - flush all remaining buffers and close vaults"""

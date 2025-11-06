@@ -8,6 +8,7 @@ import sys
 import time
 import uuid
 import weakref
+from copy import deepcopy
 from datetime import datetime, timezone
 from multiprocessing import shared_memory
 from pathlib import Path
@@ -15,8 +16,7 @@ from typing import Any, Dict, List, Optional, Union
 
 import numpy as np
 
-from kohakuboard.client.capture import OutputCapture
-from kohakuboard.client.sync_worker import SyncWorker
+from kohakuboard.client.capture import MemoryOutputCapture, OutputCapture
 from kohakuboard.client.types import Media, Table, Histogram
 from kohakuboard.client.types.media import is_media
 from kohakuboard.client.writer import writer_process_main
@@ -88,6 +88,7 @@ class Board:
         remote_project: Optional[str] = None,
         sync_enabled: bool = False,
         sync_interval: int = 10,
+        memory_mode: bool = False,
     ):
         """Create a new Board for logging
 
@@ -102,6 +103,7 @@ class Board:
             remote_project: Project name on remote server (default: "local")
             sync_enabled: Whether to enable real-time sync to remote server
             sync_interval: Sync check interval in seconds (default: 10)
+            memory_mode: Store data in memory-only mode (requires remote sync to persist)
         """
 
         # Board metadata
@@ -109,13 +111,13 @@ class Board:
         self.board_id = board_id or self._generate_id()
         self.config = config or {}
         self.created_at = datetime.now(timezone.utc)
+        self.memory_mode = memory_mode
 
         # Setup directories
         self.base_dir = Path(base_dir) if base_dir else Path.cwd() / "kohakuboard"
         self.board_dir = self.base_dir / self.board_id
-        self.board_dir.mkdir(parents=True, exist_ok=True)
 
-        # Create subdirectories
+        self.board_dir.mkdir(parents=True, exist_ok=True)
         (self.board_dir / "data").mkdir(exist_ok=True)
         (self.board_dir / "media").mkdir(exist_ok=True)
         (self.board_dir / "logs").mkdir(exist_ok=True)
@@ -142,61 +144,74 @@ class Board:
         # Add file handler to board logger (in addition to stdout)
         # Note: loguru is global, so this adds a handler that ALL loggers will use
         # But we filter it to only log BOARD messages to board.log
-        self._log_handler_id = self.logger._logger.add(
-            self.board_dir / "logs" / "board.log",
-            format="<cyan>{time:HH:mm:ss.SSS}</cyan> | <fg #FF00CD>{extra[api_name]: <8}</fg #FF00CD> | <level>{level: <8}</level> | {message}",
-            level="DEBUG",
-            rotation="10 MB",
-            retention="7 days",
-            colorize=False,  # No ANSI color codes in log files
-            filter=lambda record: record["extra"].get("api_name") == "BOARD",
-        )
+        self._log_handler_id = None
+        if not self.memory_mode:
+            self._log_handler_id = self.logger._logger.add(
+                self.board_dir / "logs" / "board.log",
+                format="<cyan>{time:HH:mm:ss.SSS}</cyan> | <fg #FF00CD>{extra[api_name]: <8}</fg #FF00CD> | <level>{level: <8}</level> | {message}",
+                level="DEBUG",
+                rotation="10 MB",
+                retention="7 days",
+                colorize=False,  # No ANSI color codes in log files
+                filter=lambda record: record["extra"].get("api_name") == "BOARD",
+            )
+
+        # Save board metadata (may be in-memory only)
+        self._save_metadata()
+
+        # Prepare sync configuration (handled inside writer process)
+        self._sync_config: dict[str, Any] | None = None
+        if sync_enabled and remote_url and remote_token:
+            self._sync_config = {
+                "remote_url": remote_url,
+                "remote_token": remote_token,
+                "project": remote_project or "local",
+                "run_id": self.board_id,
+                "sync_interval": sync_interval,
+                "metadata": deepcopy(self._metadata),
+            }
+            if self.memory_mode:
+                # Memory mode requires aggressive sync intervals
+                self._sync_config["sync_interval"] = min(
+                    self._sync_config["sync_interval"], 0.25
+                )
+        elif sync_enabled:
+            self.logger.warning(
+                "Sync enabled but remote_url or remote_token missing; sync worker will not start"
+            )
+
+        if self.memory_mode and not self._sync_config:
+            self.logger.warning(
+                "Memory mode enabled without remote sync configuration; "
+                "logs will exist only in memory for this process."
+            )
 
         # Start single writer process
         self.writer_process = mp.Process(
             target=writer_process_main,
-            args=(self.board_dir, self.queue, self.stop_event),
+            args=(
+                self.board_dir,
+                self.queue,
+                self.stop_event,
+                self._sync_config,
+                self.memory_mode,
+            ),
             daemon=False,
         )
         self.writer_process.start()
 
-        # Initialize sync worker if enabled
-        self.sync_worker = None
-        if sync_enabled and remote_url and remote_token:
-            try:
-                self.sync_worker = SyncWorker(
-                    board_dir=self.board_dir,
-                    remote_url=remote_url,
-                    remote_token=remote_token,
-                    project=remote_project or "local",
-                    run_id=self.board_id,
-                    sync_interval=sync_interval,
-                )
-                self.sync_worker.start()
-                self.logger.info(
-                    f"Sync worker started (remote: {remote_url}, "
-                    f"project: {remote_project or 'local'}, "
-                    f"interval: {sync_interval}s)"
-                )
-            except Exception as e:
-                self.logger.warning(f"Failed to start sync worker: {e}")
-                self.sync_worker = None
-        elif sync_enabled:
-            self.logger.warning(
-                "Sync enabled but missing remote_url or remote_token, "
-                "sync worker not started"
-            )
-
         # Output capture
         self.capture_output = capture_output
-        if capture_output:
-            self.output_capture = OutputCapture(self.board_dir / "logs" / "output.log")
+        if self.capture_output:
+            if self.memory_mode:
+                self.output_capture = MemoryOutputCapture(self._enqueue_log_chunk)
+            else:
+                self.output_capture = OutputCapture(
+                    self.board_dir / "logs" / "output.log"
+                )
             self.output_capture.start()
         else:
             self.output_capture = None
-
-        # Save board metadata
-        self._save_metadata()
 
         # Register in global weakref list (doesn't prevent GC)
         global _active_boards_weakrefs, _cleanup_registered
@@ -761,11 +776,6 @@ class Board:
             self.logger.warning("Writer still alive after 2s, killing...")
             self.writer_process.kill()
 
-        # Stop sync worker AFTER writer has finished (ensures final sync includes ALL data)
-        if self.sync_worker:
-            self.logger.info("Writer finished, now stopping sync worker...")
-            self.sync_worker.stop(timeout=30)
-
         # Clean up SharedMemory blocks
         if hasattr(self, "_shared_memory_blocks"):
             self.logger.debug(
@@ -891,9 +901,21 @@ class Board:
             "created_at": self.created_at.isoformat(),
         }
 
+        self._metadata = metadata
+
+        if self.memory_mode:
+            return
+
         metadata_file = self.board_dir / "metadata.json"
         with open(metadata_file, "w") as f:
             json.dump(metadata, f, indent=2)
+
+    def _enqueue_log_chunk(self, stream: str, text: str):
+        """Send log chunk to writer process for in-memory storage."""
+        try:
+            self.queue.put_nowait({"type": "log", "stream": stream, "data": text})
+        except Exception:
+            pass
 
     def __del__(self):
         """Destructor - cleanup when board is garbage collected"""

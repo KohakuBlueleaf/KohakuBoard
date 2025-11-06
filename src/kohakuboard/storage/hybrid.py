@@ -204,6 +204,10 @@ class HybridStorage:
             counts=counts,
         )
 
+    def get_latest_step(self) -> dict[str, Any] | None:
+        """Return latest step info from metadata storage."""
+        return self.metadata_storage.get_latest_step()
+
     def flush_metrics(self):
         """Flush metrics buffer to ColumnVault"""
         self.metrics_storage.flush()
