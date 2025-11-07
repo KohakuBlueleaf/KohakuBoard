@@ -208,25 +208,17 @@ const customRunColors = ref({});
 const runColors = computed(() => {
   const colors = {};
   allRuns.value.forEach((run) => {
-    // Use custom color if set, otherwise use deterministic hash-based color
-    const color = customRunColors.value[run.run_id] || getRunColor(run.run_id);
-
-    colors[run.run_id] = color;
-    // Also map by name for LinePlot lookup
-    if (run.name) {
-      colors[run.name] = color;
-    }
-    // Also map by the display name we use (name or run_id)
-    colors[run.name || run.run_id] = color;
+    colors[run.run_id] =
+      customRunColors.value[run.run_id] || getRunColor(run.run_id);
   });
   return colors;
 });
 
-// Run names map - map run_id to run name for display
+// Run names map - map run_id to combined label for display
 const runNames = computed(() => {
   const names = {};
   allRuns.value.forEach((run) => {
-    names[run.run_id] = run.name || run.run_id;
+    names[run.run_id] = run.name ? `${run.run_id} · ${run.name}` : run.run_id;
   });
   return names;
 });

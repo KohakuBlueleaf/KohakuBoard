@@ -28,6 +28,7 @@ from kohakuboard.client.types.media_handler import MediaHandler
 from kohakuboard.storage.hybrid import HybridStorage
 from kohakuboard.storage.memory import MemoryHybridStorage
 from kohakuboard.logger import get_logger
+from kohakuboard.utils.board_reader import DEFAULT_LOCAL_PROJECT
 
 
 class LogWriter:
@@ -93,7 +94,7 @@ class LogWriter:
             try:
                 remote_url = sync_config["remote_url"]
                 remote_token = sync_config["remote_token"]
-                project = sync_config.get("project", "local")
+                project = sync_config.get("project", DEFAULT_LOCAL_PROJECT)
                 run_id = sync_config["run_id"]
                 sync_interval = sync_config.get("sync_interval", 10)
 

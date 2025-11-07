@@ -14,7 +14,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
-from kohakuboard.utils.board_reader import BoardReader
+from kohakuboard.utils.board_reader import BoardReader, DEFAULT_LOCAL_PROJECT
 from kohakuboard_server.auth import get_optional_user
 from kohakuboard_server.auth.permissions import check_board_read_permission
 from kohakuboard_server.config import cfg
@@ -52,9 +52,17 @@ def get_run_path(
     base_dir = Path(cfg.app.board_data_dir)
 
     if cfg.app.mode == "local":
-        if project != "local":
-            raise HTTPException(404, detail={"error": "Project not found"})
-        return base_dir / run_id, None
+        if project == DEFAULT_LOCAL_PROJECT:
+            run_path = base_dir / project / run_id
+            if not run_path.exists():
+                run_path = base_dir / run_id
+        else:
+            run_path = base_dir / project / run_id
+
+        if not run_path.exists():
+            raise HTTPException(404, detail={"error": "Run not found"})
+
+        return run_path, None
 
     else:  # remote mode
         # Get board from DB (don't filter by owner - check permissions instead)

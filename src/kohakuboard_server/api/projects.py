@@ -1,12 +1,17 @@
 """Project management API endpoints"""
 
 import json
+from collections import defaultdict
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
 from peewee import fn
 
-from kohakuboard.utils.board_reader import BoardReader, list_boards
+from kohakuboard.utils.board_reader import (
+    BoardReader,
+    DEFAULT_LOCAL_PROJECT,
+    list_boards,
+)
 from kohakuboard_server.auth import get_optional_user
 from kohakuboard_server.config import cfg
 from kohakuboard_server.db import Board, User
@@ -14,6 +19,15 @@ from kohakuboard_server.logger import logger_api
 from kohakuboard.utils.datetime_utils import safe_isoformat
 
 router = APIRouter()
+
+
+def _group_boards_by_project(base_dir: Path):
+    boards = list_boards(base_dir)
+    projects = defaultdict(list)
+    for board in boards:
+        project = board.get("project") or DEFAULT_LOCAL_PROJECT
+        projects[project].append(board)
+    return projects
 
 
 def fetchProjectRuns(project_name: str, current_user: User | None):
@@ -27,27 +41,30 @@ def fetchProjectRuns(project_name: str, current_user: User | None):
         dict with project info and runs list
     """
     if cfg.app.mode == "local":
-        # Local mode: project must be "local"
-        if project_name != "local":
+        base_dir = Path(cfg.app.board_data_dir)
+        projects = _group_boards_by_project(base_dir)
+
+        if project_name not in projects:
             raise HTTPException(404, detail={"error": "Project not found"})
 
-        # List all runs in base_dir
-        base_dir = Path(cfg.app.board_data_dir)
-        boards = list_boards(base_dir)
-
-        return {
-            "project": "local",
-            "runs": [
+        runs = []
+        for board in sorted(
+            projects[project_name],
+            key=lambda b: b.get("created_at") or "",
+            reverse=True,
+        ):
+            runs.append(
                 {
                     "run_id": board["board_id"],
                     "name": board["name"],
                     "created_at": board["created_at"],
                     "updated_at": board.get("updated_at"),
                     "config": board.get("config", {}),
+                    "project": project_name,
                 }
-                for board in boards
-            ],
-        }
+            )
+
+        return {"project": project_name, "runs": runs}
     else:
         # Remote mode: require authentication
         if not current_user:
@@ -105,27 +122,37 @@ async def list_projects(current_user: User | None = Depends(get_optional_user)):
         dict: {"projects": [...]}
     """
     if cfg.app.mode == "local":
-        # Local mode: single "local" project
         base_dir = Path(cfg.app.board_data_dir)
-        run_count = len(
-            [
-                d
-                for d in base_dir.iterdir()
-                if d.is_dir() and (d / "metadata.json").exists()
-            ]
-        )
+        grouped = _group_boards_by_project(base_dir)
 
-        return {
-            "projects": [
+        project_list = []
+        for name, boards in grouped.items():
+            created_times = [b.get("created_at") for b in boards if b.get("created_at")]
+            updated_times = [b.get("updated_at") for b in boards if b.get("updated_at")]
+
+            display_name = "Default Project" if name == DEFAULT_LOCAL_PROJECT else name
+            project_list.append(
                 {
-                    "name": "local",
-                    "display_name": "Local Boards",
-                    "run_count": run_count,
+                    "name": name,
+                    "display_name": display_name,
+                    "run_count": len(boards),
+                    "created_at": min(created_times) if created_times else None,
+                    "updated_at": max(updated_times) if updated_times else None,
+                }
+            )
+
+        if not project_list:
+            project_list.append(
+                {
+                    "name": DEFAULT_LOCAL_PROJECT,
+                    "display_name": "Default Project",
+                    "run_count": 0,
                     "created_at": None,
                     "updated_at": None,
                 }
-            ]
-        }
+            )
+
+        return {"projects": sorted(project_list, key=lambda p: p["name"])}
 
     else:  # remote mode
         if not current_user:

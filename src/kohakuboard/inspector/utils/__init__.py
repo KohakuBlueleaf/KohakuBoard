@@ -3,6 +3,8 @@
 import json
 from pathlib import Path
 
+from kohakuboard.utils.board_reader import DEFAULT_LOCAL_PROJECT
+
 
 def is_board_directory(path: Path) -> bool:
     """Check if path is a single board directory
@@ -19,26 +21,28 @@ def is_board_directory(path: Path) -> bool:
 
 
 def is_boards_container(path: Path) -> bool:
-    """Check if path contains multiple boards
-
-    Args:
-        path: Path to check
-
-    Returns:
-        True if path contains board subdirectories
-    """
+    """Check if path contains multiple boards (supports nested projects)."""
     if not path.exists() or not path.is_dir():
         return False
 
-    # If it's already a board, it's not a container
     if is_board_directory(path):
         return False
 
-    # Check if any subdirectories are boards
     try:
         for item in path.iterdir():
-            if item.is_dir() and is_board_directory(item):
+            if not item.is_dir():
+                continue
+
+            if is_board_directory(item):
                 return True
+
+            # Project-style directory
+            try:
+                for sub in item.iterdir():
+                    if sub.is_dir() and is_board_directory(sub):
+                        return True
+            except PermissionError:
+                continue
     except PermissionError:
         return False
 
@@ -73,55 +77,63 @@ def detect_path_type(path: Path) -> str:
 
 
 def list_boards_in_container(container_path: Path) -> list[dict]:
-    """List all boards in a container directory
+    """List all boards in a container directory (supports project folders)."""
 
-    Args:
-        container_path: Path to container
+    def read_board(board_path: Path, project: str):
+        try:
+            with open(board_path / "metadata.json", "r") as f:
+                metadata = json.load(f)
 
-    Returns:
-        List of board info dicts with keys:
-        - path: Path to board
-        - name: Board name from metadata
-        - board_id: Board ID
-        - created_at: Creation timestamp
-        - config: Board config dict
-    """
-    boards = []
+            boards.append(
+                {
+                    "path": board_path,
+                    "name": metadata.get("name", ""),
+                    "board_id": metadata.get("board_id", board_path.name),
+                    "created_at": metadata.get("created_at", "Unknown"),
+                    "config": metadata.get("config", {}),
+                    "project": project,
+                }
+            )
+        except Exception as e:
+            print(f"Warning: Failed to read metadata for {board_path}: {e}")
+
+    boards: list[dict] = []
 
     try:
         for item in container_path.iterdir():
             if not item.is_dir():
                 continue
 
-            if not is_board_directory(item):
+            if is_board_directory(item):
+                read_board(item, DEFAULT_LOCAL_PROJECT)
                 continue
 
-            # Read metadata
+            if item.name == "users":
+                try:
+                    for user_dir in item.iterdir():
+                        if not user_dir.is_dir():
+                            continue
+                        for project_dir in user_dir.iterdir():
+                            if not project_dir.is_dir():
+                                continue
+                            for run_dir in project_dir.iterdir():
+                                if run_dir.is_dir() and is_board_directory(run_dir):
+                                    read_board(run_dir, project_dir.name)
+                except PermissionError:
+                    continue
+                continue
+
             try:
-                with open(item / "metadata.json", "r") as f:
-                    metadata = json.load(f)
-
-                boards.append(
-                    {
-                        "path": item,
-                        "name": metadata.get("name", item.name),
-                        "board_id": metadata.get("board_id", item.name),
-                        "created_at": metadata.get("created_at", "Unknown"),
-                        "config": metadata.get("config", {}),
-                    }
-                )
-
-            except Exception as e:
-                # Skip boards with invalid metadata
-                print(f"Warning: Failed to read metadata for {item}: {e}")
+                for run_dir in item.iterdir():
+                    if run_dir.is_dir() and is_board_directory(run_dir):
+                        read_board(run_dir, item.name)
+            except PermissionError:
                 continue
 
     except PermissionError as e:
         print(f"Error: Permission denied reading {container_path}: {e}")
 
-    # Sort by creation date (newest first)
     boards.sort(key=lambda b: b["created_at"], reverse=True)
-
     return boards
 
 

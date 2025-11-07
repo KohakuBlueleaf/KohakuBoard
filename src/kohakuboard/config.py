@@ -25,7 +25,7 @@ class SyncConfig(BaseModel):
     enabled: bool = False
     remote_url: str = ""
     remote_token: str = ""
-    remote_project: str = "local"
+    remote_project: str = "default"
     sync_interval: int = 10  # seconds
 
 
@@ -49,7 +49,7 @@ class Config(BaseModel):
                 enabled=os.getenv("KOHAKU_SYNC_ENABLED", "false").lower() == "true",
                 remote_url=os.getenv("KOHAKU_SYNC_REMOTE_URL", ""),
                 remote_token=os.getenv("KOHAKU_SYNC_REMOTE_TOKEN", ""),
-                remote_project=os.getenv("KOHAKU_SYNC_REMOTE_PROJECT", "local"),
+                remote_project=os.getenv("KOHAKU_SYNC_REMOTE_PROJECT", "default"),
                 sync_interval=int(os.getenv("KOHAKU_SYNC_INTERVAL", "10")),
             ),
         )

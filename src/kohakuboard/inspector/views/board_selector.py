@@ -135,24 +135,35 @@ class BoardSelectorView(ctk.CTkFrame):
         """
         card = ctk.CTkFrame(self.boards_frame, corner_radius=10)
 
-        # Board name
-        name_label = ctk.CTkLabel(
-            card, text=board["name"], font=ctk.CTkFont(size=16, weight="bold")
-        )
-        name_label.pack(anchor="w", padx=15, pady=(15, 5))
-
-        # Board ID (smaller, gray)
+        # Run ID as primary title
         id_label = ctk.CTkLabel(
             card,
             text=board["board_id"],
-            font=ctk.CTkFont(size=10),
-            text_color="gray",
+            font=ctk.CTkFont(size=16, weight="bold"),
         )
-        id_label.pack(anchor="w", padx=15, pady=(0, 10))
+        id_label.pack(anchor="w", padx=15, pady=(15, 2))
+
+        # Optional subtitle (human-readable name)
+        if board.get("name"):
+            name_label = ctk.CTkLabel(
+                card,
+                text=board["name"],
+                font=ctk.CTkFont(size=12),
+                text_color="gray",
+            )
+            name_label.pack(anchor="w", padx=15, pady=(0, 8))
 
         # Info frame
         info_frame = ctk.CTkFrame(card, fg_color="transparent")
         info_frame.pack(fill="x", padx=15, pady=(0, 10))
+
+        # Project badge
+        project_label = ctk.CTkLabel(
+            info_frame,
+            text=f"📁 {board.get('project', 'local')}",
+            font=ctk.CTkFont(size=11),
+        )
+        project_label.pack(anchor="w")
 
         # Created date
         date_text = (

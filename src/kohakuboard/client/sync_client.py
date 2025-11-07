@@ -63,7 +63,7 @@ class SyncClient:
         # Update metadata with sync settings
         metadata["project"] = project
         metadata["private"] = private
-        metadata["run_id"] = metadata.get("board_id") or board_dir.name
+        metadata["run_id"] = board_dir.name
 
         logger.info(f"Syncing board: {metadata['run_id']}")
         logger.info(f"  Project: {project}")

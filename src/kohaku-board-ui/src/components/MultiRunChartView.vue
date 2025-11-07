@@ -211,9 +211,13 @@ const scalarCharts = computed(() => {
     for (const run of props.displayedRuns) {
       const runData = scalarData.value[run.run_id];
       if (runData && runData[metric]) {
+        const displayName = run.name
+          ? `${run.run_id} · ${run.name}`
+          : run.run_id;
+
         runsWithData.push({
           run_id: run.run_id,
-          name: run.name,
+          name: displayName,
           color: props.runColors[run.run_id] || "#ccc",
           data: runData[metric],
         });

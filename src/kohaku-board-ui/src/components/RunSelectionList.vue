@@ -51,9 +51,19 @@ function handleColorChange(runId, event) {
               :title="'Click to change color'"
             ></span>
           </div>
-          <span class="text-sm truncate text-gray-900 dark:text-gray-100">
-            {{ run.name || run.run_id }}
-          </span>
+          <div class="flex flex-col min-w-0">
+            <span
+              class="text-sm font-medium truncate text-gray-900 dark:text-gray-100"
+            >
+              {{ run.run_id }}
+            </span>
+            <span
+              v-if="run.name"
+              class="text-xs truncate text-gray-500 dark:text-gray-400"
+            >
+              {{ run.name }}
+            </span>
+          </div>
         </div>
 
         <el-button

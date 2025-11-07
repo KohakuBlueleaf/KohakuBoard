@@ -13,7 +13,7 @@ from fastapi import APIRouter, Body, HTTPException, Query
 from fastapi.responses import Response
 from pydantic import BaseModel
 
-from kohakuboard.utils.board_reader import BoardReader
+from kohakuboard.utils.board_reader import BoardReader, DEFAULT_LOCAL_PROJECT
 from kohakuboard.config import cfg
 from kohakuboard.logger import logger_api
 
@@ -31,24 +31,20 @@ class BatchScalarsRequest(BaseModel):
 
 
 def get_run_path(project: str, run_id: str) -> Path:
-    """Resolve run path in local mode.
-
-    Args:
-        project: Project name (must be "local")
-        run_id: Run ID
-
-    Returns:
-        Path to run directory
-
-    Raises:
-        HTTPException: 404 if project not "local"
-    """
+    """Resolve run path in local mode."""
     base_dir = Path(cfg.app.board_data_dir)
 
-    if project != "local":
-        raise HTTPException(404, detail={"error": "Project not found"})
+    if project == DEFAULT_LOCAL_PROJECT:
+        run_path = base_dir / project / run_id
+        if not run_path.exists():
+            run_path = base_dir / run_id
+    else:
+        run_path = base_dir / project / run_id
 
-    return base_dir / run_id
+    if not run_path.exists():
+        raise HTTPException(404, detail={"error": "Run not found"})
+
+    return run_path
 
 
 @router.get("/projects/{project}/runs/{run_id}/status")

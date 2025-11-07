@@ -3,7 +3,10 @@
 import atexit
 import json
 import multiprocessing as mp
+import random
+import re
 import signal
+import string
 import sys
 import time
 import uuid
@@ -31,6 +34,7 @@ from kohakuboard.client.writer import writer_process_main
 
 # Get logger for Board
 from kohakuboard.logger import get_logger
+from kohakuboard.utils.board_reader import DEFAULT_LOCAL_PROJECT
 
 
 # Global weakref registry - doesn't prevent GC
@@ -89,6 +93,7 @@ class Board:
         name: str,
         board_id: Optional[str] = None,
         config: Optional[Dict[str, Any]] = None,
+        project: Optional[str] = None,
         base_dir: Optional[Union[str, Path]] = None,
         capture_output: bool = True,
         remote_url: Optional[str] = None,
@@ -104,11 +109,12 @@ class Board:
             name: Human-readable name for this board
             board_id: Unique ID (auto-generated if not provided)
             config: Configuration dict for this run (hyperparameters, etc.)
+            project: Project folder name (default: "default")
             base_dir: Base directory for boards (default: ./kohakuboard)
             capture_output: Whether to capture stdout/stderr to log file
             remote_url: Remote server base URL for sync (e.g., https://board.example.com)
             remote_token: Authentication token for remote server
-            remote_project: Project name on remote server (default: "local")
+            remote_project: Project name on remote server (default: "default")
             sync_enabled: Whether to enable real-time sync to remote server
             sync_interval: Sync check interval in seconds (default: 10)
             memory_mode: Store data in memory-only mode (requires remote sync to persist)
@@ -116,14 +122,16 @@ class Board:
 
         # Board metadata
         self.name = name
-        self.board_id = board_id or self._generate_id()
         self.config = config or {}
         self.created_at = datetime.now(timezone.utc)
         self.memory_mode = memory_mode
+        self.project = self._normalize_project(project)
 
         # Setup directories
         self.base_dir = Path(base_dir) if base_dir else Path.cwd() / "kohakuboard"
-        self.board_dir = self.base_dir / self.board_id
+        self.project_dir = self.base_dir / self.project
+        self.board_id = board_id or self._generate_id()
+        self.board_dir = self.project_dir / self.board_id
 
         self.board_dir.mkdir(parents=True, exist_ok=True)
         (self.board_dir / "data").mkdir(exist_ok=True)
@@ -189,7 +197,7 @@ class Board:
             self._sync_config = {
                 "remote_url": remote_url,
                 "remote_token": remote_token,
-                "project": remote_project or "local",
+                "project": remote_project or self.project,
                 "run_id": self.board_id,
                 "sync_interval": sync_interval,
                 "metadata": deepcopy(self._metadata),
@@ -1224,20 +1232,46 @@ class Board:
 
         raise ValueError(f"Cannot convert {type(value)} to number")
 
+    def _normalize_project(self, project: Optional[str]) -> str:
+        """Normalize project folder name for filesystem safety."""
+        if not project:
+            return DEFAULT_LOCAL_PROJECT
+
+        sanitized = re.sub(r"[^\w.-]+", "-", project.strip())
+        sanitized = sanitized.strip("-_.")
+        return sanitized or DEFAULT_LOCAL_PROJECT
+
+    def _slugify_name(self, value: str) -> str:
+        """Create slug from run name for folder annotations."""
+        if not value:
+            return ""
+        slug = re.sub(r"[^0-9a-zA-Z]+", "-", value.lower()).strip("-")
+        return slug[:24]
+
     def _generate_id(self) -> str:
-        """Generate unique board ID"""
-        # Use timestamp + random UUID
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        unique_id = uuid.uuid4().hex[:8]
-        return f"{timestamp}_{unique_id}"
+        """Generate short folder-friendly board ID."""
+        alphabet = string.ascii_lowercase + string.digits
+        slug = self._slugify_name(self.name)
+
+        for _ in range(64):
+            prefix = "".join(random.choices(alphabet, k=4))
+            candidate = f"{prefix}_{slug}" if slug else prefix
+            if not (self.project_dir / candidate).exists():
+                return candidate
+
+        # Fallback (extremely unlikely): append timestamp to ensure uniqueness
+        fallback = datetime.now().strftime("%H%M%S")
+        return f"{prefix}_{fallback}"
 
     def _save_metadata(self):
         """Save board metadata to JSON"""
         metadata = {
             "name": self.name,
             "board_id": self.board_id,
+            "run_id": self.board_id,
             "config": self.config,
             "created_at": self.created_at.isoformat(),
+            "project": self.project,
         }
 
         self._metadata = metadata

@@ -36,14 +36,16 @@ const traces = computed(() => {
 
     if (xData.length === 0) continue;
 
+    const runLabel = run.name ? `${run.run_id} · ${run.name}` : run.run_id;
+
     result.push({
-      name: `${props.metricName} (${run.name})`,
+      name: `${props.metricName} (${runLabel})`,
       x: xData,
       y: yData,
       type: "scatter",
       mode: "lines",
       line: { color: run.color, width: 2 },
-      legendgroup: run.name,
+      legendgroup: run.run_id,
     });
   }
 

@@ -12,6 +12,9 @@ from kohakuboard.utils.board_reader_hybrid import HybridBoardReader
 # Get logger for board reader
 logger = get_logger("READER")
 
+# Default project name when user doesn't specify one
+DEFAULT_LOCAL_PROJECT = "default"
+
 
 class BoardReader:
     """Read-only interface for accessing board data (factory pattern)
@@ -51,6 +54,10 @@ class BoardReader:
 def list_boards(base_dir: Path) -> List[Dict[str, Any]]:
     """List all boards in base directory
 
+    Supports both legacy layouts (boards directly inside base_dir) and
+    project-based layouts (base_dir/<project>/<run_id>). Also understands
+    remote storage paths (base_dir/users/<user>/<project>/<run_id>).
+
     Args:
         base_dir: Base directory containing boards
 
@@ -62,21 +69,17 @@ def list_boards(base_dir: Path) -> List[Dict[str, Any]]:
         logger.warning(f"Board data directory does not exist: {base_dir}")
         return []
 
-    boards = []
-    for board_dir in base_dir.iterdir():
-        if not board_dir.is_dir():
-            continue
+    boards: List[Dict[str, Any]] = []
 
-        # Check if it has metadata.json
+    def add_board(board_dir: Path, project_name: str):
         metadata_path = board_dir / "metadata.json"
         if not metadata_path.exists():
-            continue
+            return
 
         try:
             with open(metadata_path, "r") as f:
                 metadata = json.load(f)
 
-            # Get updated_at from latest step in the database
             updated_at = None
             try:
                 reader = BoardReader(board_dir)
@@ -93,9 +96,38 @@ def list_boards(base_dir: Path) -> List[Dict[str, Any]]:
                     "created_at": metadata.get("created_at"),
                     "updated_at": updated_at,
                     "config": metadata.get("config", {}),
+                    "project": project_name,
                 }
             )
         except Exception as e:
             logger.warning(f"Failed to read metadata for {board_dir.name}: {e}")
+
+    def scan_project_dir(project_dir: Path, project_name: str):
+        for run_dir in project_dir.iterdir():
+            if run_dir.is_dir():
+                add_board(run_dir, project_name)
+
+    for entry in base_dir.iterdir():
+        if not entry.is_dir():
+            continue
+
+        metadata_path = entry / "metadata.json"
+        if metadata_path.exists():
+            # Legacy layout: boards directly inside base_dir
+            add_board(entry, DEFAULT_LOCAL_PROJECT)
+            continue
+
+        if entry.name == "users":
+            # Remote-style layout: users/<user>/<project>/<run_id>
+            for user_dir in entry.iterdir():
+                if not user_dir.is_dir():
+                    continue
+                for project_dir in user_dir.iterdir():
+                    if not project_dir.is_dir():
+                        continue
+                    scan_project_dir(project_dir, project_dir.name)
+            continue
+
+        scan_project_dir(entry, entry.name)
 
     return sorted(boards, key=lambda x: x.get("created_at", ""), reverse=True)

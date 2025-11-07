@@ -153,7 +153,7 @@ def sync(folder, remote, token, project, private):
     with open(metadata_file) as f:
         metadata = json.load(f)
 
-    run_id = metadata.get("board_id") or board_dir.name
+    run_id = board_dir.name
     name = metadata.get("name", run_id)
 
     # Display info
