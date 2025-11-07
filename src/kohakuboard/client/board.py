@@ -138,7 +138,10 @@ class Board:
         self._is_finishing = False  # Prevent re-entrant finish() calls
         self._interrupt_count = 0  # Track Ctrl+C presses for force exit
 
-        self.queue = mp.Queue(maxsize=50000)
+        if sys.platform == "win32":
+            self.queue = mp.Queue(maxsize=50000)
+        else:
+            self.queue = mp.Queue()
         self.stop_event = mp.Event()
 
         # Track active SharedMemory blocks for cleanup
@@ -946,13 +949,18 @@ class Board:
             self.logger.debug(
                 f"Cleaning up {len(self._shared_memory_blocks)} SharedMemory blocks..."
             )
-            for shm in self._shared_memory_blocks:
-                try:
-                    shm.close()
-                    shm.unlink()
-                except Exception as e:
-                    self.logger.warning(f"Error cleaning up SharedMemory: {e}")
+            if sys.platform == "win32":
+                for shm in self._shared_memory_blocks:
+                    try:
+                        shm.close()
+                        shm.unlink()
+                    except Exception as e:
+                        logger.warning(f"Failed to close SharedMemory block: {e}")
             self._shared_memory_blocks.clear()
+
+        if hasattr(self, "manager"):
+            self.manager.shutdown()
+            delattr(self, "manager")
 
         self.logger.info(f"Board finished: {self.name}")
 
