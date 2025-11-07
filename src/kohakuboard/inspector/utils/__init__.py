@@ -87,7 +87,8 @@ def list_boards_in_container(container_path: Path) -> list[dict]:
             boards.append(
                 {
                     "path": board_path,
-                    "name": metadata.get("name", ""),
+                    "name": metadata.get("name")
+                    or metadata.get("board_id", board_path.name),
                     "board_id": metadata.get("board_id", board_path.name),
                     "created_at": metadata.get("created_at", "Unknown"),
                     "config": metadata.get("config", {}),

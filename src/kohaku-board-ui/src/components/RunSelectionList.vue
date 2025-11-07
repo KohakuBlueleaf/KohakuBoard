@@ -55,13 +55,10 @@ function handleColorChange(runId, event) {
             <span
               class="text-sm font-medium truncate text-gray-900 dark:text-gray-100"
             >
-              {{ run.run_id }}
+              {{ run.name || run.run_id }}
             </span>
-            <span
-              v-if="run.name"
-              class="text-xs truncate text-gray-500 dark:text-gray-400"
-            >
-              {{ run.name }}
+            <span class="text-xs truncate text-gray-500 dark:text-gray-400">
+              {{ run.run_id }}
             </span>
           </div>
         </div>

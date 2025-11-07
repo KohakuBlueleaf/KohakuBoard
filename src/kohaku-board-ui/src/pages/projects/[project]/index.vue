@@ -218,7 +218,7 @@ const runColors = computed(() => {
 const runNames = computed(() => {
   const names = {};
   allRuns.value.forEach((run) => {
-    names[run.run_id] = run.name ? `${run.run_id} · ${run.name}` : run.run_id;
+    names[run.run_id] = run.run_id;
   });
   return names;
 });

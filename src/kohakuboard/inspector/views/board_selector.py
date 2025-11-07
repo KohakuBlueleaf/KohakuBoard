@@ -9,6 +9,7 @@ from kohakuboard.inspector.utils import (
     format_size,
     get_board_size,
 )
+from kohakuboard.utils.board_reader import DEFAULT_LOCAL_PROJECT
 
 
 class BoardSelectorView(ctk.CTkFrame):
@@ -135,23 +136,21 @@ class BoardSelectorView(ctk.CTkFrame):
         """
         card = ctk.CTkFrame(self.boards_frame, corner_radius=10)
 
-        # Run ID as primary title
-        id_label = ctk.CTkLabel(
+        primary_label = ctk.CTkLabel(
             card,
-            text=board["board_id"],
+            text=board.get("name") or board["board_id"],
             font=ctk.CTkFont(size=16, weight="bold"),
         )
-        id_label.pack(anchor="w", padx=15, pady=(15, 2))
+        primary_label.pack(anchor="w", padx=15, pady=(15, 2))
 
-        # Optional subtitle (human-readable name)
         if board.get("name"):
-            name_label = ctk.CTkLabel(
+            secondary_label = ctk.CTkLabel(
                 card,
-                text=board["name"],
+                text=board["board_id"],
                 font=ctk.CTkFont(size=12),
                 text_color="gray",
             )
-            name_label.pack(anchor="w", padx=15, pady=(0, 8))
+            secondary_label.pack(anchor="w", padx=15, pady=(0, 8))
 
         # Info frame
         info_frame = ctk.CTkFrame(card, fg_color="transparent")
@@ -160,7 +159,7 @@ class BoardSelectorView(ctk.CTkFrame):
         # Project badge
         project_label = ctk.CTkLabel(
             info_frame,
-            text=f"📁 {board.get('project', 'local')}",
+            text=f"📁 {board.get('project', DEFAULT_LOCAL_PROJECT)}",
             font=ctk.CTkFont(size=11),
         )
         project_label.pack(anchor="w")

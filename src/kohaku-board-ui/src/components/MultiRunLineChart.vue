@@ -36,7 +36,7 @@ const traces = computed(() => {
 
     if (xData.length === 0) continue;
 
-    const runLabel = run.name ? `${run.run_id} · ${run.name}` : run.run_id;
+    const runLabel = run.run_id;
 
     result.push({
       name: `${props.metricName} (${runLabel})`,
