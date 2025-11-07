@@ -37,7 +37,7 @@ from torchvision.transforms import transforms
 from tqdm import tqdm
 from anyschedule import AnySchedule
 
-from kohakuboard.client import Board, Table, Media, Histogram
+from kohakuboard.client import Board, Table, Media, Histogram, KernelDensity
 
 
 class ConvNeXtBlock(nn.Module):
@@ -115,7 +115,7 @@ def main():
     parser.add_argument(
         "--epochs",
         type=int,
-        default=3,
+        default=1,
         help="Number of training epochs (default: 10)",
     )
     parser.add_argument(
@@ -329,17 +329,26 @@ def main():
                 for i, (name, param) in enumerate(model.named_parameters()):
                     if param.grad is not None:
                         layer_name = name.replace(".", "_")
-                        # Create Histogram object (can optionally precompute with .compute_bins())
-                        histogram_data[f"gradients/{layer_name}"] = Histogram(
-                            param.grad
-                        ).compute_bins()
+                        histogram_data[f"gradients/{layer_name}"] = KernelDensity(
+                            param.grad,
+                            num_points=128,
+                            percentile_max=100,
+                            percentile_min=0,
+                            bandwidth=0.01,
+                            approximate=True,
+                        ).ensure_computed()
 
                 # Collect parameters
                 for i, (name, param) in enumerate(model.named_parameters()):
                     layer_name = name.replace(".", "_")
-                    histogram_data[f"params/{layer_name}"] = Histogram(
-                        param
-                    ).compute_bins()
+                    histogram_data[f"params/{layer_name}"] = KernelDensity(
+                        param,
+                        num_points=128,
+                        percentile_max=100,
+                        percentile_min=0,
+                        bandwidth=0.01,
+                        approximate=True,
+                    ).ensure_computed()
 
                 # Log all histograms at once - single step, single queue message!
                 board.log(**histogram_data)
