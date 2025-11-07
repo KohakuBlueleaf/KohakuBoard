@@ -86,6 +86,7 @@ class KohakuBoardInspector(ctk.CTk):
         nav_items = [
             ("Metrics", "metrics"),
             ("Plots", "plots"),
+            ("Histograms", "histograms"),
             ("Media", "media"),
             ("SQL", "sql"),
             ("Export", "export"),
@@ -317,7 +318,7 @@ class KohakuBoardInspector(ctk.CTk):
         """Switch to a different view in current board tab
 
         Args:
-            view_id: View identifier (metrics, plots, media, sql, export)
+            view_id: View identifier (metrics, plots, histograms, media, sql, export)
         """
         logger.debug(
             f"show_view called: view_id={view_id}, current_board={self.current_board_id}"

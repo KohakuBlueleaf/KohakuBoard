@@ -69,7 +69,7 @@ class BoardContentView(ctk.CTkFrame):
         """Switch to a different view
 
         Args:
-            view_id: View identifier (metrics, plots, media, sql, export)
+            view_id: View identifier (metrics, plots, histograms, media, sql, export)
         """
         logger.info(f"BoardContent.show_view called: {view_id}")
 
@@ -86,6 +86,8 @@ class BoardContentView(ctk.CTkFrame):
                 self.show_metrics_view()
             case "plots":
                 self.show_plots_view()
+            case "histograms":
+                self.show_histograms_view()
             case "media":
                 self.show_media_view()
             case "sql":
@@ -129,6 +131,21 @@ class BoardContentView(ctk.CTkFrame):
             logger.info("PlotsView displayed successfully")
         except Exception as e:
             logger.error(f"Failed to show plots view: {e}", exc_info=True)
+            raise
+
+    def show_histograms_view(self):
+        """Show histogram/KDE visualization view"""
+        try:
+            logger.debug("Importing HistogramsView...")
+            from kohakuboard.inspector.views.histograms_view import HistogramsView
+
+            font_scale = getattr(self.app, "current_font_scale", 1.0)
+            view = HistogramsView(self.content_container, self.data_service, font_scale)
+            view.grid(row=0, column=0, sticky="nsew")
+            self.current_view_widget = view
+            logger.info("HistogramsView displayed successfully")
+        except Exception as e:
+            logger.error(f"Failed to show histograms view: {e}", exc_info=True)
             raise
 
     def update_font_scale(self, scale: float):
