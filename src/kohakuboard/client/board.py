@@ -8,10 +8,12 @@ import sys
 import time
 import uuid
 import weakref
+import threading
 from copy import deepcopy
 from datetime import datetime, timezone
 from multiprocessing import shared_memory
 from pathlib import Path
+from queue import Empty
 from typing import Any, Dict, List, Optional, Union
 
 import numpy as np
@@ -405,10 +407,37 @@ class Board:
         shm_array = np.ndarray(array.shape, dtype=array.dtype, buffer=shm.buf)
         shm_array[:] = array[:]
 
-        # Track this block for cleanup (keep reference to prevent premature GC)
-        self._shared_memory_blocks.append(shm)
+        shm.close()
+
+        # Track for crash recovery cleanup
+        if hasattr(self, "_shared_memory_blocks"):
+            self._shared_memory_blocks.append(shm_name)
 
         return shm_name, array.nbytes, str(array.dtype)
+
+    def _try_queue_qsize(self, warn: bool = False) -> Optional[int]:
+        """Best-effort queue.qsize() wrapper with platform-safe logging."""
+        if not hasattr(self, "queue") or self.queue is None:
+            if warn:
+                self.logger.info(
+                    "Queue no longer available; skipping queue size check."
+                )
+            return None
+        try:
+            return self.queue.qsize()
+        except NotImplementedError:
+            if warn:
+                self.logger.info(
+                    "Queue.qsize() is not supported on this platform; "
+                    "skipping queue size reporting."
+                )
+        except Exception as exc:
+            if warn:
+                self.logger.warning(
+                    f"Unable to check queue size "
+                    f"({exc.__class__.__name__}: {exc!r})"
+                )
+        return None
 
     def _send_histogram_message(self, name: str, hist_obj: Histogram):
         """Send single histogram message using SharedMemory for data transfer"""
@@ -495,33 +524,54 @@ class Board:
 
     def _send_kernel_density_message(self, name: str, kde_obj: KernelDensity):
         """Send kernel density coefficients via SharedMemory."""
-        grid_array, density_array = kde_obj.to_arrays()
-        kde_meta = kde_obj.summary()
+        if kde_obj.requires_computation():
+            raw_array = kde_obj.raw_values_array()
+            raw_shm_name, raw_size, raw_dtype = self._create_shared_memory(
+                raw_array, "kde_raw"
+            )
+            message = {
+                "type": "kernel_density",
+                "step": self._step,
+                "global_step": self._global_step,
+                "name": name,
+                "kde_mode": "raw",
+                "kde_config": kde_obj.export_config(),
+                "shared_memory": {
+                    "raw_name": raw_shm_name,
+                    "raw_size": raw_size,
+                    "raw_dtype": raw_dtype,
+                    "raw_shape": raw_array.shape,
+                },
+            }
+        else:
+            grid_array, density_array = kde_obj.to_arrays()
+            kde_meta = kde_obj.summary()
 
-        grid_shm_name, grid_size, grid_dtype = self._create_shared_memory(
-            grid_array, "kde_grid"
-        )
-        density_shm_name, density_size, density_dtype = self._create_shared_memory(
-            density_array, "kde_density"
-        )
+            grid_shm_name, grid_size, grid_dtype = self._create_shared_memory(
+                grid_array, "kde_grid"
+            )
+            density_shm_name, density_size, density_dtype = self._create_shared_memory(
+                density_array, "kde_density"
+            )
 
-        message = {
-            "type": "kernel_density",
-            "step": self._step,
-            "global_step": self._global_step,
-            "name": name,
-            "kde_meta": kde_meta,
-            "shared_memory": {
-                "grid_name": grid_shm_name,
-                "grid_size": grid_size,
-                "grid_dtype": grid_dtype,
-                "grid_shape": grid_array.shape,
-                "density_name": density_shm_name,
-                "density_size": density_size,
-                "density_dtype": density_dtype,
-                "density_shape": density_array.shape,
-            },
-        }
+            message = {
+                "type": "kernel_density",
+                "step": self._step,
+                "global_step": self._global_step,
+                "name": name,
+                "kde_mode": "precomputed",
+                "kde_meta": kde_meta,
+                "shared_memory": {
+                    "grid_name": grid_shm_name,
+                    "grid_size": grid_size,
+                    "grid_dtype": grid_dtype,
+                    "grid_shape": grid_array.shape,
+                    "density_name": density_shm_name,
+                    "density_size": density_size,
+                    "density_dtype": density_dtype,
+                    "density_shape": density_array.shape,
+                },
+            }
         self.queue.put(message)
 
     def _send_batch_message(
@@ -723,14 +773,11 @@ class Board:
         self._step += 1
 
         # Check queue size and warn if getting full
-        try:
-            queue_size = self.queue.qsize()
-            if queue_size > 40000:
-                self.logger.warning(
-                    f"Queue size is {queue_size}/50000. Consider reducing logging frequency."
-                )
-        except NotImplementedError:
-            pass  # qsize() not supported on all platforms
+        queue_size = self._try_queue_qsize()
+        if queue_size is not None and queue_size > 40000:
+            self.logger.warning(
+                f"Queue size is {queue_size}/50000. Consider reducing logging frequency."
+            )
 
         # Convert tensor to list if needed
         if hasattr(values, "cpu"):  # PyTorch tensor
@@ -796,14 +843,11 @@ class Board:
         """
         self._step += 1
 
-        try:
-            queue_size = self.queue.qsize()
-            if queue_size > 40000:
-                self.logger.warning(
-                    f"Queue size is {queue_size}/50000. Consider reducing logging frequency."
-                )
-        except NotImplementedError:
-            pass
+        queue_size = self._try_queue_qsize()
+        if queue_size is not None and queue_size > 40000:
+            self.logger.warning(
+                f"Queue size is {queue_size}/50000. Consider reducing logging frequency."
+            )
 
         tensor_obj = TensorLog(values, precision=precision, metadata=metadata)
         self._send_tensor_message(name, tensor_obj)
@@ -823,6 +867,8 @@ class Board:
         range_max: float | None = None,
         percentile_clip: tuple[float, float] = (1.0, 99.0),
         metadata: Optional[dict[str, Any]] = None,
+        approximate: bool = False,
+        approximate_bins: int | None = None,
     ):
         """Log kernel density data (non-blocking).
 
@@ -839,17 +885,16 @@ class Board:
             range_max: Optional recommended maximum range
             percentile_clip: Percentile bounds (min, max) used when deriving range
             metadata: Optional metadata dict persisted alongside KDE
+            approximate: Use histogram+FFT approximation for large sample counts
+            approximate_bins: Optional override for histogram bin count (default derives from num_points)
         """
         self._step += 1
 
-        try:
-            queue_size = self.queue.qsize()
-            if queue_size > 40000:
-                self.logger.warning(
-                    f"Queue size is {queue_size}/50000. Consider reducing logging frequency."
-                )
-        except NotImplementedError:
-            pass
+        queue_size = self._try_queue_qsize()
+        if queue_size is not None and queue_size > 40000:
+            self.logger.warning(
+                f"Queue size is {queue_size}/50000. Consider reducing logging frequency."
+            )
 
         perc_min, perc_max = percentile_clip
         kde_obj = KernelDensity(
@@ -865,6 +910,8 @@ class Board:
             range_min=range_min,
             range_max=range_max,
             metadata=metadata,
+            approximate=approximate,
+            approximate_bins=approximate_bins,
         )
         self._send_kernel_density_message(name, kde_obj)
 
@@ -885,10 +932,13 @@ class Board:
         self.logger.info(f"Finishing board: {self.name}")
 
         # Check queue size
-        try:
-            queue_size = self.queue.qsize()
+        queue_size = self._try_queue_qsize(warn=True)
+        if queue_size is not None:
             self.logger.info(f"Queue size: {queue_size} messages")
-        except:
+        else:
+            self.logger.info(
+                "Queue size unavailable on this platform; proceeding without progress updates."
+            )
             queue_size = 0
 
         # Stop output capture
@@ -909,7 +959,12 @@ class Board:
 
         while time.time() - start_time < max_wait_time:
             try:
-                current_size = self.queue.qsize()
+                current_size = self._try_queue_qsize()
+                if current_size is None:
+                    self.logger.debug(
+                        "Queue size check unavailable during drain; skipping further polling."
+                    )
+                    break
 
                 if current_size == 0:
                     self.logger.info("Queue empty - waiting 1s for writer to finish...")
@@ -925,7 +980,10 @@ class Board:
             except KeyboardInterrupt:
                 self.logger.warning("Interrupted during drain - forcing shutdown")
                 break
-            except:
+            except Exception as exc:
+                self.logger.debug(
+                    f"Queue polling aborted ({exc.__class__.__name__}: {exc!r})"
+                )
                 break
 
         if time.time() - start_time >= max_wait_time:
@@ -938,34 +996,55 @@ class Board:
 
         # Wait for writer to exit
         self.logger.info("Waiting for writer process to exit...")
-        self.writer_process.join(timeout=2)
+        self.writer_process.join(timeout=120)
 
         if self.writer_process.is_alive():
-            self.logger.warning("Writer still alive after 2s, killing...")
+            self.logger.warning("Writer still alive after 120s, killing...")
+            self.writer_process.terminate()
             self.writer_process.kill()
 
-        # Clean up SharedMemory blocks
-        if hasattr(self, "_shared_memory_blocks"):
+        # Close queue to ensure feeder threads exit cleanly
+        try:
+            self.logger.info("Closing logging queue...")
+            self.queue.close()
+            self.queue.join_thread()
+        except AttributeError:
+            pass
+        except Exception as exc:
+            self.logger.debug(
+                f"Error while closing logging queue ({exc.__class__.__name__}: {exc!r})"
+            )
+
+        # Clean up SharedMemory blocks that might remain if writer crashed early
+        if hasattr(self, "_shared_memory_blocks") and self._shared_memory_blocks:
             self.logger.debug(
                 f"Cleaning up {len(self._shared_memory_blocks)} SharedMemory blocks..."
             )
-            if sys.platform == "win32":
-                for shm in self._shared_memory_blocks:
-                    try:
-                        shm.close()
-                        shm.unlink()
-                    except Exception as e:
-                        logger.warning(f"Failed to close SharedMemory block: {e}")
+            for shm_name in list(self._shared_memory_blocks):
+                try:
+                    shm = shared_memory.SharedMemory(name=shm_name)
+                except FileNotFoundError:
+                    continue  # Already removed by writer
+                except Exception as exc:
+                    self.logger.debug(
+                        f"SharedMemory '{shm_name}' unavailable during cleanup "
+                        f"({exc.__class__.__name__}: {exc})"
+                    )
+                    continue
+
+                try:
+                    shm.close()
+                    shm.unlink()
+                except FileNotFoundError:
+                    pass  # Already cleaned up elsewhere
+                except Exception as exc:
+                    self.logger.warning(
+                        f"Failed to cleanup SharedMemory '{shm_name}': {exc}"
+                    )
+
             self._shared_memory_blocks.clear()
 
-        if hasattr(self, "manager"):
-            self.manager.shutdown()
-            delattr(self, "manager")
-
         self.logger.info(f"Board finished: {self.name}")
-
-        # Remove to prevent double-call
-        delattr(self, "writer_process")
 
     def _register_signal_handlers(self):
         """Register signal handlers for graceful shutdown using weakref
@@ -979,6 +1058,24 @@ class Board:
         # Use weakref to avoid keeping Board alive
         weak_self = weakref.ref(self)
         interrupt_count = [0]  # Use list to allow modification in closure
+        shutdown_thread = [None]
+        shutdown_started = threading.Event()
+
+        def _start_graceful_shutdown(board):
+            if shutdown_started.is_set():
+                return
+            shutdown_started.set()
+
+            def _run_shutdown():
+                try:
+                    board.finish()
+                except Exception as exc:  # pragma: no cover
+                    board.logger.error(f"Error during graceful shutdown: {exc}")
+
+            shutdown_thread[0] = threading.Thread(
+                target=_run_shutdown, name="KohakuBoardShutdown", daemon=False
+            )
+            shutdown_thread[0].start()
 
         def signal_handler(signum, frame):
             """Handle termination signals (double Ctrl+C for force exit)"""
@@ -991,18 +1088,13 @@ class Board:
 
             if interrupt_count[0] == 1:
                 board.logger.warning(
-                    f"Received {sig_name}, shutting down gracefully..."
+                    f"Received {sig_name}, beginning graceful shutdown..."
                 )
                 board.logger.warning(
-                    "Press Ctrl+C again within 3 seconds to FORCE EXIT"
+                    "Press Ctrl+C again to force termination if shutdown stalls."
                 )
-                try:
-                    board.finish()
-                except Exception as e:
-                    board.logger.error(f"Error during graceful shutdown: {e}")
-                finally:
-                    board.logger.info("Shutdown complete")
-                    sys.exit(0)
+                _start_graceful_shutdown(board)
+                raise SystemExit(0)
             elif interrupt_count[0] == 2:
                 board.logger.error(
                     "Second Ctrl+C - KILLING writer process (data will be lost!)"
@@ -1011,7 +1103,9 @@ class Board:
                     board.writer_process.kill()
                     time.sleep(0.5)
                 board.logger.error("Force exit")
-                sys.exit(1)
+                import os
+
+                os._exit(1)
             else:
                 # Third+ interrupt - nuclear option
                 import os
@@ -1028,7 +1122,7 @@ class Board:
         def exception_handler(exc_type, exc_value, exc_traceback):
             """Handle uncaught exceptions"""
             board = weak_self()
-            if board is not None:
+            if board is not None and exc_type not in (KeyboardInterrupt, SystemExit):
                 board.logger.error(
                     f"Uncaught exception: {exc_type.__name__}: {exc_value}"
                 )

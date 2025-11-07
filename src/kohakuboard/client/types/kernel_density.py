@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+import math
 import numpy as np
 
 
@@ -66,6 +67,8 @@ class KernelDensity:
     range_min: float | None = None
     range_max: float | None = None
     metadata: dict[str, Any] | None = None
+    approximate: bool = False
+    approximate_bins: int | None = None
     _is_computed: bool = field(init=False, default=False)
 
     def __post_init__(self):
@@ -100,8 +103,46 @@ class KernelDensity:
                     "percentile_min must be strictly less than percentile_max."
                 )
 
+    def requires_computation(self) -> bool:
+        """Return True when KDE still needs to be computed from raw samples."""
+        return not self._is_computed
+
+    def raw_values_array(self) -> np.ndarray:
+        """Return contiguous float32 array of raw samples."""
+        if self.raw_values is None:
+            raise ValueError("No raw_values available for this KernelDensity instance.")
+        return _flatten_array(self.raw_values, dtype=np.float32)
+
+    def export_config(self) -> dict[str, Any]:
+        """Return constructor kwargs (excluding data arrays) for serialization."""
+
+        def _maybe_float(value: Any) -> Any:
+            if isinstance(value, (float, int, np.floating)):
+                return float(value)
+            return value
+
+        return {
+            "kernel": self.kernel,
+            "bandwidth": _maybe_float(self.bandwidth),
+            "num_points": int(self.num_points),
+            "percentile_min": float(self.percentile_min),
+            "percentile_max": float(self.percentile_max),
+            "sample_count": (
+                int(self.sample_count) if self.sample_count is not None else None
+            ),
+            "range_min": _maybe_float(self.range_min),
+            "range_max": _maybe_float(self.range_max),
+            "metadata": self.metadata,
+            "approximate": self.approximate,
+            "approximate_bins": (
+                int(self.approximate_bins)
+                if self.approximate_bins is not None
+                else None
+            ),
+        }
+
     # ------------------------------------------------------------------ Computation helpers
-    def ensure_computed(self) -> None:
+    def ensure_computed(self) -> "KernelDensity":
         """Compute KDE from raw samples if needed."""
         if self._is_computed:
             return
@@ -127,32 +168,42 @@ class KernelDensity:
 
         # Determine display range
         if self.range_min is None or self.range_max is None:
-            p_low = np.percentile(values, self.percentile_min)
-            p_high = np.percentile(values, self.percentile_max)
+            if self.percentile_min <= 0.0:
+                p_low = np.min(values)
+            else:
+                p_low = np.percentile(values, self.percentile_min)
+            if self.percentile_max >= 100.0:
+                p_high = np.max(values)
+            else:
+                p_high = np.percentile(values, self.percentile_max)
             p_low = float(p_low)
             p_high = float(p_high)
             if p_low == p_high:
-                p_low -= 0.5
-                p_high += 0.5
+                p_low -= 0.1
+                p_high += 0.1
             self.range_min = p_low
             self.range_max = p_high
 
         if self.range_min == self.range_max:
-            self.range_min -= 0.5
-            self.range_max += 0.5
+            self.range_min -= 0.1
+            self.range_max += 0.1
 
-        grid = np.linspace(
-            float(self.range_min),
-            float(self.range_max),
-            int(self.num_points),
-            dtype=np.float32,
-        )
+        range_min = float(self.range_min)
+        range_max = float(self.range_max)
+        num_points = int(self.num_points)
 
-        # Gaussian KDE evaluation
-        diff = (grid[:, None] - values[None, :]) / bandwidth
-        density = (
-            np.exp(-0.5 * diff**2).mean(axis=1) / (bandwidth * np.sqrt(2.0 * np.pi))
-        ).astype(np.float32)
+        if self.approximate:
+            grid, density = self._compute_fft_kde(
+                values, bandwidth, range_min, range_max, num_points
+            )
+        else:
+            grid = np.linspace(range_min, range_max, num_points, dtype=np.float32)
+
+            # Gaussian KDE evaluation
+            diff = (grid[:, None] - values[None, :]) / bandwidth
+            density = (
+                np.exp(-0.5 * diff**2).mean(axis=1) / (bandwidth * np.sqrt(2.0 * np.pi))
+            ).astype(np.float32)
 
         self.grid = grid
         self.density = density
@@ -160,6 +211,7 @@ class KernelDensity:
 
         # Clear raw values to free memory (optional)
         self.raw_values = None
+        return self
 
     # ------------------------------------------------------------------ Public helpers
     def to_arrays(self) -> tuple[np.ndarray, np.ndarray]:
@@ -196,4 +248,44 @@ class KernelDensity:
             "range_max": range_max,
             "metadata": self.metadata or {},
             "num_points": int(grid_array.size),
+            "approximate": self.approximate,
+            "approximate_bins": (
+                int(self.approximate_bins)
+                if self.approximate_bins is not None
+                else None
+            ),
         }
+
+    def _compute_fft_kde(
+        self,
+        values: np.ndarray,
+        bandwidth: float,
+        range_min: float,
+        range_max: float,
+        num_points: int,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Approximate KDE via histogram + FFT convolution for large samples."""
+        bins = (
+            int(self.approximate_bins)
+            if self.approximate_bins
+            else max(num_points, 256)
+        )
+        bins = max(32, bins)
+
+        counts, bin_edges = np.histogram(
+            values, bins=bins, range=(range_min, range_max)
+        )
+        counts = counts.astype(np.float64, copy=False)
+        bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2.0
+        bin_width = float(bin_edges[1] - bin_edges[0])
+
+        fft_len = 1 << int(math.ceil(math.log2(bins * 2)))
+        counts_fft = np.fft.rfft(counts, n=fft_len)
+        freqs = np.fft.rfftfreq(fft_len, d=bin_width)
+        kernel_fft = np.exp(-2.0 * (np.pi**2) * (bandwidth**2) * (freqs**2))
+        smoothed = np.fft.irfft(counts_fft * kernel_fft, n=fft_len)[:bins]
+        smoothed = smoothed / (values.size * bin_width)
+
+        grid = np.linspace(range_min, range_max, num_points, dtype=np.float32)
+        density = np.interp(grid, bin_centers, smoothed).astype(np.float32)
+        return grid, density

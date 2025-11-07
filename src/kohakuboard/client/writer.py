@@ -23,6 +23,7 @@ import numpy as np
 from kohakuvault import KVault
 
 from kohakuboard.client.sync_worker import SyncWorker
+from kohakuboard.client.types.kernel_density import KernelDensity
 from kohakuboard.client.types.media_handler import MediaHandler
 from kohakuboard.storage.hybrid import HybridStorage
 from kohakuboard.storage.memory import MemoryHybridStorage
@@ -534,13 +535,32 @@ class LogWriter:
         step = message["step"]
         global_step = message.get("global_step")
         name = message["name"]
-        kde_meta = message.get("kde_meta", {})
+        kde_mode = message.get("kde_mode", "precomputed")
+        kde_meta = message.get("kde_meta", {}) if kde_mode != "raw" else {}
 
         grid_shm = None
         density_shm = None
+        raw_shm = None
 
         try:
-            if "shared_memory" in message:
+            if kde_mode == "raw":
+                shm_info = message.get("shared_memory") or {}
+                raw_name = shm_info.get("raw_name")
+                if not raw_name:
+                    self.logger.warning("Raw KDE message missing shared memory info")
+                    return
+
+                raw_shm = shared_memory.SharedMemory(name=raw_name)
+                raw_dtype = np.dtype(shm_info["raw_dtype"])
+                raw_array = np.ndarray(
+                    shm_info["raw_shape"], dtype=raw_dtype, buffer=raw_shm.buf
+                ).copy()
+
+                kde_config = message.get("kde_config") or {}
+                kde_obj = KernelDensity(raw_values=raw_array, **kde_config)
+                grid_array, density_array = kde_obj.to_arrays()
+                kde_meta = kde_obj.summary()
+            elif "shared_memory" in message:
                 shm_info = message["shared_memory"]
 
                 grid_shm = shared_memory.SharedMemory(name=shm_info["grid_name"])
@@ -577,13 +597,27 @@ class LogWriter:
                     kde_meta,
                 )
         finally:
-            for shm_ref in (grid_shm, density_shm):
-                if shm_ref:
-                    try:
-                        shm_ref.close()
-                        shm_ref.unlink()
-                    except Exception as exc:
-                        self.logger.warning(f"Error cleaning KDE SharedMemory: {exc}")
+            if raw_shm:
+                try:
+                    raw_shm.close()
+                    raw_shm.unlink()
+                except Exception as exc:
+                    self.logger.warning(f"Error cleaning KDE raw SharedMemory: {exc}")
+            if grid_shm:
+                try:
+                    grid_shm.close()
+                    grid_shm.unlink()
+                except Exception as exc:
+                    self.logger.warning(f"Error cleaning KDE grid SharedMemory: {exc}")
+
+            if density_shm:
+                try:
+                    density_shm.close()
+                    density_shm.unlink()
+                except Exception as exc:
+                    self.logger.warning(
+                        f"Error cleaning KDE density SharedMemory: {exc}"
+                    )
 
     def _handle_log(self, message: dict):
         """Handle stdout/stderr chunks in memory mode."""
@@ -696,24 +730,17 @@ class LogWriter:
     def _final_flush(self):
         """Final flush on shutdown - drain ALL remaining messages"""
         try:
-            # Process ALL remaining messages in queue (no arbitrary limit!)
             remaining = 0
-            last_log_count = 0
+            batch_size = 0
+            batch_start = time.time()
+            last_log_time = 0.0
 
-            while not self.queue.empty():
+            while True:
                 try:
-                    message = self.queue.get_nowait()
-                    self._process_message(message)
-                    remaining += 1
-
-                    # Log progress every 1000 messages
-                    if remaining - last_log_count >= 1000:
-                        self.logger.info(
-                            f"Final drain progress: {remaining} messages processed..."
-                        )
-                        last_log_count = remaining
-
+                    message = self.queue.get(timeout=0.1)
                 except Empty:
+                    break
+                except ValueError:
                     break
                 except KeyboardInterrupt:
                     self.logger.warning(
@@ -722,12 +749,37 @@ class LogWriter:
                     self.logger.warning(
                         "Press Ctrl+C again in main process for force exit"
                     )
-                    # Don't break - let main process handle force exit
-                except Exception as e:
+                    continue
+                except Exception as exc:
                     self.logger.error(
-                        f"Error during final drain at message {remaining}: {e}"
+                        f"Error retrieving message during final drain: {exc}"
                     )
-                    # Continue processing other messages
+                    break
+
+                try:
+                    self._process_message(message)
+                    remaining += 1
+                    batch_size += 1
+                except Exception as exc:
+                    self.logger.error(
+                        f"Error during final drain at message {remaining}: {exc}"
+                    )
+                    continue
+
+                if batch_size >= 5000:
+                    with self.storage_lock:
+                        self.storage.flush_all()
+                    self.logger.debug(
+                        f"Final drain flushed {batch_size} messages in "
+                        f"{(time.time() - batch_start)*1000:.1f}ms"
+                    )
+                    batch_size = 0
+                    batch_start = time.time()
+                elif time.time() - last_log_time >= 1.0:
+                    self.logger.debug(
+                        f"Final drain progress: {remaining} messages processed..."
+                    )
+                    last_log_time = time.time()
 
             # Flush all buffers
             self.logger.info(f"Flushing all buffers ({remaining} messages drained)...")
@@ -749,6 +801,17 @@ class LogWriter:
 
                 if hasattr(self.storage, "close"):
                     self.storage.close()
+
+            try:
+                self.queue.close()
+            except Exception as exc:
+                self.logger.debug(f"Error closing queue in writer: {exc}")
+            try:
+                self.queue.cancel_join_thread()
+            except Exception:
+                pass
+            finally:
+                self.queue = None
 
             self.logger.info(
                 f"LogWriter stopped. Processed {self.messages_processed} total messages "
