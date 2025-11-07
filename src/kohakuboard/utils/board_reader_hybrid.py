@@ -560,17 +560,38 @@ class HybridBoardReader:
         if not histograms_dir.exists():
             return []
 
-        try:
-            namespace = name.split("/")[0] if "/" in name else name.replace("/", "__")
-            name_bytes = name.encode("utf-8")
+        namespace = name.split("/")[0] if "/" in name else name.replace("/", "__")
+        name_bytes = name.encode("utf-8")
 
-            for suffix in ["_i32", "_u8"]:
-                db_file = histograms_dir / f"{namespace}{suffix}.db"
+        def iter_candidate_files():
+            for db_file in sorted(histograms_dir.glob("*.db")):
+                stem = db_file.stem
+                parts = stem.split("_")
+                precision = None
+                file_namespace = None
+
+                if len(parts) >= 3 and parts[-1] in ("i32", "u8"):
+                    precision = parts[-1]
+                    file_namespace = "_".join(parts[:-2])
+                elif len(parts) >= 2 and parts[-1] in ("i32", "u8"):
+                    precision = parts[-1]
+                    file_namespace = "_".join(parts[:-1])
+
+                if (
+                    precision is None
+                    or file_namespace is None
+                    or file_namespace != namespace
+                ):
+                    continue
+
+                yield db_file, precision
+
+        try:
+            for db_file, precision in iter_candidate_files():
                 if not db_file.exists():
                     continue
 
                 cv = ColumnVault(str(db_file))
-
                 steps = list(cv["step"])
                 global_steps = list(cv["global_step"])
                 names = list(cv["name"])
@@ -578,14 +599,14 @@ class HybridBoardReader:
                 mins = list(cv["min"])
                 maxs = list(cv["max"])
 
-                result = []
+                result: list[dict[str, Any]] = []
 
                 for idx in range(len(steps)):
                     if names[idx] != name_bytes:
                         continue
 
                     counts_bytes = counts_bytes_list[idx]
-                    if suffix == "_u8":
+                    if precision == "u8":
                         counts = list(
                             struct.unpack(f"{len(counts_bytes)}B", counts_bytes)
                         )
