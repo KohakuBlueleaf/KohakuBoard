@@ -192,7 +192,9 @@ def main():
 
     # Create board
     board = Board(
-        name=f"cifar10_convnext_bs{batch_size}_ep{epochs}_lr{lr}_warm{warmup_ratio}",
+        # we didn't provide name and annotation
+        # Board will randomly generate 2 word name and 4char annotation
+        project="cifar10_convnext",
         config={
             "lr": lr,
             "batch_size": batch_size,
@@ -336,7 +338,7 @@ def main():
                             percentile_min=0,
                             bandwidth=0.01,
                             approximate=True,
-                        ).ensure_computed()
+                        )  # .ensure_computed()
 
                 # Collect parameters
                 for i, (name, param) in enumerate(model.named_parameters()):
@@ -348,7 +350,7 @@ def main():
                         percentile_min=0,
                         bandwidth=0.01,
                         approximate=True,
-                    ).ensure_computed()
+                    )  # .ensure_computed()
 
                 # Log all histograms at once - single step, single queue message!
                 board.log(**histogram_data)
