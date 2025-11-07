@@ -147,7 +147,20 @@ class Board:
         self.stop_event = mp.Event()
 
         # Track active SharedMemory blocks for cleanup
-        self._shared_memory_blocks = []
+        self._shared_memory_blocks: dict[str, shared_memory.SharedMemory | None] = {}
+        self._shared_memory_lock = threading.Lock()
+        self._shared_memory_release_queue = (
+            mp.Queue() if sys.platform == "win32" else None
+        )
+        self._shared_memory_release_stop = threading.Event()
+        self._shared_memory_release_thread: threading.Thread | None = None
+        if self._shared_memory_release_queue is not None:
+            self._shared_memory_release_thread = threading.Thread(
+                target=self._shared_memory_release_loop,
+                name="SharedMemoryRelease",
+                daemon=True,
+            )
+            self._shared_memory_release_thread.start()
 
         # Setup board logger FIRST (stdout + file)
         self.logger = get_logger("BOARD")
@@ -206,6 +219,7 @@ class Board:
                 self.stop_event,
                 self._sync_config,
                 self.memory_mode,
+                self._shared_memory_release_queue,
             ),
             daemon=False,
         )
@@ -407,13 +421,71 @@ class Board:
         shm_array = np.ndarray(array.shape, dtype=array.dtype, buffer=shm.buf)
         shm_array[:] = array[:]
 
-        shm.close()
-
-        # Track for crash recovery cleanup
-        if hasattr(self, "_shared_memory_blocks"):
-            self._shared_memory_blocks.append(shm_name)
+        if sys.platform == "win32":
+            self._track_shared_memory_block(shm_name, shm)
+        else:
+            shm.close()
 
         return shm_name, array.nbytes, str(array.dtype)
+
+    def _track_shared_memory_block(
+        self, shm_name: str, shm_obj: shared_memory.SharedMemory | None
+    ):
+        """Register SharedMemory block for cleanup."""
+        if not hasattr(self, "_shared_memory_blocks"):
+            return
+        with self._shared_memory_lock:
+            self._shared_memory_blocks[shm_name] = shm_obj
+
+    def _shared_memory_release_loop(self):
+        """Process writer acknowledgements to release SharedMemory handles."""
+        assert self._shared_memory_release_queue is not None
+        while not self._shared_memory_release_stop.is_set():
+            try:
+                payload = self._shared_memory_release_queue.get(timeout=0.5)
+            except Empty:
+                continue
+            if payload is None:
+                break
+
+            shm_name = payload.get("name")
+            if not shm_name:
+                continue
+            self._release_shared_memory_block(shm_name)
+
+    def _release_shared_memory_block(self, shm_name: str):
+        """Close tracked SharedMemory handle after writer finished copying."""
+        with self._shared_memory_lock:
+            shm_obj = self._shared_memory_blocks.pop(shm_name, None)
+
+        if shm_obj is None:
+            return
+
+        try:
+            shm_obj.close()
+        except FileNotFoundError:
+            pass
+        except Exception as exc:
+            self.logger.debug(
+                f"Error closing SharedMemory '{shm_name}' after release: {exc}"
+            )
+
+    def _shutdown_shared_memory_release_thread(self):
+        """Stop the background release loop (Windows only)."""
+        if self._shared_memory_release_queue is None:
+            return
+
+        if self._shared_memory_release_thread is None:
+            return
+
+        self._shared_memory_release_stop.set()
+        try:
+            self._shared_memory_release_queue.put_nowait(None)
+        except Exception:
+            pass
+
+        self._shared_memory_release_thread.join(timeout=2)
+        self._shared_memory_release_thread = None
 
     def _try_queue_qsize(self, warn: bool = False) -> Optional[int]:
         """Best-effort queue.qsize() wrapper with platform-safe logging."""
