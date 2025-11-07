@@ -342,13 +342,34 @@ async def get_histogram_data(
     run_id: str,
     name: str,
     limit: int | None = Query(None, description="Maximum number of entries"),
+    bins: int | None = Query(
+        None,
+        ge=8,
+        le=4096,
+        description="Override bin count when sampling KDE entries",
+    ),
+    range_min: float | None = Query(
+        None, description="Override minimum value for KDE resampling"
+    ),
+    range_max: float | None = Query(
+        None, description="Override maximum value for KDE resampling"
+    ),
 ):
     """Get histogram data for a specific log name"""
     logger_api.info(f"Fetching histogram data for {project}/{run_id}/{name}")
 
+    if range_min is not None and range_max is not None and range_min >= range_max:
+        raise HTTPException(400, detail={"error": "range_min must be < range_max"})
+
     run_path = get_run_path(project, run_id)
     reader = BoardReader(run_path)
-    data = reader.get_histogram_data(name, limit=limit)
+    data = reader.get_histogram_data(
+        name,
+        limit=limit,
+        bins=bins,
+        range_min=range_min,
+        range_max=range_max,
+    )
 
     return {"experiment_id": run_id, "histogram_name": name, "data": data}
 

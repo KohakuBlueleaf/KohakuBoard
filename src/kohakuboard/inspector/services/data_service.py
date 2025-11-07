@@ -115,17 +115,22 @@ class DataService:
         """
         return self.reader.get_available_histogram_names()
 
-    def get_histogram_data(self, name: str, limit: int | None = None) -> list[dict]:
-        """Get histogram data
-
-        Args:
-            name: Histogram name
-            limit: Optional limit
-
-        Returns:
-            List of histogram entry dicts
-        """
-        return self.reader.get_histogram_data(name, limit)
+    def get_histogram_data(
+        self,
+        name: str,
+        limit: int | None = None,
+        bins: int | None = None,
+        range_min: float | None = None,
+        range_max: float | None = None,
+    ) -> list[dict]:
+        """Get histogram/KDE data with optional KDE sampling controls."""
+        return self.reader.get_histogram_data(
+            name,
+            limit=limit,
+            bins=bins,
+            range_min=range_min,
+            range_max=range_max,
+        )
 
     def close(self):
         """Cleanup resources"""

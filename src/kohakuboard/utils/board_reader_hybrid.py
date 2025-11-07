@@ -498,37 +498,23 @@ class HybridBoardReader:
             conn.close()
 
     def get_available_histogram_names(self) -> list[str]:
-        """Get histogram names from ColumnVault DB files
-
-        Returns:
-            List of unique histogram names
-        """
+        """Get histogram names, including KDE logs exposed via histogram API."""
         histograms_dir = self.board_dir / "data" / "histograms"
-        if not histograms_dir.exists():
-            return []
+        names: set[str] = set()
 
-        try:
-            names = set()
+        if histograms_dir.exists():
+            try:
+                for db_file in histograms_dir.glob("*.db"):
+                    cv = ColumnVault(str(db_file))
+                    name_bytes_list = list(cv["name"])
+                    for name_bytes in name_bytes_list:
+                        names.add(name_bytes.decode("utf-8"))
+            except Exception as e:
+                logger.error(f"Failed to list histogram names: {e}")
 
-            # Read from all histogram ColumnVault DB files
-            for db_file in histograms_dir.glob("*.db"):
-                cv = ColumnVault(str(db_file))
-                # Read all name entries
-                name_bytes_list = list(cv["name"])
-                # Decode bytes to strings
-                for name_bytes in name_bytes_list:
-                    names.add(name_bytes.decode("utf-8"))
-
-            return sorted(names)
-
-        except Exception as e:
-            logger.error(f"Failed to list histogram names: {e}")
-            names = []
-
-        # Merge with KDE names from SQLite metadata
-        all_names = set(names)
-        all_names.update(self.get_available_kernel_density_names())
-        return sorted(all_names)
+        # Always merge with KDE log names so summary exposes them in both lists.
+        names.update(self.get_available_kernel_density_names())
+        return sorted(names)
 
     def get_available_kernel_density_names(self) -> list[str]:
         """Get kernel density log names from metadata."""
@@ -549,13 +535,23 @@ class HybridBoardReader:
         return names
 
     def get_histogram_data(
-        self, name: str, limit: int | None = None
+        self,
+        name: str,
+        limit: int | None = None,
+        bins: int | None = None,
+        range_min: float | None = None,
+        range_max: float | None = None,
     ) -> list[dict[str, Any]]:
         """Get histogram-like data for both classic histograms and KDE logs."""
         hist_result = self._get_columnvault_histograms(name, limit=limit)
         if hist_result:
             return hist_result
-        return self._get_kernel_density_histograms(name, limit=limit)
+        return self._get_kernel_density_histograms(
+            name,
+            limit=limit,
+            target_bins=bins,
+            override_range=(range_min, range_max),
+        )
 
     def _get_columnvault_histograms(
         self, name: str, limit: int | None = None
@@ -625,7 +621,11 @@ class HybridBoardReader:
             return []
 
     def _get_kernel_density_histograms(
-        self, name: str, limit: int | None = None
+        self,
+        name: str,
+        limit: int | None = None,
+        target_bins: int | None = None,
+        override_range: tuple[float | None, float | None] | None = None,
     ) -> list[dict[str, Any]]:
         if not self.sqlite_db.exists():
             return []
@@ -723,12 +723,24 @@ class HybridBoardReader:
             canonical_min -= 0.5
             canonical_max += 0.5
 
+        if override_range:
+            o_min, o_max = override_range
+            if o_min is not None:
+                canonical_min = float(o_min)
+            if o_max is not None:
+                canonical_max = float(o_max)
+            if canonical_min >= canonical_max:
+                canonical_max = canonical_min + 1.0
+
         if num_points_list:
             base_points = max(min(min(num_points_list), 256), 32)
         else:
             base_points = 128
 
-        canonical_bins = max(base_points - 1, 32)
+        if target_bins is not None and target_bins >= 8:
+            canonical_bins = int(target_bins)
+        else:
+            canonical_bins = max(base_points - 1, 32)
         bins = np.linspace(canonical_min, canonical_max, canonical_bins + 1)
         centers = 0.5 * (bins[:-1] + bins[1:])
         widths = np.diff(bins)
