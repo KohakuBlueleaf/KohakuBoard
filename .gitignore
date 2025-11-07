@@ -21,6 +21,8 @@ kohakuhub.conf
 lint-reports/
 /logs
 data/
+!src/kohakuboard/data/
+!src/kohakuboard/data/**
 **/public/docs
 
 # Byte-compiled / optimized / DLL files
