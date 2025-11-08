@@ -980,7 +980,10 @@ async function fetchMetricsForTab(forceRefresh = false) {
     const tab = tabs.value.find((t) => t.name === activeTab.value);
     if (!tab) return;
 
-    const computedMetrics = new Set(["walltime", "relative_walltime"]);
+    const computedMetrics = new Set([
+      "walltime",
+      "relative_walltime",
+    ]);
     const neededMetrics = new Set();
 
     for (const card of tab.cards) {
@@ -1065,6 +1068,54 @@ async function fetchMetricsForTab(forceRefresh = false) {
     // Create new object to force reactivity
     const newCache = {};
 
+    const ensureLength = (arr, step) => {
+      while (arr.length <= step) {
+        arr.push(null);
+      }
+    };
+
+    const coerceTimestampSample = (value) => {
+      if (value === null || value === undefined) return null;
+      if (typeof value === "number" && Number.isFinite(value)) {
+        return {
+          seconds: value,
+          iso: new Date(value * 1000).toISOString(),
+        };
+      }
+      if (typeof value === "string") {
+        const parsed = Date.parse(value);
+        if (!Number.isNaN(parsed)) {
+          return {
+            seconds: parsed / 1000,
+            iso: value,
+          };
+        }
+      }
+      return null;
+    };
+
+    const recordTimelineSample = (timeline, step, rawValue) => {
+      const sample = coerceTimestampSample(rawValue);
+      if (!sample) {
+        return;
+      }
+      ensureLength(timeline.timestamp, step);
+      ensureLength(timeline.walltime, step);
+      ensureLength(timeline.relative, step);
+      if (
+        timeline.timestamp[step] !== null &&
+        timeline.walltime[step] !== null
+      ) {
+        return;
+      }
+      timeline.timestamp[step] = sample.iso;
+      timeline.walltime[step] = sample.seconds;
+      if (timeline.startTime === null) {
+        timeline.startTime = sample.seconds;
+      }
+      timeline.relative[step] = sample.seconds - timeline.startTime;
+    };
+
     for (const run of displayedRuns.value) {
       const runId = run.run_id;
       const runData = batchData[runId];
@@ -1075,6 +1126,13 @@ async function fetchMetricsForTab(forceRefresh = false) {
       }
 
       newCache[runId] = {};
+      const timeline = {
+        timestamp: [],
+        walltime: [],
+        relative: [],
+        startTime: null,
+      };
+      let maxObservedStep = 0;
 
       for (const [metric, data] of Object.entries(runData)) {
         console.log(`Processing ${runId}/${metric}:`, data);
@@ -1092,6 +1150,9 @@ async function fetchMetricsForTab(forceRefresh = false) {
         }
 
         const maxStep = Math.max(...data.steps);
+        if (maxStep > maxObservedStep) {
+          maxObservedStep = maxStep;
+        }
 
         // Validate maxStep to avoid invalid array length
         if (!isFinite(maxStep) || maxStep < 0 || maxStep > 10000000) {
@@ -1119,6 +1180,32 @@ async function fetchMetricsForTab(forceRefresh = false) {
         console.log(
           `Stored ${runId}/${metric}: ${sparseArray.length} slots, ${sparseArray.filter((v) => v !== null).length} values`,
         );
+
+        if (Array.isArray(data.timestamps) && data.timestamps.length > 0) {
+          const sampleCount = Math.min(
+            data.steps.length,
+            data.timestamps.length,
+          );
+          for (let i = 0; i < sampleCount; i++) {
+            const step = data.steps[i];
+            recordTimelineSample(timeline, step, data.timestamps[i]);
+          }
+        }
+      }
+
+      const hasTimelineData = timeline.timestamp.some((v) => v !== null);
+      if (hasTimelineData) {
+        const targetLength = maxObservedStep + 1;
+        const padArray = (arr) => {
+          while (arr.length < targetLength) {
+            arr.push(null);
+          }
+          return arr;
+        };
+
+        newCache[runId].timestamp = padArray(timeline.timestamp);
+        newCache[runId].walltime = padArray(timeline.walltime);
+        newCache[runId].relative_walltime = padArray(timeline.relative);
       }
     }
 
@@ -1279,6 +1366,28 @@ function calculateRows(cards) {
   return rows;
 }
 
+function lineMetricsChanged(prevConfig, nextConfig) {
+  if (!prevConfig || !nextConfig) return false;
+  if (prevConfig.type !== "line" || nextConfig.type !== "line") return false;
+  if (prevConfig.xMetric !== nextConfig.xMetric) return true;
+
+  const prevMetrics = Array.isArray(prevConfig.yMetrics)
+    ? [...new Set(prevConfig.yMetrics)]
+    : [];
+  const nextMetrics = Array.isArray(nextConfig.yMetrics)
+    ? [...new Set(nextConfig.yMetrics)]
+    : [];
+
+  if (prevMetrics.length !== nextMetrics.length) return true;
+  const prevSet = new Set(prevMetrics);
+  for (const metric of nextMetrics) {
+    if (!prevSet.has(metric)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function updateCard({ id, config, syncAll, realtime }) {
   if (!config) return;
 
@@ -1291,6 +1400,7 @@ function updateCard({ id, config, syncAll, realtime }) {
   const oldConfig = currentTab.cards[cardIndex].config;
   const heightChanged = oldConfig.height !== config.height;
   const widthChanged = oldConfig.widthPercent !== config.widthPercent;
+  const metricsChanged = lineMetricsChanged(oldConfig, config);
 
   if (syncAll) {
     if (realtime && isUpdating.value) return;
@@ -1318,6 +1428,9 @@ function updateCard({ id, config, syncAll, realtime }) {
         nextTick(() => {
           isUpdating.value = false;
           saveLayout();
+          if (metricsChanged) {
+            fetchMetricsForTab();
+          }
         });
       }
     }
@@ -1376,6 +1489,9 @@ function updateCard({ id, config, syncAll, realtime }) {
     nextTick(() => {
       isUpdating.value = false;
       saveLayout();
+      if (metricsChanged) {
+        fetchMetricsForTab();
+      }
     });
   }
 }
@@ -1480,6 +1596,7 @@ function applyGlobalSettings() {
     saveLayout();
     showGlobalSettings.value = false;
     ElMessage.success("Applied global settings to all cards");
+    fetchMetricsForTab();
   });
 }
 
