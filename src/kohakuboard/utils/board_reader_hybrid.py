@@ -741,8 +741,8 @@ class HybridBoardReader:
         canonical_min = min(range_candidates_min)
         canonical_max = max(range_candidates_max)
         if canonical_min == canonical_max:
-            canonical_min -= 0.5
-            canonical_max += 0.5
+            canonical_min -= 0.005
+            canonical_max += 0.005
 
         if override_range:
             o_min, o_max = override_range
@@ -772,13 +772,32 @@ class HybridBoardReader:
             grid = entry["grid"]
             density = entry["density"]
 
+            range_min_entry = (
+                float(entry["range_min"])
+                if entry["range_min"] is not None
+                else float(grid.min())
+            )
+            range_max_entry = (
+                float(entry["range_max"])
+                if entry["range_max"] is not None
+                else float(grid.max())
+            )
+            if range_min_entry > range_max_entry:
+                range_min_entry, range_max_entry = range_max_entry, range_min_entry
+
             interpolated = np.interp(
                 centers,
                 grid,
                 density,
-                left=float(density[0]),
-                right=float(density[-1]),
+                left=0.0,
+                right=0.0,
             )
+            # Clamp any bins that fall outside the recorded KDE range to zero to
+            # avoid artificial plateaus when canonical ranges expand.
+            tolerance = max((range_max_entry - range_min_entry) * 1e-6, 1e-9)
+            outside_mask = (centers + tolerance) < range_min_entry
+            outside_mask |= (centers - tolerance) > range_max_entry
+            interpolated[outside_mask] = 0.0
 
             multiplier = entry["sample_count"] if entry["sample_count"] else 1.0
             counts = interpolated * widths * multiplier

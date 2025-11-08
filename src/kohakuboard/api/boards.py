@@ -5,12 +5,44 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import Response
 
+from kohakuvault import KVault
+
 from kohakuboard.utils.board_reader import BoardReader, list_boards
 from kohakuboard.config import cfg
 from kohakuboard.logger import logger_api
 
 
 router = APIRouter()
+
+
+def resolve_board_dir(board_id: str) -> Path:
+    """Locate a board directory (supports project-based layouts)."""
+    base_dir = Path(cfg.app.board_data_dir)
+
+    direct = base_dir / board_id
+    if direct.exists():
+        return direct
+
+    for entry in base_dir.iterdir():
+        if not entry.is_dir():
+            continue
+
+        candidate = entry / board_id
+        if candidate.exists():
+            return candidate
+
+        if entry.name == "users":
+            for user_dir in entry.iterdir():
+                if not user_dir.is_dir():
+                    continue
+                for project_dir in user_dir.iterdir():
+                    if not project_dir.is_dir():
+                        continue
+                    candidate = project_dir / board_id
+                    if candidate.exists():
+                        return candidate
+
+    raise FileNotFoundError(f"Board '{board_id}' not found")
 
 
 @router.get("/boards")
@@ -44,7 +76,7 @@ async def get_board_metadata(board_id: str):
     logger_api.info(f"Fetching metadata for board: {board_id}")
 
     try:
-        board_dir = Path(cfg.app.board_data_dir) / board_id
+        board_dir = resolve_board_dir(board_id)
         reader = BoardReader(board_dir)
         return reader.get_metadata()
     except FileNotFoundError as e:
@@ -68,7 +100,7 @@ async def get_board_summary(board_id: str):
     logger_api.info(f"Fetching summary for board: {board_id}")
 
     try:
-        board_dir = Path(cfg.app.board_data_dir) / board_id
+        board_dir = resolve_board_dir(board_id)
         reader = BoardReader(board_dir)
         return reader.get_summary()
     except FileNotFoundError as e:
@@ -92,7 +124,7 @@ async def get_available_scalars(board_id: str):
     logger_api.info(f"Fetching available scalars for board: {board_id}")
 
     try:
-        board_dir = Path(cfg.app.board_data_dir) / board_id
+        board_dir = resolve_board_dir(board_id)
         reader = BoardReader(board_dir)
         metrics = reader.get_available_metrics()
         return {"metrics": metrics}
@@ -123,7 +155,7 @@ async def get_scalar_data(
     logger_api.info(f"Fetching scalar data for {board_id}/{metric}")
 
     try:
-        board_dir = Path(cfg.app.board_data_dir) / board_id
+        board_dir = resolve_board_dir(board_id)
         reader = BoardReader(board_dir)
         data = reader.get_scalar_data(metric, limit=limit)
         # data is now columnar format: {steps: [], global_steps: [], timestamps: [], values: []}
@@ -149,7 +181,7 @@ async def get_available_media(board_id: str):
     logger_api.info(f"Fetching available media for board: {board_id}")
 
     try:
-        board_dir = Path(cfg.app.board_data_dir) / board_id
+        board_dir = resolve_board_dir(board_id)
         reader = BoardReader(board_dir)
         media_names = reader.get_available_media_names()
         return {"media": media_names}
@@ -180,7 +212,7 @@ async def get_media_data(
     logger_api.info(f"Fetching media data for {board_id}/{name}")
 
     try:
-        board_dir = Path(cfg.app.board_data_dir) / board_id
+        board_dir = resolve_board_dir(board_id)
         reader = BoardReader(board_dir)
         data = reader.get_media_data(name, limit=limit)
         return {"name": name, "data": data}
@@ -205,7 +237,7 @@ async def get_available_tables(board_id: str):
     logger_api.info(f"Fetching available tables for board: {board_id}")
 
     try:
-        board_dir = Path(cfg.app.board_data_dir) / board_id
+        board_dir = resolve_board_dir(board_id)
         reader = BoardReader(board_dir)
         table_names = reader.get_available_table_names()
         return {"tables": table_names}
@@ -236,7 +268,7 @@ async def get_table_data(
     logger_api.info(f"Fetching table data for {board_id}/{name}")
 
     try:
-        board_dir = Path(cfg.app.board_data_dir) / board_id
+        board_dir = resolve_board_dir(board_id)
         reader = BoardReader(board_dir)
         data = reader.get_table_data(name, limit=limit)
         return {"name": name, "data": data}
@@ -262,7 +294,7 @@ async def get_media_file(board_id: str, filename: str):
     logger_api.info(f"Serving media file: {board_id}/{filename}")
 
     try:
-        board_dir = Path(cfg.app.board_data_dir) / board_id
+        board_dir = resolve_board_dir(board_id)
         reader = BoardReader(board_dir)
         media_data = reader.get_media_data(filename)
 
@@ -318,7 +350,7 @@ async def get_media_by_id(board_id: str, media_id: int):
     logger_api.info(f"Resolving media ID {media_id} for board {board_id}")
 
     try:
-        board_dir = Path(cfg.app.board_data_dir) / board_id
+        board_dir = resolve_board_dir(board_id)
 
         if not board_dir.exists():
             raise HTTPException(status_code=404, detail=f"Board '{board_id}' not found")
@@ -338,6 +370,20 @@ async def get_media_by_id(board_id: str, media_id: int):
         # Get filename and data from LMDB
         filename = media_info["filename"]
         media_data = reader.get_media_data(filename)
+
+        if not media_data:
+            kv_path = board_dir / "media" / "blobs.db"
+            if kv_path.exists():
+                try:
+                    media_kv = KVault(str(kv_path))
+                    try:
+                        media_data = media_kv.get(filename)
+                    finally:
+                        media_kv.close()
+                except Exception as exc:
+                    logger_api.warning(
+                        f"KVault fallback failed for {board_id}/{filename}: {exc}"
+                    )
 
         if not media_data:
             raise HTTPException(

@@ -36,6 +36,7 @@ from kohakuboard.utils.board_reader import DEFAULT_LOCAL_PROJECT
 from kohakuboard.utils.run_id import (
     generate_annotation_id,
     generate_friendly_name,
+    sanitize_annotation,
 )
 
 
@@ -131,6 +132,7 @@ class Board:
         self.created_at = datetime.now(timezone.utc)
         self.memory_mode = memory_mode
         self.project = self._normalize_project(project)
+        self.finished_at: datetime | None = None
 
         # Setup directories
         self.base_dir = Path(base_dir) if base_dir else Path.cwd() / "kohakuboard"
@@ -1129,6 +1131,9 @@ class Board:
 
             self._shared_memory_blocks.clear()
 
+        self.finished_at = datetime.now(timezone.utc)
+        self._save_metadata()
+
         self.logger.info(f"Board finished: {self.name}")
 
     def _register_signal_handlers(self):
@@ -1248,10 +1253,8 @@ class Board:
 
     def _normalize_annotation(self, value: str) -> str:
         """Ensure annotation contains safe characters."""
-        normalized = re.sub(r"[^\w-]+", "-", value.strip().lower())
-        normalized = normalized.replace("_", "-")
-        normalized = re.sub(r"-{2,}", "-", normalized)
-        return normalized.strip("-")
+        normalized = sanitize_annotation(value)
+        return normalized
 
     def _prepare_annotation(self, annotation: Optional[str]) -> str:
         """Resolve user-provided annotation or generate a unique one."""
@@ -1285,6 +1288,11 @@ class Board:
             "config": self.config,
             "created_at": self.created_at.isoformat(),
             "project": self.project,
+            "finished_at": (
+                self.finished_at.isoformat()
+                if isinstance(self.finished_at, datetime)
+                else self.finished_at
+            ),
         }
 
         self._metadata = metadata

@@ -185,8 +185,8 @@ class KernelDensity:
             self.range_max = p_high
 
         if self.range_min == self.range_max:
-            self.range_min -= 0.1
-            self.range_max += 0.1
+            self.range_min -= 0.01
+            self.range_max += 0.01
 
         range_min = float(self.range_min)
         range_max = float(self.range_max)

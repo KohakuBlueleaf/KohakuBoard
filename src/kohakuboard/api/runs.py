@@ -13,7 +13,10 @@ from fastapi import APIRouter, Body, HTTPException, Query
 from fastapi.responses import Response
 from pydantic import BaseModel
 
+from kohakuvault import KVault
+
 from kohakuboard.utils.board_reader import BoardReader, DEFAULT_LOCAL_PROJECT
+from kohakuboard.utils.run_id import sanitize_annotation
 from kohakuboard.config import cfg
 from kohakuboard.logger import logger_api
 
@@ -28,6 +31,11 @@ class BatchSummaryRequest(BaseModel):
 class BatchScalarsRequest(BaseModel):
     run_ids: list[str]
     metrics: list[str]
+
+
+class RunUpdateRequest(BaseModel):
+    name: str | None = None
+    annotation: str | None = None
 
 
 def get_run_path(project: str, run_id: str) -> Path:
@@ -96,6 +104,92 @@ async def get_run_status(project: str, run_id: str):
         "metrics_count": metrics_count,
         "last_updated": last_updated,
     }
+
+
+@router.patch("/projects/{project}/runs/{run_id}")
+async def update_run(
+    project: str,
+    run_id: str,
+    payload: RunUpdateRequest,
+):
+    """Update run metadata (local mode only)."""
+
+    if cfg.app.mode != "local":
+        raise HTTPException(
+            405, detail={"error": "Updating runs is only supported in local mode"}
+        )
+
+    if payload.name is None and payload.annotation is None:
+        raise HTTPException(400, detail={"error": "No update fields provided"})
+
+    run_path = get_run_path(project, run_id)
+    metadata_file = run_path / "metadata.json"
+
+    if not metadata_file.exists():
+        raise HTTPException(404, detail={"error": "metadata.json not found"})
+
+    with open(metadata_file, "r") as f:
+        metadata = json.load(f)
+
+    changed = False
+    response_data = {
+        "run_id": metadata.get("run_id", run_id),
+        "name": metadata.get("name", metadata.get("run_id", run_id)),
+        "finished_at": metadata.get("finished_at"),
+    }
+
+    if payload.name is not None:
+        new_name = payload.name.strip()
+        if not new_name:
+            raise HTTPException(400, detail={"error": "Run name cannot be empty"})
+        metadata["name"] = new_name
+        response_data["name"] = new_name
+        changed = True
+
+    if payload.annotation is not None:
+        finished_at = metadata.get("finished_at")
+        if not finished_at:
+            raise HTTPException(
+                400,
+                detail={
+                    "error": "Annotation can only be changed after the run is finished"
+                },
+            )
+
+        sanitized = sanitize_annotation(payload.annotation)
+        if not sanitized:
+            raise HTTPException(
+                400,
+                detail={
+                    "error": "Annotation must contain letters, numbers, '-' or '_'"
+                },
+            )
+
+        current_annotation = metadata.get("run_id", run_path.name)
+        if sanitized != current_annotation:
+            target_path = run_path.parent / sanitized
+            if target_path.exists():
+                raise HTTPException(
+                    409,
+                    detail={
+                        "error": f"Annotation '{sanitized}' already exists in project '{project}'"
+                    },
+                )
+            run_path.rename(target_path)
+            run_path = target_path
+
+        metadata["run_id"] = sanitized
+        metadata["board_id"] = sanitized
+        response_data["run_id"] = sanitized
+        changed = True
+
+    if not changed:
+        return response_data
+
+    with open(run_path / "metadata.json", "w") as f:
+        json.dump(metadata, f, indent=2)
+
+    return response_data
 
 
 @router.get("/projects/{project}/runs/{run_id}/summary")
@@ -256,7 +350,25 @@ async def get_media_file(
 
     run_path = get_run_path(project, run_id)
     reader = BoardReader(run_path)
+    # Basic path safety
+    if "/" in filename or ".." in filename:
+        raise HTTPException(400, detail={"error": "Invalid media filename"})
+
     media_data = reader.get_media_data(filename)
+
+    if not media_data:
+        kv_path = run_path / "media" / "blobs.db"
+        if kv_path.exists():
+            try:
+                media_kv = KVault(str(kv_path))
+                try:
+                    media_data = media_kv.get(filename)
+                finally:
+                    media_kv.close()
+            except Exception as exc:
+                logger_api.warning(
+                    f"KVault fallback failed for {run_id}/{filename}: {exc}"
+                )
 
     if not media_data:
         raise HTTPException(404, detail={"error": "Media file not found"})

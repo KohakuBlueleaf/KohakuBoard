@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.resources as resources
 import random
+import re
 import string
 from typing import Final
 
@@ -32,3 +33,13 @@ def generate_friendly_name() -> str:
     predicate = random.choice(_load_word_list("predicates.txt"))
     obj = random.choice(_load_word_list("objects.txt"))
     return f"{predicate.title()} {obj.title()}"
+
+
+def sanitize_annotation(value: str) -> str:
+    """Sanitize annotation to filesystem-friendly form (lowercase, _, - only)."""
+    normalized = value.strip().lower()
+    normalized = normalized.replace(" ", "_")
+    normalized = re.sub(r"[^a-z0-9_-]+", "_", normalized)
+    normalized = re.sub(r"_+", "_", normalized)
+    normalized = re.sub(r"-+", "-", normalized)
+    return normalized.strip("_-")
