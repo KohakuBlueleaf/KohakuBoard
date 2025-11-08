@@ -8,6 +8,10 @@ const props = defineProps({
   displayedRuns: Array, // Max 10 runs to display
   chartsPerPage: Number, // 6, 8, or 12
   runColors: Object,
+  legendMode: {
+    type: String,
+    default: "annotation",
+  },
 });
 
 const runSummaries = ref({});
@@ -211,9 +215,12 @@ const scalarCharts = computed(() => {
     for (const run of props.displayedRuns) {
       const runData = scalarData.value[run.run_id];
       if (runData && runData[metric]) {
+        const label =
+          props.legendMode === "name" && run.name ? run.name : run.run_id;
         runsWithData.push({
           run_id: run.run_id,
-          name: run.run_id,
+          name: label,
+          annotation: run.run_id,
           color: props.runColors[run.run_id] || "#ccc",
           data: runData[metric],
         });
@@ -340,6 +347,7 @@ function prevPage() {
             :runs="chart.runs"
             x-metric="step"
             :height="400"
+            :legend-mode="props.legendMode"
           />
         </div>
       </div>

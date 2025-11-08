@@ -42,6 +42,7 @@ declare module 'vue' {
     ElTableColumn: typeof import('element-plus/es')['ElTableColumn']
     ElTabPane: typeof import('element-plus/es')['ElTabPane']
     ElTabs: typeof import('element-plus/es')['ElTabs']
+    ElTag: typeof import('element-plus/es')['ElTag']
     Histogram: typeof import('./components/Histogram.vue')['default']
     HistogramViewer: typeof import('./components/HistogramViewer.vue')['default']
     LinePlot: typeof import('./components/LinePlot.vue')['default']

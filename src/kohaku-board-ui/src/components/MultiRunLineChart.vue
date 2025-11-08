@@ -4,9 +4,10 @@ import Plotly from "plotly.js-dist-min";
 
 const props = defineProps({
   metricName: String,
-  runs: Array, // [{run_id, name, color, data: {steps, values}}]
+  runs: Array, // [{run_id, name, annotation, color, data: {steps, values}}]
   xMetric: { type: String, default: "step" },
   height: { type: Number, default: 400 },
+  legendMode: { type: String, default: "annotation" },
 });
 
 const chartRef = ref(null);
@@ -36,7 +37,11 @@ const traces = computed(() => {
 
     if (xData.length === 0) continue;
 
-    const runLabel = run.run_id;
+    const labelSource =
+      props.legendMode === "name" && run.name
+        ? run.name
+        : run.annotation || run.run_id;
+    const runLabel = labelSource || run.run_id;
 
     result.push({
       name: `${props.metricName} (${runLabel})`,

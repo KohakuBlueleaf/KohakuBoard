@@ -239,6 +239,21 @@ export async function fetchRunTables(project, runId) {
 }
 
 /**
+ * Update run metadata (name/annotation)
+ * @param {string} project
+ * @param {string} runId
+ * @param {Object} payload
+ * @returns {Promise<Object>}
+ */
+export async function updateRun(project, runId, payload) {
+  const response = await api.patch(
+    `/projects/${project}/runs/${runId}`,
+    payload,
+  );
+  return response.data;
+}
+
+/**
  * Fetch table data for a specific log name
  * @param {string} project - Project name
  * @param {string} runId - Run ID

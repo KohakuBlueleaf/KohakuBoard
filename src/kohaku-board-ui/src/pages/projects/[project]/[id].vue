@@ -4,6 +4,7 @@ import { VueDraggable } from "vue-draggable-plus";
 import ConfigurableChartCard from "@/components/ConfigurableChartCard.vue";
 import { useAnimationPreference } from "@/composables/useAnimationPreference";
 import { useHoverSync } from "@/composables/useHoverSync";
+import { updateRun, fetchProjectRuns } from "@/utils/api";
 
 const route = useRoute();
 const { animationsEnabled } = useAnimationPreference();
@@ -11,6 +12,30 @@ const { hoverSyncEnabled, toggleHoverSync } = useHoverSync();
 const metricDataCache = ref({});
 const availableMetrics = ref([]);
 const availableSummary = ref(null); // Store full summary data
+const runMetadata = ref(null);
+
+const router = useRouter();
+const currentProject = computed(() => route.params.project);
+const runTitle = computed(() => {
+  return (
+    runMetadata.value?.name ||
+    availableSummary.value?.metadata?.name ||
+    runAnnotation.value
+  );
+});
+const runAnnotation = computed(
+  () => runMetadata.value?.run_id || route.params.id,
+);
+const canEditAnnotation = computed(() => !!runMetadata.value?.finished_at);
+
+const isEditingName = ref(false);
+const isEditingAnnotation = ref(false);
+const editedName = ref("");
+const editedAnnotation = ref("");
+const nameInputRef = ref(null);
+const annotationInputRef = ref(null);
+const isSavingName = ref(false);
+const isSavingAnnotation = ref(false);
 
 const tabs = ref([{ name: "Metrics", cards: [] }]);
 const activeTab = ref("Metrics");
@@ -25,6 +50,170 @@ const newChartType = ref("line");
 const newChartValue = ref([]); // Array for line charts, string for others
 const isInitializing = ref(true); // Prevent watch triggers during init
 const removedMetrics = ref(new Set()); // Track explicitly removed metrics
+
+async function hydrateRunNameFromProjectList(runId) {
+  if (!currentProject.value || !runId) return;
+  if (
+    runMetadata.value?.name &&
+    runMetadata.value.name !== runAnnotation.value
+  ) {
+    return;
+  }
+
+  try {
+    const data = await fetchProjectRuns(currentProject.value);
+    const match = data.runs?.find((run) => run.run_id === runId);
+    if (match?.name && match.name !== match.run_id) {
+      runMetadata.value = {
+        ...(runMetadata.value || { run_id: runId }),
+        name: match.name,
+      };
+      if (availableSummary.value?.metadata) {
+        availableSummary.value = {
+          ...availableSummary.value,
+          metadata: {
+            ...(availableSummary.value.metadata || {}),
+            name: match.name,
+          },
+          experiment_info: {
+            ...(availableSummary.value.experiment_info || {}),
+            name: match.name,
+          },
+        };
+      }
+    }
+  } catch (error) {
+    console.warn("Failed to hydrate run name:", error);
+  }
+}
+
+function extractErrorMessage(error, fallback = "Request failed") {
+  const detail = error?.response?.data?.detail;
+  if (typeof detail === "string") return detail;
+  if (detail?.error) return detail.error;
+  return error?.message || fallback;
+}
+
+function startEditName() {
+  editedName.value = runTitle.value;
+  isEditingName.value = true;
+  nextTick(() => {
+    nameInputRef.value?.focus();
+    nameInputRef.value?.select?.();
+  });
+}
+
+function cancelNameEdit() {
+  if (isSavingName.value) return;
+  isEditingName.value = false;
+}
+
+async function saveName() {
+  if (!isEditingName.value || isSavingName.value) return;
+  const trimmed = editedName.value.trim();
+  if (!trimmed) {
+    ElMessage.warning("Run name cannot be empty");
+    return;
+  }
+  if (trimmed === runTitle.value) {
+    isEditingName.value = false;
+    return;
+  }
+
+  isSavingName.value = true;
+  try {
+    await updateRun(currentProject.value, runAnnotation.value, {
+      name: trimmed,
+    });
+    runMetadata.value = {
+      ...(runMetadata.value || {}),
+      name: trimmed,
+    };
+    if (availableSummary.value) {
+      availableSummary.value = {
+        ...availableSummary.value,
+        metadata: {
+          ...(availableSummary.value.metadata || {}),
+          name: trimmed,
+        },
+      };
+    }
+    await hydrateRunNameFromProjectList(runAnnotation.value);
+    ElMessage.success("Run name updated");
+    isEditingName.value = false;
+  } catch (error) {
+    ElMessage.error(extractErrorMessage(error, "Failed to update run name"));
+  } finally {
+    isSavingName.value = false;
+  }
+}
+
+function startEditAnnotation() {
+  if (!canEditAnnotation.value) {
+    ElMessage.warning("Finish the run before renaming the annotation");
+    return;
+  }
+  editedAnnotation.value = runAnnotation.value;
+  isEditingAnnotation.value = true;
+  nextTick(() => {
+    annotationInputRef.value?.focus();
+    annotationInputRef.value?.select?.();
+  });
+}
+
+function cancelAnnotationEdit() {
+  if (isSavingAnnotation.value) return;
+  isEditingAnnotation.value = false;
+}
+
+async function saveAnnotation() {
+  if (!isEditingAnnotation.value || isSavingAnnotation.value) return;
+  const trimmed = editedAnnotation.value.trim();
+  if (!trimmed) {
+    ElMessage.warning("Annotation cannot be empty");
+    return;
+  }
+  if (trimmed === runAnnotation.value) {
+    isEditingAnnotation.value = false;
+    return;
+  }
+
+  isSavingAnnotation.value = true;
+  const currentAnnotation = runAnnotation.value;
+  try {
+    const result = await updateRun(currentProject.value, currentAnnotation, {
+      annotation: trimmed,
+    });
+    runMetadata.value = {
+      ...(runMetadata.value || {}),
+      run_id: result.run_id,
+      board_id: result.run_id,
+    };
+    if (availableSummary.value) {
+      availableSummary.value = {
+        ...availableSummary.value,
+        metadata: {
+          ...(availableSummary.value.metadata || {}),
+          run_id: result.run_id,
+          board_id: result.run_id,
+        },
+      };
+    }
+    ElMessage.success("Annotation updated");
+    isEditingAnnotation.value = false;
+
+    if (result.run_id && result.run_id !== route.params.id) {
+      router.replace({
+        path: `/projects/${currentProject.value}/${result.run_id}`,
+      });
+    }
+    await hydrateRunNameFromProjectList(result.run_id);
+  } catch (error) {
+    ElMessage.error(extractErrorMessage(error, "Failed to update annotation"));
+  } finally {
+    isSavingAnnotation.value = false;
+  }
+}
 
 // Polling state
 const lastMetricsCount = ref(0);
@@ -60,12 +249,72 @@ const globalSettings = ref({
 });
 
 // Use project-level storage key (same layout shared across all runs in project)
-const storageKey = computed(() => `project-layout-${route.params.project}`);
+const RUN_LAYOUT_KEY_PREFIX = "run-layout";
+const LEGACY_PROJECT_LAYOUT_PREFIX = "project-layout";
+
+const storageKey = computed(
+  () => `${RUN_LAYOUT_KEY_PREFIX}-${route.params.project}-${route.params.id}`,
+);
+const legacyStorageKey = computed(
+  () => `${LEGACY_PROJECT_LAYOUT_PREFIX}-${route.params.project}`,
+);
+
+function parseRunLayout(rawValue, label) {
+  if (!rawValue) return null;
+  try {
+    const parsed = JSON.parse(rawValue);
+    if (!isRunLayoutPayload(parsed)) {
+      return null;
+    }
+    if (!Array.isArray(parsed.removedMetrics)) {
+      parsed.removedMetrics = [];
+    }
+    return parsed;
+  } catch (error) {
+    console.warn(`[RunLayout] Failed to parse ${label}:`, error);
+    return null;
+  }
+}
+
+function isRunLayoutPayload(payload) {
+  if (!payload || typeof payload !== "object") return false;
+  if (!Array.isArray(payload.tabs)) return false;
+  if ("hiddenRunIds" in payload || "customRunColors" in payload) return false;
+  return true;
+}
+
+function loadRunLayoutFromStorage() {
+  const current = parseRunLayout(
+    localStorage.getItem(storageKey.value),
+    storageKey.value,
+  );
+  if (current) {
+    return current;
+  }
+
+  if (legacyStorageKey.value === storageKey.value) {
+    return null;
+  }
+
+  const legacy = parseRunLayout(
+    localStorage.getItem(legacyStorageKey.value),
+    legacyStorageKey.value,
+  );
+  if (legacy) {
+    localStorage.setItem(storageKey.value, JSON.stringify(legacy));
+    localStorage.removeItem(legacyStorageKey.value);
+    return legacy;
+  }
+  return null;
+}
 
 // Extracted initialization logic for reuse
 async function initializeExperiment() {
   try {
     isInitializing.value = true;
+    runMetadata.value = null;
+    isEditingName.value = false;
+    isEditingAnnotation.value = false;
 
     const projectName = route.params.project;
     const runId = route.params.id;
@@ -101,6 +350,10 @@ async function initializeExperiment() {
 
     // Store full summary for later use (media, tables, histograms)
     availableSummary.value = summary;
+    runMetadata.value = {
+      ...(summary.metadata || {}),
+      run_id: summary.metadata?.run_id || runId,
+    };
     availableMetrics.value = summary.available_data.scalars;
 
     // Add computed time metrics (will be calculated after fetching timestamp)
@@ -111,11 +364,9 @@ async function initializeExperiment() {
     }
 
     // Try to load saved layout
-    const saved = localStorage.getItem(storageKey.value);
-    let savedLayout = null;
+    const savedLayout = loadRunLayoutFromStorage();
 
-    if (saved) {
-      savedLayout = JSON.parse(saved);
+    if (savedLayout) {
       activeTab.value = savedLayout.activeTab || "Metrics";
       nextCardId.value = savedLayout.nextCardId || 1;
 
@@ -433,6 +684,8 @@ async function initializeExperiment() {
 
     // Determine default x-axis (prefer global_step if it's used, otherwise step)
     await determineDefaultXAxis();
+
+    await hydrateRunNameFromProjectList(runMetadata.value?.run_id || runId);
 
     // Initialization complete - allow watch to fire on user tab changes
     isInitializing.value = false;
@@ -790,6 +1043,8 @@ watch(
       stopPolling();
       currentPage.value = 0;
       lastMetricsCount.value = 0; // Reset count for new run
+      isEditingName.value = false;
+      isEditingAnnotation.value = false;
       initializeExperiment();
     }
   },
@@ -1384,25 +1639,77 @@ function onDragEnd(evt) {
 
 <template>
   <div class="container-main">
-    <!-- Action buttons -->
-    <div class="mb-6 flex items-center justify-end gap-2">
-      <el-button type="primary" size="small" @click="addCard">
-        <i class="i-ep-plus mr-1" />
-        <span v-if="!isMobile">Add Chart</span>
-        <span v-else>Add</span>
-      </el-button>
-      <el-button size="small" @click="addTab">
-        <span v-if="!isMobile">Add Tab</span>
-        <span v-else>Tab</span>
-      </el-button>
-      <el-button size="small" @click="isEditingTabs = !isEditingTabs">
-        {{ isEditingTabs ? "Done" : "Edit" }}
-      </el-button>
-      <el-button size="small" @click="resetLayout" type="danger" plain>
-        <i class="i-ep-refresh-left mr-1" />
-        <span v-if="!isMobile">Reset Layout</span>
-        <span v-else>Reset</span>
-      </el-button>
+    <!-- Header / Action bar -->
+    <div
+      class="mb-6 flex flex-wrap items-start justify-between gap-4 border border-gray-200 dark:border-gray-700 rounded-lg p-4 bg-white dark:bg-gray-900"
+    >
+      <div class="flex flex-col gap-1 min-w-0">
+        <div v-if="isEditingName" class="flex items-center gap-2">
+          <el-input
+            ref="nameInputRef"
+            v-model="editedName"
+            size="large"
+            placeholder="Run name"
+            :disabled="isSavingName"
+            @keyup.enter="saveName"
+            @keydown.esc="cancelNameEdit"
+            @blur="saveName"
+          />
+        </div>
+        <div
+          v-else
+          class="text-2xl font-bold text-gray-900 dark:text-gray-100 cursor-pointer select-text"
+          title="Double-click to rename run"
+          @dblclick="startEditName"
+        >
+          {{ runTitle }}
+        </div>
+        <div v-if="isEditingAnnotation" class="flex items-center gap-2">
+          <el-input
+            ref="annotationInputRef"
+            v-model="editedAnnotation"
+            size="small"
+            placeholder="Annotation"
+            :disabled="isSavingAnnotation"
+            @keyup.enter="saveAnnotation"
+            @keydown.esc="cancelAnnotationEdit"
+            @blur="saveAnnotation"
+          />
+          <span class="text-xs text-gray-500">Used as folder name on disk</span>
+        </div>
+        <div
+          v-else
+          class="text-sm text-gray-500 dark:text-gray-400 flex items-center gap-2"
+          :class="{ 'cursor-pointer': canEditAnnotation }"
+          title="Double-click to rename annotation"
+          @dblclick="startEditAnnotation"
+        >
+          <span class="font-mono">{{ runAnnotation }}</span>
+          <el-tag v-if="!canEditAnnotation" type="info" size="small">
+            Finish run to rename
+          </el-tag>
+        </div>
+      </div>
+
+      <div class="flex items-center justify-end gap-2 flex-wrap">
+        <el-button type="primary" size="small" @click="addCard">
+          <i class="i-ep-plus mr-1" />
+          <span v-if="!isMobile">Add Chart</span>
+          <span v-else>Add</span>
+        </el-button>
+        <el-button size="small" @click="addTab">
+          <span v-if="!isMobile">Add Tab</span>
+          <span v-else>Tab</span>
+        </el-button>
+        <el-button size="small" @click="isEditingTabs = !isEditingTabs">
+          {{ isEditingTabs ? "Done" : "Edit" }}
+        </el-button>
+        <el-button size="small" @click="resetLayout" type="danger" plain>
+          <i class="i-ep-refresh-left mr-1" />
+          <span v-if="!isMobile">Reset Layout</span>
+          <span v-else>Reset</span>
+        </el-button>
+      </div>
     </div>
 
     <el-tabs v-model="activeTab" type="card">

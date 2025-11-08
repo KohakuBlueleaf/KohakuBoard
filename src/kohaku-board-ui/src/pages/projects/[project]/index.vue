@@ -13,6 +13,24 @@ const { hoverSyncEnabled, toggleHoverSync } = useHoverSync();
 
 const projectName = computed(() => route.params.project);
 
+const legendModeKey = computed(
+  () => `legend-mode-${projectName.value ?? "default"}`,
+);
+const legendMode = ref("annotation");
+
+watch(
+  () => projectName.value,
+  () => {
+    legendMode.value =
+      localStorage.getItem(legendModeKey.value) || "annotation";
+  },
+  { immediate: true },
+);
+
+watch(legendMode, (value) => {
+  localStorage.setItem(legendModeKey.value, value);
+});
+
 // Run selection state
 const allRuns = ref([]);
 const selectedRunIds = ref(new Set());
@@ -154,6 +172,7 @@ const showGlobalSettings = ref(false);
 const showAddChartDialog = ref(false);
 const newChartType = ref("line");
 const newChartValue = ref([]);
+const removedMetrics = ref(new Set());
 const isInitializing = ref(true);
 const chartsPerPage = ref(12);
 
@@ -197,7 +216,75 @@ const globalSettings = ref({
   downsampleRate: -1,
 });
 
-const storageKey = computed(() => `project-layout-${route.params.project}`);
+const PROJECT_LAYOUT_KEY_PREFIX = "project-dashboard-layout";
+const LEGACY_PROJECT_LAYOUT_PREFIX = "project-layout";
+
+const storageKey = computed(
+  () => `${PROJECT_LAYOUT_KEY_PREFIX}-${route.params.project}`,
+);
+const legacyStorageKey = computed(
+  () => `${LEGACY_PROJECT_LAYOUT_PREFIX}-${route.params.project}`,
+);
+
+function parseProjectLayout(rawValue, label) {
+  if (!rawValue) return null;
+  try {
+    const parsed = JSON.parse(rawValue);
+    if (!isProjectLayoutPayload(parsed)) {
+      return null;
+    }
+    if (!Array.isArray(parsed.hiddenRunIds)) {
+      parsed.hiddenRunIds = [];
+    }
+    if (!Array.isArray(parsed.removedMetrics)) {
+      parsed.removedMetrics = [];
+    }
+    return parsed;
+  } catch (error) {
+    console.warn(`[ProjectLayout] Failed to parse ${label}:`, error);
+    return null;
+  }
+}
+
+function isProjectLayoutPayload(payload) {
+  if (!payload || typeof payload !== "object") return false;
+  if (!Array.isArray(payload.tabs)) return false;
+  if (!("hiddenRunIds" in payload)) return false;
+  return true;
+}
+
+function loadProjectLayoutFromStorage() {
+  const current = parseProjectLayout(
+    localStorage.getItem(storageKey.value),
+    storageKey.value,
+  );
+  if (current) {
+    return current;
+  }
+
+  if (legacyStorageKey.value === storageKey.value) {
+    return null;
+  }
+
+  const legacy = parseProjectLayout(
+    localStorage.getItem(legacyStorageKey.value),
+    legacyStorageKey.value,
+  );
+  if (legacy) {
+    localStorage.setItem(storageKey.value, JSON.stringify(legacy));
+    localStorage.removeItem(legacyStorageKey.value);
+    return legacy;
+  }
+  return null;
+}
+
+const AXIS_ONLY_METRICS = new Set([
+  "step",
+  "global_step",
+  "timestamp",
+  "walltime",
+  "relative_walltime",
+]);
 
 // Custom run colors (saved by user, overrides hash-based defaults)
 // Now saved with layout instead of separate storage
@@ -218,7 +305,8 @@ const runColors = computed(() => {
 const runNames = computed(() => {
   const names = {};
   allRuns.value.forEach((run) => {
-    names[run.run_id] = run.run_id;
+    const useName = legendMode.value === "name" && run.name;
+    names[run.run_id] = useName ? run.name : run.run_id;
   });
   return names;
 });
@@ -266,12 +354,8 @@ async function fetchRuns() {
     });
 
     // Load saved hidden runs, default to all visible
-    const saved = localStorage.getItem(storageKey.value);
-    let hiddenRunIds = [];
-    if (saved) {
-      const savedLayout = JSON.parse(saved);
-      hiddenRunIds = savedLayout.hiddenRunIds || [];
-    }
+    const savedLayout = loadProjectLayoutFromStorage();
+    const hiddenRunIds = savedLayout?.hiddenRunIds || [];
 
     // Select all runs except hidden ones
     const allRunIds = allRuns.value.map((r) => r.run_id);
@@ -388,12 +472,8 @@ async function pollRuns() {
         allRuns.value = newRuns;
 
         // Load saved hidden runs
-        const saved = localStorage.getItem(storageKey.value);
-        let hiddenRunIds = [];
-        if (saved) {
-          const savedLayout = JSON.parse(saved);
-          hiddenRunIds = savedLayout.hiddenRunIds || [];
-        }
+        const savedLayout = loadProjectLayoutFromStorage();
+        const hiddenRunIds = savedLayout?.hiddenRunIds || [];
 
         // Select all runs except hidden ones (new runs default to visible)
         const allRunIds = allRuns.value.map((r) => r.run_id);
@@ -590,11 +670,9 @@ async function initializeProject() {
     }
 
     // Try to load saved layout
-    const saved = localStorage.getItem(storageKey.value);
-    let savedLayout = null;
+    const savedLayout = loadProjectLayoutFromStorage();
 
-    if (saved) {
-      savedLayout = JSON.parse(saved);
+    if (savedLayout) {
       activeTab.value = savedLayout.activeTab || "Metrics";
       nextCardId.value = savedLayout.nextCardId || 1;
 
@@ -609,13 +687,22 @@ async function initializeProject() {
       if (savedLayout.sidebarWidth) {
         sidebarWidth.value = savedLayout.sidebarWidth;
       }
+
+      removedMetrics.value = new Set(savedLayout.removedMetrics || []);
+    } else {
+      removedMetrics.value = new Set();
     }
 
     // Build default cards if no saved layout
     if (savedLayout?.tabs) {
-      tabs.value = savedLayout.tabs;
+      tabs.value = sanitizeProjectTabs(savedLayout.tabs);
     } else {
       buildDefaultTabs();
+    }
+
+    const addedDefaults = ensureDefaultCardsPresent();
+    if (addedDefaults) {
+      saveLayout();
     }
 
     // Fetch all metrics FIRST
@@ -650,6 +737,16 @@ function updateCardsForCurrentRuns() {
         // Remove duplicates
         card.config.yMetrics = [...new Set(baseMetrics)];
 
+        if (Array.isArray(card.defaultMetrics)) {
+          card.defaultMetrics = card.defaultMetrics
+            .map(stripMetricSuffix)
+            .filter((metric) => card.config.yMetrics.includes(metric));
+        } else if (card.config.yMetrics.length === 1) {
+          card.defaultMetrics = [card.config.yMetrics[0]];
+        } else {
+          card.defaultMetrics = [];
+        }
+
         console.log(
           `Updated card ${card.id} yMetrics to base metrics only:`,
           card.config.yMetrics,
@@ -659,22 +756,159 @@ function updateCardsForCurrentRuns() {
   }
 }
 
+function stripMetricSuffix(metric) {
+  if (typeof metric !== "string") return metric;
+  const idx = metric.lastIndexOf(" (");
+  return idx === -1 ? metric : metric.substring(0, idx);
+}
+
+function sanitizeProjectTabs(rawTabs) {
+  if (!Array.isArray(rawTabs)) return [{ name: "Metrics", cards: [] }];
+  const sanitized = [];
+
+  rawTabs.forEach((tab, tabIndex) => {
+    const cards = (tab?.cards || [])
+      .filter((card) => {
+        const type = card?.config?.type || "line";
+        if (type !== "line") {
+          console.warn(
+            `[Project Layout] Dropping unsupported card type '${type}' in tab '${tab?.name ?? tabIndex}'`,
+          );
+          return false;
+        }
+        return true;
+      })
+      .map((card) => {
+        const config = card.config || {};
+        const yMetrics = Array.isArray(config.yMetrics)
+          ? config.yMetrics.map(stripMetricSuffix).filter(Boolean)
+          : [];
+        const defaultMetrics = Array.isArray(card.defaultMetrics)
+          ? card.defaultMetrics.map(stripMetricSuffix).filter(Boolean)
+          : yMetrics.length === 1
+            ? [yMetrics[0]]
+            : [];
+        return {
+          id: card.id || `card-${nextCardId.value++}`,
+          config: {
+            type: "line",
+            title:
+              config.title || (yMetrics.length ? yMetrics.join(", ") : "Chart"),
+            widthPercent: config.widthPercent || 33,
+            height: config.height || 400,
+            xMetric: config.xMetric || "global_step",
+            yMetrics,
+          },
+          defaultMetrics,
+        };
+      });
+
+    sanitized.push({
+      name: tab?.name || `Tab ${tabIndex + 1}`,
+      cards,
+    });
+  });
+
+  return sanitized.length > 0 ? sanitized : [{ name: "Metrics", cards: [] }];
+}
+
+function createDefaultCard(metric, xMetric = "global_step") {
+  return {
+    id: `card-${nextCardId.value++}`,
+    config: {
+      type: "line",
+      title: metric,
+      widthPercent: 33,
+      height: 400,
+      xMetric,
+      yMetrics: [metric],
+    },
+    defaultMetrics: [metric],
+  };
+}
+
+function ensureDefaultCardsPresent() {
+  if (!availableMetrics.value || availableMetrics.value.length === 0) {
+    return false;
+  }
+
+  const existingMetrics = new Set();
+  for (const tab of tabs.value) {
+    for (const card of tab.cards || []) {
+      if (card.config?.type !== "line") continue;
+      for (const metric of card.config.yMetrics || []) {
+        existingMetrics.add(stripMetricSuffix(metric));
+      }
+    }
+  }
+
+  const metricsToAdd = availableMetrics.value.filter((metric) => {
+    if (AXIS_ONLY_METRICS.has(metric)) return false;
+    if (removedMetrics.value.has(metric)) return false;
+    return !existingMetrics.has(metric);
+  });
+
+  if (metricsToAdd.length === 0) {
+    return false;
+  }
+
+  const namespaceMap = new Map();
+  namespaceMap.set("", []);
+  for (const metric of metricsToAdd) {
+    const slashIdx = metric.indexOf("/");
+    if (slashIdx > 0) {
+      const namespace = metric.substring(0, slashIdx);
+      if (!namespaceMap.has(namespace)) {
+        namespaceMap.set(namespace, []);
+      }
+      namespaceMap.get(namespace).push(metric);
+    } else {
+      namespaceMap.get("").push(metric);
+    }
+  }
+
+  if (tabs.value.length === 0) {
+    tabs.value = [{ name: "Metrics", cards: [] }];
+  }
+
+  let metricsTab = tabs.value.find((t) => t.name === "Metrics");
+  if (!metricsTab) {
+    metricsTab = { name: "Metrics", cards: [] };
+    tabs.value.unshift(metricsTab);
+  }
+
+  for (const metric of namespaceMap.get("") || []) {
+    metricsTab.cards.push(createDefaultCard(metric, "global_step"));
+  }
+
+  for (const [namespace, metrics] of namespaceMap.entries()) {
+    if (namespace === "" || metrics.length === 0) continue;
+    let namespaceTab = tabs.value.find((t) => t.name === namespace);
+    if (!namespaceTab) {
+      namespaceTab = { name: namespace, cards: [] };
+      tabs.value.push(namespaceTab);
+    }
+    for (const metric of metrics) {
+      namespaceTab.cards.push(createDefaultCard(metric, "step"));
+    }
+  }
+
+  tabs.value = tabs.value.map((tab) => ({
+    ...tab,
+    cards: [...tab.cards],
+  }));
+  return true;
+}
+
 // Build default tabs grouped by namespace
 function buildDefaultTabs() {
-  const axisOnlyMetrics = new Set([
-    "step",
-    "global_step",
-    "timestamp",
-    "walltime",
-    "relative_walltime",
-  ]);
-
   // Group metrics by namespace
   const metricsByNamespace = new Map();
   metricsByNamespace.set("", []); // Main namespace
 
   for (const metric of availableMetrics.value) {
-    if (axisOnlyMetrics.has(metric)) continue;
+    if (AXIS_ONLY_METRICS.has(metric)) continue;
+    if (removedMetrics.value.has(metric)) continue;
 
     const slashIdx = metric.indexOf("/");
     if (slashIdx > 0) {
@@ -706,6 +940,7 @@ function buildDefaultTabs() {
           xMetric: "global_step",
           yMetrics: [metric], // Just the base metric name
         },
+        defaultMetrics: [metric],
       };
     });
     newTabs.push({ name: "Metrics", cards });
@@ -725,6 +960,7 @@ function buildDefaultTabs() {
             xMetric: "step",
             yMetrics: [metric], // Just the base metric name
           },
+          defaultMetrics: [metric],
         };
       });
       newTabs.push({ name: namespace, cards });
@@ -1019,6 +1255,7 @@ function saveLayout() {
     customRunColors: customRunColors.value, // Save custom color mappings
     sidebarWidth: sidebarWidth.value, // Save sidebar width
     hiddenRunIds: hiddenRunIds, // Save which runs are hidden
+    removedMetrics: Array.from(removedMetrics.value),
   };
   localStorage.setItem(storageKey.value, JSON.stringify(layout));
 }
@@ -1146,6 +1383,22 @@ function updateCard({ id, config, syncAll, realtime }) {
 function removeCard(id) {
   const tab = tabs.value.find((t) => t.name === activeTab.value);
   if (tab) {
+    const cardToRemove = tab.cards.find((c) => c.id === id);
+    if (cardToRemove) {
+      const defaultList =
+        cardToRemove.defaultMetrics && cardToRemove.defaultMetrics.length > 0
+          ? cardToRemove.defaultMetrics
+          : cardToRemove.config?.yMetrics?.length === 1
+            ? cardToRemove.config.yMetrics
+            : [];
+      defaultList.forEach((metric) => {
+        const baseMetric = stripMetricSuffix(metric);
+        if (baseMetric) {
+          removedMetrics.value.add(baseMetric);
+        }
+      });
+    }
+
     tab.cards = tab.cards.filter((c) => c.id !== id);
     saveLayout();
   }
@@ -1237,14 +1490,7 @@ function addCard() {
 }
 
 const availableChartValues = computed(() => {
-  const axisOnlyMetrics = new Set([
-    "step",
-    "global_step",
-    "timestamp",
-    "walltime",
-    "relative_walltime",
-  ]);
-  return availableMetrics.value.filter((m) => !axisOnlyMetrics.has(m));
+  return availableMetrics.value.filter((m) => !AXIS_ONLY_METRICS.has(m));
 });
 
 function confirmAddChart() {
@@ -1268,6 +1514,7 @@ function confirmAddChart() {
       xMetric: "global_step",
       yMetrics: newChartValue.value,
     },
+    defaultMetrics: [],
   };
 
   tab.cards.push(newCard);
@@ -1283,6 +1530,7 @@ function resetLayout() {
   if (
     confirm("Reset to default layout? This will remove all customizations.")
   ) {
+    removedMetrics.value = new Set();
     localStorage.removeItem(storageKey.value);
     location.reload();
   }
@@ -1443,7 +1691,7 @@ onUnmounted(() => {
     >
       <!-- Top bar -->
       <div
-        class="p-4 border-b border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 flex justify-between items-center"
+        class="p-4 border-b border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 flex flex-wrap justify-between items-start gap-4"
       >
         <div>
           <h2 class="text-xl font-bold">{{ projectName }}</h2>
@@ -1452,15 +1700,26 @@ onUnmounted(() => {
           </p>
         </div>
 
-        <div class="flex items-center gap-4">
-          <span class="text-sm text-gray-600 dark:text-gray-400"
-            >Charts per page:</span
-          >
-          <el-radio-group v-model="chartsPerPage" size="small">
-            <el-radio-button :value="6">6</el-radio-button>
-            <el-radio-button :value="8">8</el-radio-button>
-            <el-radio-button :value="12">12</el-radio-button>
-          </el-radio-group>
+        <div class="flex flex-col gap-3 sm:flex-row sm:items-center">
+          <div class="flex items-center gap-2">
+            <span class="text-sm text-gray-600 dark:text-gray-400"
+              >Legend labels:</span
+            >
+            <el-radio-group v-model="legendMode" size="small">
+              <el-radio-button value="annotation">Annotation</el-radio-button>
+              <el-radio-button value="name">Run Name</el-radio-button>
+            </el-radio-group>
+          </div>
+          <div class="flex items-center gap-2">
+            <span class="text-sm text-gray-600 dark:text-gray-400"
+              >Charts per page:</span
+            >
+            <el-radio-group v-model="chartsPerPage" size="small">
+              <el-radio-button :value="6">6</el-radio-button>
+              <el-radio-button :value="8">8</el-radio-button>
+              <el-radio-button :value="12">12</el-radio-button>
+            </el-radio-group>
+          </div>
         </div>
       </div>
 
