@@ -386,6 +386,8 @@ class MemoryTensorStorage:
         self.logger = logger or get_logger("MEMORY_STORAGE_TENSOR", drop=True)
         self.tensors: Dict[str, List[dict[str, Any]]] = defaultdict(list)
         self.kde_logs: Dict[str, List[dict[str, Any]]] = defaultdict(list)
+        self._next_tensor_id = 1
+        self._next_kde_id = 1
 
     def append_tensor(
         self,
@@ -397,12 +399,14 @@ class MemoryTensorStorage:
     ) -> None:
         self.tensors[name].append(
             {
+                "rowid": self._next_tensor_id,
                 "step": step,
                 "global_step": global_step,
                 "payload": payload,
                 "tensor_meta": tensor_meta,
             }
         )
+        self._next_tensor_id += 1
 
     def append_kernel_density(
         self,
@@ -414,16 +418,20 @@ class MemoryTensorStorage:
     ) -> None:
         self.kde_logs[name].append(
             {
+                "rowid": self._next_kde_id,
                 "step": step,
                 "global_step": global_step,
                 "payload": payload,
                 "kde_meta": kde_meta,
             }
         )
+        self._next_kde_id += 1
 
     def close(self) -> None:
         self.tensors.clear()
         self.kde_logs.clear()
+        self._next_tensor_id = 1
+        self._next_kde_id = 1
 
     def prune_up_to(self, max_step: int) -> None:
         for name in list(self.tensors.keys()):
@@ -439,6 +447,42 @@ class MemoryTensorStorage:
                 self.kde_logs[name] = entries
             else:
                 self.kde_logs.pop(name, None)
+
+    def collect_tensors_since(self, last_rowid: int) -> List[dict[str, Any]]:
+        entries: List[dict[str, Any]] = []
+        for name, records in self.tensors.items():
+            for record in records:
+                if record["rowid"] > last_rowid:
+                    entries.append(
+                        {
+                            "rowid": record["rowid"],
+                            "step": record["step"],
+                            "global_step": record["global_step"],
+                            "name": name,
+                            "payload": record["payload"],
+                            "tensor_meta": record["tensor_meta"],
+                        }
+                    )
+        entries.sort(key=lambda item: item["rowid"])
+        return entries
+
+    def collect_kernel_density_since(self, last_rowid: int) -> List[dict[str, Any]]:
+        entries: List[dict[str, Any]] = []
+        for name, records in self.kde_logs.items():
+            for record in records:
+                if record["rowid"] > last_rowid:
+                    entries.append(
+                        {
+                            "rowid": record["rowid"],
+                            "step": record["step"],
+                            "global_step": record["global_step"],
+                            "name": name,
+                            "payload": record["payload"],
+                            "kde_meta": record["kde_meta"],
+                        }
+                    )
+        entries.sort(key=lambda item: item["rowid"])
+        return entries
 
 
 class MemoryHybridStorage:
@@ -540,6 +584,33 @@ class MemoryHybridStorage:
         self.tensor_storage.append_kernel_density(
             step, global_step, name, payload, kde_meta
         )
+
+    def collect_tensors_since(self, last_rowid: int) -> List[dict[str, Any]]:
+        return self.tensor_storage.collect_tensors_since(last_rowid)
+
+    def collect_kernel_density_since(self, last_rowid: int) -> List[dict[str, Any]]:
+        return self.tensor_storage.collect_kernel_density_since(last_rowid)
+
+    def collect_kernel_density_range(
+        self, start_step: int, end_step: int
+    ) -> List[dict[str, Any]]:
+        """Collect kernel density entries for the given step range."""
+        entries: List[dict[str, Any]] = []
+        for name, logs in self.tensor_storage.kde_logs.items():
+            for record in logs:
+                if start_step <= record["step"] <= end_step:
+                    entries.append(
+                        {
+                            "step": record["step"],
+                            "global_step": record["global_step"],
+                            "name": name,
+                            "payload": record["payload"],
+                            "kde_meta": record["kde_meta"],
+                        }
+                    )
+
+        entries.sort(key=lambda item: item["step"])
+        return entries
 
     def flush_metrics(self) -> None:
         self.metrics_storage.flush()

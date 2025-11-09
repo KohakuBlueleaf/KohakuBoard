@@ -265,6 +265,127 @@ class HybridStorage:
             num_points=num_points or 0,
         )
 
+    def collect_kernel_density_range(
+        self, start_step: int, end_step: int
+    ) -> list[dict[str, Any]]:
+        """Collect kernel density entries for the given step range."""
+        entries: list[dict[str, Any]] = []
+        if not hasattr(self.metadata_storage, "fetch_kernel_density_range"):
+            return entries
+
+        metadata_rows = self.metadata_storage.fetch_kernel_density_range(
+            start_step, end_step
+        )
+        for row in metadata_rows:
+            kv_file = row.get("kv_file")
+            kv_key = row.get("kv_key")
+            if not kv_file or not kv_key:
+                continue
+            try:
+                payload = self.tensor_storage.load_tensor(kv_file, kv_key)
+            except Exception as exc:
+                self.logger.error(
+                    f"Failed to load kernel density payload {kv_file}.db[{kv_key}]: {exc}"
+                )
+                continue
+
+            entries.append(
+                {
+                    "step": row.get("step"),
+                    "global_step": row.get("global_step"),
+                    "name": row.get("name"),
+                    "payload": payload,
+                    "kde_meta": {
+                        "kernel": row.get("kernel"),
+                        "bandwidth": row.get("bandwidth"),
+                        "sample_count": row.get("sample_count"),
+                        "range_min": row.get("range_min"),
+                        "range_max": row.get("range_max"),
+                        "num_points": row.get("num_points"),
+                        "metadata": row.get("metadata") or {},
+                    },
+                }
+            )
+        return entries
+
+    def collect_tensors_since(self, last_rowid: int) -> list[dict[str, Any]]:
+        """Collect tensor entries created after the given rowid."""
+        entries: list[dict[str, Any]] = []
+        if not hasattr(self.metadata_storage, "fetch_tensors_since"):
+            return entries
+
+        metadata_rows = self.metadata_storage.fetch_tensors_since(last_rowid)
+        for row in metadata_rows:
+            kv_file = row.get("kv_file")
+            kv_key = row.get("kv_key")
+            if not kv_file or not kv_key:
+                continue
+            try:
+                payload = self.tensor_storage.load_tensor(kv_file, kv_key)
+            except Exception as exc:
+                self.logger.error(
+                    f"Failed to load tensor payload {kv_file}.db[{kv_key}]: {exc}"
+                )
+                continue
+
+            entries.append(
+                {
+                    "rowid": row.get("rowid"),
+                    "step": row.get("step"),
+                    "global_step": row.get("global_step"),
+                    "name": row.get("name"),
+                    "payload": payload,
+                    "tensor_meta": {
+                        "namespace": row.get("namespace"),
+                        "dtype": row.get("dtype"),
+                        "shape": row.get("shape"),
+                        "size_bytes": row.get("size_bytes"),
+                        "metadata": row.get("metadata") or {},
+                    },
+                }
+            )
+        return entries
+
+    def collect_kernel_density_since(self, last_rowid: int) -> list[dict[str, Any]]:
+        """Collect kernel density entries created after the given rowid."""
+        entries: list[dict[str, Any]] = []
+        if not hasattr(self.metadata_storage, "fetch_kernel_density_since"):
+            return entries
+
+        metadata_rows = self.metadata_storage.fetch_kernel_density_since(last_rowid)
+        for row in metadata_rows:
+            kv_file = row.get("kv_file")
+            kv_key = row.get("kv_key")
+            if not kv_file or not kv_key:
+                continue
+            try:
+                payload = self.tensor_storage.load_tensor(kv_file, kv_key)
+            except Exception as exc:
+                self.logger.error(
+                    f"Failed to load kernel density payload {kv_file}.db[{kv_key}]: {exc}"
+                )
+                continue
+
+            entries.append(
+                {
+                    "rowid": row.get("rowid"),
+                    "step": row.get("step"),
+                    "global_step": row.get("global_step"),
+                    "name": row.get("name"),
+                    "payload": payload,
+                    "kde_meta": {
+                        "kernel": row.get("kernel"),
+                        "bandwidth": row.get("bandwidth"),
+                        "sample_count": row.get("sample_count"),
+                        "range_min": row.get("range_min"),
+                        "range_max": row.get("range_max"),
+                        "num_points": row.get("num_points"),
+                        "metadata": row.get("metadata") or {},
+                    },
+                }
+            )
+        return entries
+
     def get_latest_step(self) -> dict[str, Any] | None:
         """Return latest step info from metadata storage."""
         return self.metadata_storage.get_latest_step()

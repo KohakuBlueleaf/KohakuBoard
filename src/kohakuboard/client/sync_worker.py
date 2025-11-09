@@ -4,6 +4,7 @@ Standalone thread that periodically reads from local storage and syncs
 new data to remote server using JSON payloads.
 """
 
+import base64
 import hashlib
 import io
 import json
@@ -95,6 +96,8 @@ class SyncWorker:
         self.histograms_dir = self.board_dir / "data" / "histograms"
         self.media_dir = self.board_dir / "media"
         self.media_kv_path = self.board_dir / "media" / "blobs.db"
+        self.tensors_dir = self.board_dir / "data" / "tensors"
+        self.tensor_kv_cache: dict[str, KVault] = {}
 
         # Initialize KVault storage for reading media (shared if provided)
         self.media_kv = media_kv
@@ -189,6 +192,17 @@ class SyncWorker:
             except Exception as e:
                 self.logger.warning(f"Error closing SQLite KV: {e}")
 
+        # Close tensor KV caches
+        for namespace, kv in list(self.tensor_kv_cache.items()):
+            try:
+                self.logger.debug(f"Closing tensor KV cache: {namespace}.db")
+                kv.close()
+            except Exception as e:
+                self.logger.warning(
+                    f"Error closing tensor KV cache {namespace}.db: {e}"
+                )
+        self.tensor_kv_cache.clear()
+
         self.running = False
 
     def _initial_sync(self):
@@ -217,6 +231,7 @@ class SyncWorker:
                 "media": [],
                 "tables": [],
                 "histograms": [],
+                "kernel_density": [],
                 "metadata": metadata,
                 "log_files": {},
             }
@@ -302,13 +317,13 @@ class SyncWorker:
             # Collect new data
             if self._uses_shared_storage:
                 with self.storage_lock:
-                    payload = self._collect_sync_payload_from_storage(
+                    payload, offsets = self._collect_sync_payload_from_storage(
                         start_step, end_step
                     )
                 if not self.state.get("metadata_synced", False):
                     payload["metadata"] = self._collect_metadata()
             else:
-                payload = self._collect_sync_payload(start_step, end_step)
+                payload, offsets = self._collect_sync_payload(start_step, end_step)
 
             # Collect log hashes outside the storage lock
             if "log_hashes" not in payload:
@@ -330,6 +345,12 @@ class SyncWorker:
             # Mark metadata as synced if it was included
             if payload.get("metadata"):
                 self.state["metadata_synced"] = True
+
+            # Update rowid offsets for tensors/KDE
+            tensor_rowid = offsets.get("last_tensor_rowid")
+            kde_rowid = offsets.get("last_kernel_density_rowid")
+            self._set_last_rowid("last_tensor_rowid", tensor_rowid)
+            self._set_last_rowid("last_kernel_density_rowid", kde_rowid)
 
             # Upload changed log files (compare hashes)
             # Server always returns log_hashes (even if empty dict on first sync)
@@ -360,7 +381,9 @@ class SyncWorker:
                 }
             )
 
-    def _collect_sync_payload(self, start_step: int, end_step: int) -> dict[str, Any]:
+    def _collect_sync_payload(
+        self, start_step: int, end_step: int
+    ) -> tuple[dict[str, Any], dict[str, int | None]]:
         """Collect new data from local storage
 
         Args:
@@ -368,15 +391,21 @@ class SyncWorker:
             end_step: End step (inclusive)
 
         Returns:
-            Sync payload dict
+            Tuple of (payload dict, rowid offsets)
         """
-        payload = {
+        payload: dict[str, Any] = {
             "sync_range": {"start_step": start_step, "end_step": end_step},
             "steps": [],
             "scalars": {},
             "media": [],
             "tables": [],
             "histograms": [],
+            "kernel_density": [],
+            "tensors": [],
+        }
+        offsets: dict[str, int | None] = {
+            "last_tensor_rowid": None,
+            "last_kernel_density_rowid": None,
         }
 
         # Collect steps
@@ -394,6 +423,18 @@ class SyncWorker:
         # Collect histograms from ColumnVault
         payload["histograms"] = self._collect_histograms(start_step, end_step)
 
+        # Collect tensor payloads (rowid-based)
+        last_tensor_rowid = self._get_last_rowid("last_tensor_rowid")
+        tensors, tensor_rowid = self._collect_tensors(last_tensor_rowid)
+        payload["tensors"] = tensors
+        offsets["last_tensor_rowid"] = tensor_rowid
+
+        # Collect kernel density payloads (rowid-based)
+        last_kde_rowid = self._get_last_rowid("last_kernel_density_rowid")
+        kernel_density, kde_rowid = self._collect_kernel_density(last_kde_rowid)
+        payload["kernel_density"] = kernel_density
+        offsets["last_kernel_density_rowid"] = kde_rowid
+
         # Collect metadata (only on first sync)
         if not self.state.get("metadata_synced", False):
             payload["metadata"] = self._collect_metadata()
@@ -401,11 +442,11 @@ class SyncWorker:
         # Collect log file hashes for change detection
         payload["log_hashes"] = self._collect_log_hashes()
 
-        return payload
+        return payload, offsets
 
     def _collect_sync_payload_from_storage(
         self, start_step: int, end_step: int
-    ) -> dict[str, Any]:
+    ) -> tuple[dict[str, Any], dict[str, int | None]]:
         """Collect sync payload using shared storage (lock must be held)."""
         if not self.storage:
             raise RuntimeError("Shared storage not available")
@@ -419,15 +460,51 @@ class SyncWorker:
         histograms = self.storage.histogram_storage.collect_histograms_range(
             start_step, end_step
         )
+        tensor_entries = self.storage.collect_tensors_since(
+            self._get_last_rowid("last_tensor_rowid")
+        )
+        kernel_density_entries = self.storage.collect_kernel_density_since(
+            self._get_last_rowid("last_kernel_density_rowid")
+        )
 
-        return {
+        payload = {
             "sync_range": {"start_step": start_step, "end_step": end_step},
             "steps": steps,
             "scalars": scalars,
             "media": media,
             "tables": tables,
             "histograms": histograms,
+            "kernel_density": [
+                {
+                    "step": entry["step"],
+                    "global_step": entry["global_step"],
+                    "name": entry["name"],
+                    "payload": base64.b64encode(entry["payload"]).decode("ascii"),
+                    "kde_meta": entry["kde_meta"],
+                }
+                for entry in kernel_density_entries
+            ],
+            "tensors": [
+                {
+                    "step": entry["step"],
+                    "global_step": entry["global_step"],
+                    "name": entry["name"],
+                    "payload": base64.b64encode(entry["payload"]).decode("ascii"),
+                    "tensor_meta": entry["tensor_meta"],
+                }
+                for entry in tensor_entries
+            ],
         }
+        offsets: dict[str, int | None] = {
+            "last_tensor_rowid": (
+                tensor_entries[-1]["rowid"] if tensor_entries else None
+            ),
+            "last_kernel_density_rowid": (
+                kernel_density_entries[-1]["rowid"] if kernel_density_entries else None
+            ),
+        }
+
+        return payload, offsets
 
     def _collect_steps(self, start_step: int, end_step: int) -> list[dict[str, Any]]:
         """Collect steps from SQLite"""
@@ -662,6 +739,137 @@ class SyncWorker:
             self.logger.error(f"Failed to collect histograms: {e}")
 
         return histograms
+
+    def _load_tensor_blob(self, namespace_file: str, kv_key: str) -> bytes | None:
+        """Load tensor/KDE payload from KVault."""
+        if not namespace_file or not kv_key:
+            return None
+
+        kv = self.tensor_kv_cache.get(namespace_file)
+        if kv is None:
+            db_path = self.tensors_dir / f"{namespace_file}.db"
+            if not db_path.exists():
+                self.logger.warning(
+                    f"Tensor KV file not found: {db_path}, skipping payload"
+                )
+                return None
+            try:
+                kv = KVault(str(db_path))
+                self.tensor_kv_cache[namespace_file] = kv
+            except Exception as exc:
+                self.logger.error(f"Failed to open tensor KV {db_path}: {exc}")
+                return None
+
+        try:
+            return kv.get(kv_key)
+        except Exception as exc:
+            self.logger.error(
+                f"Failed to read tensor payload {namespace_file}.db[{kv_key}]: {exc}"
+            )
+            return None
+
+    def _collect_tensors(
+        self, last_rowid: int
+    ) -> tuple[list[dict[str, Any]], int | None]:
+        """Collect tensor entries newer than last_rowid."""
+        if not self.sqlite_db.exists():
+            return [], None
+
+        conn = sqlite3.connect(str(self.sqlite_db))
+        try:
+            cursor = conn.execute(
+                """
+                SELECT rowid, step, global_step, name, kv_file, kv_key, dtype,
+                       shape, size_bytes, metadata
+                FROM tensors
+                WHERE rowid > ?
+                ORDER BY rowid ASC
+                """,
+                (last_rowid,),
+            )
+            rows = cursor.fetchall()
+        finally:
+            conn.close()
+
+        entries: list[dict[str, Any]] = []
+        max_rowid = None
+        for row in rows:
+            payload_bytes = self._load_tensor_blob(row[4], row[5])
+            if not payload_bytes:
+                continue
+
+            tensor_meta = {
+                "dtype": row[6],
+                "shape": json.loads(row[7]) if row[7] else [],
+                "size_bytes": int(row[8]) if row[8] is not None else None,
+                "metadata": json.loads(row[9]) if row[9] else {},
+            }
+
+            entries.append(
+                {
+                    "step": int(row[1]),
+                    "global_step": int(row[2]) if row[2] is not None else None,
+                    "name": row[3],
+                    "payload": base64.b64encode(payload_bytes).decode("ascii"),
+                    "tensor_meta": tensor_meta,
+                }
+            )
+            max_rowid = int(row[0])
+
+        return entries, max_rowid
+
+    def _collect_kernel_density(
+        self, last_rowid: int
+    ) -> tuple[list[dict[str, Any]], int | None]:
+        """Collect kernel density entries newer than last_rowid."""
+        if not self.sqlite_db.exists():
+            return [], None
+
+        conn = sqlite3.connect(str(self.sqlite_db))
+        try:
+            cursor = conn.execute(
+                """
+                SELECT rowid, step, global_step, name, kv_file, kv_key, kernel, bandwidth,
+                       sample_count, range_min, range_max, num_points, metadata
+                FROM kernel_density
+                WHERE rowid > ?
+                ORDER BY rowid ASC
+                """,
+                (last_rowid,),
+            )
+            rows = cursor.fetchall()
+        finally:
+            conn.close()
+
+        entries: list[dict[str, Any]] = []
+        max_rowid = None
+        for row in rows:
+            payload_bytes = self._load_tensor_blob(row[4], row[5])
+            if not payload_bytes:
+                continue
+
+            kde_meta = {
+                "kernel": row[6],
+                "bandwidth": row[7],
+                "sample_count": int(row[8]) if row[8] is not None else None,
+                "range_min": float(row[9]) if row[9] is not None else None,
+                "range_max": float(row[10]) if row[10] is not None else None,
+                "num_points": int(row[11]) if row[11] is not None else None,
+                "metadata": json.loads(row[12]) if row[12] else {},
+            }
+
+            entries.append(
+                {
+                    "step": int(row[1]),
+                    "global_step": int(row[2]) if row[2] is not None else None,
+                    "name": row[3],
+                    "payload": base64.b64encode(payload_bytes).decode("ascii"),
+                    "kde_meta": kde_meta,
+                }
+            )
+            max_rowid = int(row[0])
+
+        return entries, max_rowid
 
     def _collect_metadata(self) -> dict[str, Any] | None:
         """Collect metadata.json
@@ -1034,6 +1242,16 @@ class SyncWorker:
         """
         return self.backoff_base**attempts
 
+    def _get_last_rowid(self, key: str) -> int:
+        return int(self.state.get(key, -1))
+
+    def _set_last_rowid(self, key: str, value: int | None):
+        if value is None:
+            return
+        previous = int(self.state.get(key, -1))
+        if value > previous:
+            self.state[key] = value
+
     def _load_state(self) -> dict[str, Any]:
         """Load sync state from JSON file
 
@@ -1049,6 +1267,8 @@ class SyncWorker:
                     "remote_url": self.remote_url,
                     "project": self.project,
                     "run_id": self.run_id,
+                    "last_tensor_rowid": -1,
+                    "last_kernel_density_rowid": -1,
                 }
             return self._memory_state
 
@@ -1060,6 +1280,8 @@ class SyncWorker:
                 "remote_url": self.remote_url,
                 "project": self.project,
                 "run_id": self.run_id,
+                "last_tensor_rowid": -1,
+                "last_kernel_density_rowid": -1,
                 # Log file hashes stored as: log_hash_<filename>
             }
 
@@ -1069,6 +1291,8 @@ class SyncWorker:
                 # Add new fields if missing (for backward compatibility)
                 # Log file hashes are managed separately per file
                 state.setdefault("metadata_synced", False)
+                state.setdefault("last_tensor_rowid", -1)
+                state.setdefault("last_kernel_density_rowid", -1)
                 return state
         except Exception as e:
             self.logger.warning(f"Failed to load sync state: {e}, using defaults")
@@ -1079,6 +1303,8 @@ class SyncWorker:
                 "remote_url": self.remote_url,
                 "project": self.project,
                 "run_id": self.run_id,
+                "last_tensor_rowid": -1,
+                "last_kernel_density_rowid": -1,
                 # Log file hashes stored as: log_hash_<filename>
             }
 

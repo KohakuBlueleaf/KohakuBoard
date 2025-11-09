@@ -482,6 +482,106 @@ class SQLiteMetadataStorage:
             )
         return tables
 
+    def fetch_kernel_density_range(
+        self, start_step: int, end_step: int
+    ) -> list[dict[str, Any]]:
+        """Fetch kernel density metadata within step range inclusive."""
+        cursor = self.conn.execute(
+            """
+            SELECT step, global_step, name, kv_file, kv_key, kernel, bandwidth,
+                   sample_count, range_min, range_max, num_points, metadata
+            FROM kernel_density
+            WHERE step >= ? AND step <= ?
+            ORDER BY step ASC
+            """,
+            (start_step, end_step),
+        )
+        entries: list[dict[str, Any]] = []
+        for row in cursor.fetchall():
+            meta = json.loads(row[11]) if row[11] else {}
+            entries.append(
+                {
+                    "step": int(row[0]),
+                    "global_step": int(row[1]) if row[1] is not None else None,
+                    "name": row[2],
+                    "kv_file": row[3],
+                    "kv_key": row[4],
+                    "kernel": row[5],
+                    "bandwidth": row[6],
+                    "sample_count": int(row[7]) if row[7] is not None else None,
+                    "range_min": float(row[8]) if row[8] is not None else None,
+                    "range_max": float(row[9]) if row[9] is not None else None,
+                    "num_points": int(row[10]) if row[10] is not None else None,
+                    "metadata": meta,
+                }
+            )
+        return entries
+
+    def fetch_tensors_since(self, last_rowid: int) -> list[dict[str, Any]]:
+        """Fetch tensor metadata rows with rowid greater than last_rowid."""
+        cursor = self.conn.execute(
+            """
+            SELECT rowid, step, global_step, name, namespace, kv_file, kv_key,
+                   dtype, shape, size_bytes, metadata
+            FROM tensors
+            WHERE rowid > ?
+            ORDER BY rowid ASC
+            """,
+            (last_rowid,),
+        )
+        results: list[dict[str, Any]] = []
+        for row in cursor.fetchall():
+            results.append(
+                {
+                    "rowid": int(row[0]),
+                    "step": int(row[1]),
+                    "global_step": int(row[2]) if row[2] is not None else None,
+                    "name": row[3],
+                    "namespace": row[4],
+                    "kv_file": row[5],
+                    "kv_key": row[6],
+                    "dtype": row[7],
+                    "shape": json.loads(row[8]) if row[8] else [],
+                    "size_bytes": int(row[9]) if row[9] is not None else None,
+                    "metadata": json.loads(row[10]) if row[10] else {},
+                }
+            )
+        return results
+
+    def fetch_kernel_density_since(self, last_rowid: int) -> list[dict[str, Any]]:
+        """Fetch kernel density rows with rowid greater than last_rowid."""
+        cursor = self.conn.execute(
+            """
+            SELECT rowid, step, global_step, name, kv_file, kv_key, kernel, bandwidth,
+                   sample_count, range_min, range_max, num_points, metadata
+            FROM kernel_density
+            WHERE rowid > ?
+            ORDER BY rowid ASC
+            """,
+            (last_rowid,),
+        )
+        entries: list[dict[str, Any]] = []
+        for row in cursor.fetchall():
+            meta = json.loads(row[12]) if row[12] else {}
+            entries.append(
+                {
+                    "rowid": int(row[0]),
+                    "step": int(row[1]),
+                    "global_step": int(row[2]) if row[2] is not None else None,
+                    "name": row[3],
+                    "kv_file": row[4],
+                    "kv_key": row[5],
+                    "kernel": row[6],
+                    "bandwidth": row[7],
+                    "sample_count": int(row[8]) if row[8] is not None else None,
+                    "range_min": float(row[9]) if row[9] is not None else None,
+                    "range_max": float(row[10]) if row[10] is not None else None,
+                    "num_points": int(row[11]) if row[11] is not None else None,
+                    "metadata": meta,
+                }
+            )
+        return entries
+
     def list_tensor_names(self) -> list[str]:
         """Return sorted tensor log names."""
         cursor = self.conn.execute(
