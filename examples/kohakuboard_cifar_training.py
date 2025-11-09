@@ -137,6 +137,11 @@ def main():
         help="Warmup ratio (default: 0.1)",
     )
     parser.add_argument(
+        "--enable-sync",
+        action="store_true",
+        help="Enable sync with remote server",
+    )
+    parser.add_argument(
         "--remote-url",
         type=str,
         default="http://127.0.0.1:48889",
@@ -163,7 +168,7 @@ def main():
     args = parser.parse_args()
 
     # Enable sync if remote URL is provided
-    sync_enabled = args.remote_url is not None
+    sync_enabled = args.enable_sync
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     device = "mps" if torch.mps.is_available() else device
