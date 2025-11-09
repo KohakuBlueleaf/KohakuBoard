@@ -511,11 +511,7 @@ async def batch_get_run_summaries(
         try:
             run_path = get_run_path(project, run_id)
             reader = BoardReader(run_path)
-
-            def get_summary_sync():
-                return reader.get_summary()
-
-            summary = await asyncio.to_thread(get_summary_sync)
+            summary = reader.get_summary()
 
             # Filter out params/ and gradients/ from all metric types
             filtered_summary = summary.copy()
