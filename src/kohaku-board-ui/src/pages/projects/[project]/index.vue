@@ -208,12 +208,29 @@ const maxSidebarWidth = 600;
 const isSidebarCollapsed = ref(true); // Start collapsed on mobile
 const isResizingSidebar = ref(false);
 
-// Global settings
-const globalSettings = ref({
+// Global settings (per tab)
+const DEFAULT_TAB_NAME = "Metrics";
+const createDefaultTabSettings = () => ({
   xAxis: "global_step",
   smoothing: "disabled",
   smoothingValue: 0.9,
   downsampleRate: -1,
+});
+
+const tabSettings = reactive({
+  [DEFAULT_TAB_NAME]: createDefaultTabSettings(),
+});
+function ensureTabSettingsEntry(tabName) {
+  const name = tabName || DEFAULT_TAB_NAME;
+  if (!tabSettings[name]) {
+    tabSettings[name] = createDefaultTabSettings();
+  }
+}
+
+const currentTabSettings = computed(() => {
+  const tabName = activeTab.value || DEFAULT_TAB_NAME;
+  ensureTabSettingsEntry(tabName);
+  return tabSettings[tabName];
 });
 
 const PROJECT_LAYOUT_KEY_PREFIX = "project-dashboard-layout";
@@ -676,8 +693,22 @@ async function initializeProject() {
       activeTab.value = savedLayout.activeTab || "Metrics";
       nextCardId.value = savedLayout.nextCardId || 1;
 
-      if (savedLayout.globalSettings) {
-        globalSettings.value = savedLayout.globalSettings;
+      if (savedLayout.tabSettings) {
+        for (const [tabName, settings] of Object.entries(
+          savedLayout.tabSettings,
+        )) {
+          tabSettings[tabName] = {
+            ...createDefaultTabSettings(),
+            ...settings,
+          };
+        }
+      } else if (savedLayout.globalSettings) {
+        tabSettings[DEFAULT_TAB_NAME] = {
+          ...createDefaultTabSettings(),
+          ...savedLayout.globalSettings,
+        };
+      } else {
+        tabSettings[DEFAULT_TAB_NAME] = createDefaultTabSettings();
       }
 
       if (savedLayout.customRunColors) {
@@ -696,6 +727,9 @@ async function initializeProject() {
     // Build default cards if no saved layout
     if (savedLayout?.tabs) {
       tabs.value = sanitizeProjectTabs(savedLayout.tabs);
+      for (const tab of tabs.value) {
+        ensureTabSettingsEntry(tab.name);
+      }
     } else {
       buildDefaultTabs();
     }
@@ -809,7 +843,10 @@ function sanitizeProjectTabs(rawTabs) {
     });
   });
 
-  return sanitized.length > 0 ? sanitized : [{ name: "Metrics", cards: [] }];
+  const result =
+    sanitized.length > 0 ? sanitized : [{ name: "Metrics", cards: [] }];
+  result.forEach((tab) => ensureTabSettingsEntry(tab.name));
+  return result;
 }
 
 function createDefaultCard(metric, xMetric = "global_step") {
@@ -869,12 +906,14 @@ function ensureDefaultCardsPresent() {
 
   if (tabs.value.length === 0) {
     tabs.value = [{ name: "Metrics", cards: [] }];
+    ensureTabSettingsEntry("Metrics");
   }
 
   let metricsTab = tabs.value.find((t) => t.name === "Metrics");
   if (!metricsTab) {
     metricsTab = { name: "Metrics", cards: [] };
     tabs.value.unshift(metricsTab);
+    ensureTabSettingsEntry("Metrics");
   }
 
   for (const metric of namespaceMap.get("") || []) {
@@ -887,6 +926,7 @@ function ensureDefaultCardsPresent() {
     if (!namespaceTab) {
       namespaceTab = { name: namespace, cards: [] };
       tabs.value.push(namespaceTab);
+      ensureTabSettingsEntry(namespace);
     }
     for (const metric of metrics) {
       namespaceTab.cards.push(createDefaultCard(metric, "step"));
@@ -968,6 +1008,9 @@ function buildDefaultTabs() {
   }
 
   tabs.value = newTabs.length > 0 ? newTabs : [{ name: "Metrics", cards: [] }];
+  for (const tab of tabs.value) {
+    ensureTabSettingsEntry(tab.name);
+  }
   nextCardId.value = cardId;
 }
 
@@ -980,10 +1023,7 @@ async function fetchMetricsForTab(forceRefresh = false) {
     const tab = tabs.value.find((t) => t.name === activeTab.value);
     if (!tab) return;
 
-    const computedMetrics = new Set([
-      "walltime",
-      "relative_walltime",
-    ]);
+    const computedMetrics = new Set(["walltime", "relative_walltime"]);
     const neededMetrics = new Set();
 
     for (const card of tab.cards) {
@@ -1327,6 +1367,37 @@ watch(activeTab, () => {
   saveLayout();
 });
 
+watch(
+  () =>
+    tabs.value.map((tab) =>
+      tab.cards.map((card) => ({
+        id: card.id,
+        width: card.config.widthPercent,
+        height: card.config.height,
+      })),
+    ),
+  () => {
+    scheduleAutoLayoutSave();
+  },
+  { deep: true },
+);
+
+watch(
+  tabSettings,
+  () => {
+    scheduleAutoLayoutSave();
+  },
+  { deep: true },
+);
+
+function serializeTabSettings() {
+  const result = {};
+  for (const [tabName, settings] of Object.entries(tabSettings)) {
+    result[tabName] = { ...settings };
+  }
+  return result;
+}
+
 function saveLayout() {
   // Save hidden runs (inverse of selected)
   const allRunIds = new Set(allRuns.value.map((r) => r.run_id));
@@ -1338,13 +1409,25 @@ function saveLayout() {
     tabs: tabs.value,
     activeTab: activeTab.value,
     nextCardId: nextCardId.value,
-    globalSettings: globalSettings.value,
+    tabSettings: serializeTabSettings(),
     customRunColors: customRunColors.value, // Save custom color mappings
     sidebarWidth: sidebarWidth.value, // Save sidebar width
     hiddenRunIds: hiddenRunIds, // Save which runs are hidden
     removedMetrics: Array.from(removedMetrics.value),
   };
   localStorage.setItem(storageKey.value, JSON.stringify(layout));
+}
+
+let pendingLayoutSave = null;
+function scheduleAutoLayoutSave() {
+  if (isInitializing.value) return;
+  if (pendingLayoutSave) {
+    clearTimeout(pendingLayoutSave);
+  }
+  pendingLayoutSave = setTimeout(() => {
+    saveLayout();
+    pendingLayoutSave = null;
+  }, 250);
 }
 
 function calculateRows(cards) {
@@ -1368,15 +1451,23 @@ function calculateRows(cards) {
 
 function lineMetricsChanged(prevConfig, nextConfig) {
   if (!prevConfig || !nextConfig) return false;
-  if (prevConfig.type !== "line" || nextConfig.type !== "line") return false;
-  if (prevConfig.xMetric !== nextConfig.xMetric) return true;
+  const prevType = prevConfig.type || "line";
+  const nextType = nextConfig.type || prevType;
+  if (prevType !== "line" || nextType !== "line") return false;
+
+  const prevX = prevConfig.xMetric;
+  const nextX = nextConfig.xMetric !== undefined ? nextConfig.xMetric : prevX;
+  if (prevX !== nextX) return true;
 
   const prevMetrics = Array.isArray(prevConfig.yMetrics)
     ? [...new Set(prevConfig.yMetrics)]
     : [];
-  const nextMetrics = Array.isArray(nextConfig.yMetrics)
-    ? [...new Set(nextConfig.yMetrics)]
-    : [];
+  const nextMetrics =
+    nextConfig.yMetrics === undefined
+      ? prevMetrics
+      : Array.isArray(nextConfig.yMetrics)
+        ? [...new Set(nextConfig.yMetrics)]
+        : [];
 
   if (prevMetrics.length !== nextMetrics.length) return true;
   const prevSet = new Set(prevMetrics);
@@ -1425,12 +1516,12 @@ function updateCard({ id, config, syncAll, realtime }) {
       }
     } finally {
       if (!realtime) {
+        saveLayout();
+        if (metricsChanged) {
+          fetchMetricsForTab();
+        }
         nextTick(() => {
           isUpdating.value = false;
-          saveLayout();
-          if (metricsChanged) {
-            fetchMetricsForTab();
-          }
         });
       }
     }
@@ -1486,12 +1577,12 @@ function updateCard({ id, config, syncAll, realtime }) {
       }
     }
   } finally {
+    saveLayout();
+    if (metricsChanged) {
+      fetchMetricsForTab();
+    }
     nextTick(() => {
       isUpdating.value = false;
-      saveLayout();
-      if (metricsChanged) {
-        fetchMetricsForTab();
-      }
     });
   }
 }
@@ -1572,15 +1663,16 @@ function onDragEnd(evt) {
 function applyGlobalSettings() {
   const tabIndex = tabs.value.findIndex((t) => t.name === activeTab.value);
   if (tabIndex === -1) return;
+  const settings = currentTabSettings.value;
 
   const newCards = tabs.value[tabIndex].cards.map((card) => {
     const newConfig = { ...card.config };
 
     if (card.config.type === "line") {
-      newConfig.xMetric = globalSettings.value.xAxis;
-      newConfig.smoothingMode = globalSettings.value.smoothing;
-      newConfig.smoothingValue = globalSettings.value.smoothingValue;
-      newConfig.downsampleRate = globalSettings.value.downsampleRate;
+      newConfig.xMetric = settings.xAxis;
+      newConfig.smoothingMode = settings.smoothing;
+      newConfig.smoothingValue = settings.smoothingValue;
+      newConfig.downsampleRate = settings.downsampleRate;
     }
 
     return { ...card, config: newConfig };
@@ -1648,6 +1740,10 @@ function resetLayout() {
     confirm("Reset to default layout? This will remove all customizations.")
   ) {
     removedMetrics.value = new Set();
+    for (const key of Object.keys(tabSettings)) {
+      delete tabSettings[key];
+    }
+    ensureTabSettingsEntry(DEFAULT_TAB_NAME);
     localStorage.removeItem(storageKey.value);
     location.reload();
   }
@@ -1718,6 +1814,10 @@ onUnmounted(() => {
   // Cleanup polling
   if (pollInterval) {
     clearInterval(pollInterval);
+  }
+  if (pendingLayoutSave) {
+    clearTimeout(pendingLayoutSave);
+    pendingLayoutSave = null;
   }
 });
 </script>
@@ -1997,7 +2097,7 @@ onUnmounted(() => {
         <el-divider content-position="left">Line Chart Settings</el-divider>
 
         <el-form-item label="X-Axis">
-          <el-select v-model="globalSettings.xAxis" class="w-full">
+          <el-select v-model="currentTabSettings.xAxis" class="w-full">
             <el-option
               v-for="metric in availableMetrics"
               :key="metric"
@@ -2008,7 +2108,7 @@ onUnmounted(() => {
         </el-form-item>
 
         <el-form-item label="Smoothing">
-          <el-select v-model="globalSettings.smoothing" class="w-full">
+          <el-select v-model="currentTabSettings.smoothing" class="w-full">
             <el-option label="Disabled" value="disabled" />
             <el-option label="EMA" value="ema" />
             <el-option label="Moving Average" value="ma" />
@@ -2017,21 +2117,21 @@ onUnmounted(() => {
         </el-form-item>
 
         <el-form-item
-          v-if="globalSettings.smoothing !== 'disabled'"
+          v-if="currentTabSettings.smoothing !== 'disabled'"
           label="Smoothing Value"
         >
           <el-input-number
-            v-model="globalSettings.smoothingValue"
+            v-model="currentTabSettings.smoothingValue"
             :min="0"
-            :max="globalSettings.smoothing === 'ema' ? 1 : 1000"
-            :step="globalSettings.smoothing === 'ema' ? 0.01 : 1"
+            :max="currentTabSettings.smoothing === 'ema' ? 1 : 1000"
+            :step="currentTabSettings.smoothing === 'ema' ? 0.01 : 1"
             class="w-full"
           />
         </el-form-item>
 
         <el-form-item label="Downsample Rate">
           <el-input-number
-            v-model="globalSettings.downsampleRate"
+            v-model="currentTabSettings.downsampleRate"
             :min="-1"
             :max="100"
             class="w-full"

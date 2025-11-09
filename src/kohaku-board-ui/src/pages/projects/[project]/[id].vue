@@ -49,7 +49,11 @@ const showAddChartDialog = ref(false);
 const newChartType = ref("line");
 const newChartValue = ref([]); // Array for line charts, string for others
 const isInitializing = ref(true); // Prevent watch triggers during init
-const removedMetrics = ref(new Set()); // Track explicitly removed metrics
+const removedMetrics = ref(new Set()); // Track explicitly removed scalar metrics
+const removedTables = ref(new Set());
+const removedHistograms = ref(new Set());
+const removedMedia = ref(new Set());
+const layoutPersistenceEnabled = ref(false);
 
 async function hydrateRunNameFromProjectList(runId) {
   if (!currentProject.value || !runId) return;
@@ -240,7 +244,8 @@ onUnmounted(() => {
 });
 
 // Global settings (apply to all cards in current tab)
-const globalSettings = ref({
+const DEFAULT_TAB_NAME = "Metrics";
+const createDefaultTabSettings = () => ({
   xAxis: "global_step",
   smoothing: "disabled",
   smoothingValue: 0.9,
@@ -248,9 +253,26 @@ const globalSettings = ref({
   downsampleRate: -1, // -1 = adaptive
 });
 
+const tabSettings = reactive({
+  [DEFAULT_TAB_NAME]: createDefaultTabSettings(),
+});
+function ensureTabSettingsEntry(tabName) {
+  const name = tabName || DEFAULT_TAB_NAME;
+  if (!tabSettings[name]) {
+    tabSettings[name] = createDefaultTabSettings();
+  }
+}
+
+const currentTabSettings = computed(() => {
+  const tabName = activeTab.value || DEFAULT_TAB_NAME;
+  ensureTabSettingsEntry(tabName);
+  return tabSettings[tabName];
+});
+
 // Use project-level storage key (same layout shared across all runs in project)
 const RUN_LAYOUT_KEY_PREFIX = "run-layout";
 const LEGACY_PROJECT_LAYOUT_PREFIX = "project-layout";
+const RUN_LAYOUT_SCHEMA_VERSION = 2;
 
 const storageKey = computed(
   () => `${RUN_LAYOUT_KEY_PREFIX}-${route.params.project}-${route.params.id}`,
@@ -258,6 +280,12 @@ const storageKey = computed(
 const legacyStorageKey = computed(
   () => `${LEGACY_PROJECT_LAYOUT_PREFIX}-${route.params.project}`,
 );
+
+function enableLayoutPersistence() {
+  if (!layoutPersistenceEnabled.value) {
+    layoutPersistenceEnabled.value = true;
+  }
+}
 
 function parseRunLayout(rawValue, label) {
   if (!rawValue) return null;
@@ -268,6 +296,15 @@ function parseRunLayout(rawValue, label) {
     }
     if (!Array.isArray(parsed.removedMetrics)) {
       parsed.removedMetrics = [];
+    }
+    if (!Array.isArray(parsed.removedTables)) {
+      parsed.removedTables = [];
+    }
+    if (!Array.isArray(parsed.removedHistograms)) {
+      parsed.removedHistograms = [];
+    }
+    if (!Array.isArray(parsed.removedMedia)) {
+      parsed.removedMedia = [];
     }
     return parsed;
   } catch (error) {
@@ -367,17 +404,40 @@ async function initializeExperiment() {
     const savedLayout = loadRunLayoutFromStorage();
 
     if (savedLayout) {
+      layoutPersistenceEnabled.value = true;
       activeTab.value = savedLayout.activeTab || "Metrics";
       nextCardId.value = savedLayout.nextCardId || 1;
 
-      // Load global settings if saved
-      if (savedLayout.globalSettings) {
-        globalSettings.value = savedLayout.globalSettings;
+      if (savedLayout.tabSettings) {
+        for (const [tabName, settings] of Object.entries(
+          savedLayout.tabSettings,
+        )) {
+          tabSettings[tabName] = {
+            ...createDefaultTabSettings(),
+            ...settings,
+          };
+        }
+      } else if (savedLayout.globalSettings) {
+        tabSettings[DEFAULT_TAB_NAME] = {
+          ...createDefaultTabSettings(),
+          ...savedLayout.globalSettings,
+        };
+      } else {
+        tabSettings[DEFAULT_TAB_NAME] = createDefaultTabSettings();
       }
 
       // Load removed metrics list
       if (savedLayout.removedMetrics) {
         removedMetrics.value = new Set(savedLayout.removedMetrics);
+      }
+      if (savedLayout.removedTables) {
+        removedTables.value = new Set(savedLayout.removedTables);
+      }
+      if (savedLayout.removedHistograms) {
+        removedHistograms.value = new Set(savedLayout.removedHistograms);
+      }
+      if (savedLayout.removedMedia) {
+        removedMedia.value = new Set(savedLayout.removedMedia);
       }
     }
 
@@ -405,9 +465,13 @@ async function initializeExperiment() {
     // If we have saved layout, use it as base and add new metrics
     if (savedLayout?.tabs) {
       tabs.value = savedLayout.tabs;
+      for (const tab of tabs.value) {
+        ensureTabSettingsEntry(tab.name);
+      }
 
       // Add default cards for new metrics to appropriate tabs
       let cardId = nextCardId.value;
+      let layoutChanged = false;
       // Metrics that should NOT have default charts (only for axis selection)
       const axisOnlyMetrics = new Set([
         "step",
@@ -454,6 +518,7 @@ async function initializeExperiment() {
               yMetrics: [metric],
             },
           });
+          layoutChanged = true;
         }
       }
 
@@ -467,6 +532,7 @@ async function initializeExperiment() {
           // Create new tab for this namespace
           namespaceTab = { name: namespace, cards: [] };
           tabs.value.push(namespaceTab);
+          ensureTabSettingsEntry(namespace);
           console.log(`[Init] Created new tab for namespace: ${namespace}`);
         }
 
@@ -483,12 +549,28 @@ async function initializeExperiment() {
               yMetrics: [metric],
             },
           });
+          layoutChanged = true;
         }
       }
 
+      const { addedAny, nextCardId: updatedCardId } = ensureNonScalarDefaults(
+        summary,
+        cardId,
+      );
+      cardId = updatedCardId;
+      if (addedAny) {
+        layoutChanged = true;
+      }
+
       nextCardId.value = cardId;
+
+      if (layoutChanged) {
+        console.log("[Layout] Saved layout updated with new default cards");
+        saveLayout();
+      }
     } else {
       // No saved layout - create default layout
+      tabSettings[DEFAULT_TAB_NAME] = createDefaultTabSettings();
       const cards = [];
       let cardId = 1;
 
@@ -569,6 +651,9 @@ async function initializeExperiment() {
 
       // Add tables to namespace tabs
       for (const tableName of summary.available_data?.tables || []) {
+        if (removedTables.value.has(tableName)) {
+          continue;
+        }
         const slashIdx = tableName.indexOf("/");
         if (slashIdx > 0) {
           const namespace = tableName.substring(0, slashIdx);
@@ -591,6 +676,9 @@ async function initializeExperiment() {
 
       // Add histograms to namespace tabs
       for (const histName of summary.available_data?.histograms || []) {
+        if (removedHistograms.value.has(histName)) {
+          continue;
+        }
         const slashIdx = histName.indexOf("/");
         if (slashIdx > 0) {
           const namespace = histName.substring(0, slashIdx);
@@ -623,12 +711,13 @@ async function initializeExperiment() {
       for (const [namespace, namespaceCards] of tabsByNamespace.entries()) {
         if (namespaceCards.length > 0) {
           tabs.value.push({ name: namespace, cards: namespaceCards });
+          ensureTabSettingsEntry(namespace);
         }
       }
 
       // Media/tables/histograms without namespace go to main tab
       for (const mediaName of summary.available_data?.media || []) {
-        if (!mediaName.includes("/")) {
+        if (!mediaName.includes("/") && !removedMedia.value.has(mediaName)) {
           cards.push({
             id: `card-${cardId++}`,
             config: {
@@ -644,7 +733,7 @@ async function initializeExperiment() {
       }
 
       for (const tableName of summary.available_data?.tables || []) {
-        if (!tableName.includes("/")) {
+        if (!tableName.includes("/") && !removedTables.value.has(tableName)) {
           cards.push({
             id: `card-${cardId++}`,
             config: {
@@ -660,7 +749,7 @@ async function initializeExperiment() {
       }
 
       for (const histName of summary.available_data?.histograms || []) {
-        if (!histName.includes("/")) {
+        if (!histName.includes("/") && !removedHistograms.value.has(histName)) {
           cards.push({
             id: `card-${cardId++}`,
             config: {
@@ -699,6 +788,119 @@ async function initializeExperiment() {
   }
 }
 
+function ensureNonScalarDefaults(summary, startingCardId = nextCardId.value) {
+  let nextId = startingCardId;
+  let addedAny = false;
+
+  if (tabs.value.length === 0) {
+    tabs.value = [{ name: "Metrics", cards: [] }];
+  }
+
+  const getOrCreateTab = (tabName) => {
+    let tab = tabs.value.find((t) => t.name === tabName);
+    if (!tab) {
+      tab = { name: tabName, cards: [] };
+      tabs.value.push(tab);
+      console.log(`[Layout] Created tab '${tabName}' for default artifacts`);
+    }
+    return tab;
+  };
+
+  const registerCard = (tab, config) => {
+    tab.cards.push({
+      id: `card-${nextId++}`,
+      config,
+    });
+    addedAny = true;
+  };
+
+  const existingTables = new Set();
+  const existingHistograms = new Set();
+  const existingMedia = new Set();
+
+  for (const tab of tabs.value) {
+    for (const card of tab.cards) {
+      if (card.config.type === "table" && card.config.tableName) {
+        existingTables.add(card.config.tableName);
+      } else if (
+        card.config.type === "histogram" &&
+        card.config.histogramName
+      ) {
+        existingHistograms.add(card.config.histogramName);
+      } else if (card.config.type === "media" && card.config.mediaName) {
+        existingMedia.add(card.config.mediaName);
+      }
+    }
+  }
+
+  const summaryData = summary?.available_data || {};
+
+  for (const tableName of summaryData.tables || []) {
+    if (removedTables.value.has(tableName) || existingTables.has(tableName)) {
+      continue;
+    }
+    const slashIdx = tableName.indexOf("/");
+    const namespace = slashIdx > 0 ? tableName.substring(0, slashIdx) : "";
+    const targetTab =
+      namespace !== "" ? getOrCreateTab(namespace) : getOrCreateTab("Metrics");
+
+    registerCard(targetTab, {
+      type: "table",
+      title: tableName,
+      widthPercent: 50,
+      height: 400,
+      tableName,
+      currentStep: 0,
+    });
+    existingTables.add(tableName);
+  }
+
+  for (const histName of summaryData.histograms || []) {
+    if (
+      removedHistograms.value.has(histName) ||
+      existingHistograms.has(histName)
+    ) {
+      continue;
+    }
+    const slashIdx = histName.indexOf("/");
+    const namespace = slashIdx > 0 ? histName.substring(0, slashIdx) : "";
+    const targetTab =
+      namespace !== "" ? getOrCreateTab(namespace) : getOrCreateTab("Metrics");
+    const defaultMode =
+      namespace === "gradients" || namespace === "params" ? "flow" : "single";
+
+    registerCard(targetTab, {
+      type: "histogram",
+      title: histName,
+      widthPercent: 33,
+      height: 400,
+      histogramName: histName,
+      currentStep: 0,
+      histogramMode: defaultMode,
+    });
+    existingHistograms.add(histName);
+  }
+
+  for (const mediaName of summaryData.media || []) {
+    if (mediaName.includes("/")) continue;
+    if (removedMedia.value.has(mediaName) || existingMedia.has(mediaName)) {
+      continue;
+    }
+    const targetTab = getOrCreateTab("Metrics");
+    registerCard(targetTab, {
+      type: "media",
+      title: mediaName,
+      widthPercent: 33,
+      height: 400,
+      mediaName,
+      currentStep: 0,
+    });
+    existingMedia.add(mediaName);
+  }
+
+  return { addedAny, nextCardId: nextId };
+}
+
 onMounted(() => {
   initializeExperiment();
 });
@@ -706,6 +908,10 @@ onMounted(() => {
 onUnmounted(() => {
   // Stop polling when leaving page
   stopPolling();
+  if (pendingLayoutSave) {
+    clearTimeout(pendingLayoutSave);
+    pendingLayoutSave = null;
+  }
 });
 
 async function determineDefaultXAxis() {
@@ -740,6 +946,31 @@ async function determineDefaultXAxis() {
   } catch (error) {
     console.error("Failed to determine default x-axis:", error);
   }
+}
+
+function ensureAxisArray(key, targetSize) {
+  if (!metricDataCache.value[key]) {
+    metricDataCache.value[key] = new Array(targetSize).fill(null);
+    return metricDataCache.value[key];
+  }
+
+  const arr = metricDataCache.value[key];
+  if (arr.length < targetSize) {
+    const originalLength = arr.length;
+    arr.length = targetSize;
+    for (let i = originalLength; i < targetSize; i++) {
+      arr[i] = null;
+    }
+  }
+  return arr;
+}
+
+function ensureAxisArrays(targetSize) {
+  return {
+    step: ensureAxisArray("step", targetSize),
+    global_step: ensureAxisArray("global_step", targetSize),
+    timestamp: ensureAxisArray("timestamp", targetSize),
+  };
 }
 
 async function fetchMetricsForTab(forceRefresh = false) {
@@ -869,6 +1100,10 @@ async function fetchMetricsForTab(forceRefresh = false) {
           );
 
           const sparseArray = new Array(targetSize).fill(null);
+          let axisArrays = null;
+          if (result.steps && result.steps.length > 0) {
+            axisArrays = ensureAxisArrays(targetSize);
+          }
 
           for (let i = 0; i < result.steps.length; i++) {
             const step = result.steps[i];
@@ -885,28 +1120,30 @@ async function fetchMetricsForTab(forceRefresh = false) {
             }
 
             sparseArray[step] = value;
+
+            if (axisArrays) {
+              axisArrays.step[step] = step;
+              if (Array.isArray(result.global_steps)) {
+                const globalStepValue = result.global_steps[i];
+                if (globalStepValue !== null && globalStepValue !== undefined) {
+                  axisArrays.global_step[step] = globalStepValue;
+                }
+              }
+              if (Array.isArray(result.timestamps)) {
+                const tsSeconds = result.timestamps[i];
+                if (tsSeconds !== null && tsSeconds !== undefined) {
+                  axisArrays.timestamp[step] = new Date(
+                    tsSeconds * 1000,
+                  ).toISOString();
+                }
+              }
+            }
           }
 
           metricDataCache.value[metric] = sparseArray;
           console.log(
             `[fetchMetricsForTab] Stored ${metric} in cache: ${sparseArray.length} slots, ${sparseArray.filter((v) => v !== null).length} non-null values`,
           );
-
-          // Also store timestamp data if available (as Unix seconds)
-          if (result.timestamps && result.timestamps.length > 0) {
-            const timestampArray = new Array(sparseArray.length).fill(null);
-            for (let i = 0; i < result.steps.length; i++) {
-              const step = result.steps[i];
-              const unixSeconds = result.timestamps[i];
-              if (unixSeconds !== null) {
-                // Convert Unix seconds to ISO string for consistency
-                timestampArray[step] = new Date(
-                  unixSeconds * 1000,
-                ).toISOString();
-              }
-            }
-            metricDataCache.value[`${metric}_timestamp`] = timestampArray;
-          }
         } catch (error) {
           console.error(`Failed to fetch metric ${metric}:`, error);
           // Set empty array so card can still render
@@ -971,6 +1208,7 @@ const currentTabCards = computed({
     const tab = tabs.value.find((t) => t.name === activeTab.value);
     if (tab) {
       tab.cards = newCards;
+      enableLayoutPersistence();
       saveLayout();
     }
   },
@@ -1048,6 +1286,29 @@ watch(
       initializeExperiment();
     }
   },
+);
+
+watch(
+  () =>
+    tabs.value.map((tab) =>
+      tab.cards.map((card) => ({
+        id: card.id,
+        width: card.config.widthPercent,
+        height: card.config.height,
+      })),
+    ),
+  () => {
+    scheduleAutoLayoutSave();
+  },
+  { deep: true },
+);
+
+watch(
+  tabSettings,
+  () => {
+    scheduleAutoLayoutSave();
+  },
+  { deep: true },
 );
 
 // Polling mechanism for live updates
@@ -1166,6 +1427,7 @@ async function addDefaultCardsForNewMetrics(newMetrics) {
     if (!namespaceTab) {
       namespaceTab = { name: namespace, cards: [] };
       tabs.value.push(namespaceTab);
+      ensureTabSettingsEntry(namespace);
       console.log(`[Poll] Created new tab: ${namespace}`);
     }
 
@@ -1185,7 +1447,6 @@ async function addDefaultCardsForNewMetrics(newMetrics) {
   }
 
   nextCardId.value = cardId;
-  saveLayout();
 }
 
 function startPolling() {
@@ -1203,15 +1464,45 @@ function stopPolling() {
   }
 }
 
-function saveLayout() {
+function serializeTabSettings() {
+  const result = {};
+  for (const [tabName, settings] of Object.entries(tabSettings)) {
+    result[tabName] = { ...settings };
+  }
+  return result;
+}
+
+function saveLayout(options = {}) {
+  const { force = false } = options;
+  if (!force && !layoutPersistenceEnabled.value) {
+    return;
+  }
+
   const layout = {
+    schemaVersion: RUN_LAYOUT_SCHEMA_VERSION,
     tabs: tabs.value,
     activeTab: activeTab.value,
     nextCardId: nextCardId.value,
-    globalSettings: globalSettings.value,
+    tabSettings: serializeTabSettings(),
     removedMetrics: Array.from(removedMetrics.value), // Save removed metrics list
+    removedTables: Array.from(removedTables.value),
+    removedHistograms: Array.from(removedHistograms.value),
+    removedMedia: Array.from(removedMedia.value),
   };
   localStorage.setItem(storageKey.value, JSON.stringify(layout));
+}
+
+let pendingLayoutSave = null;
+function scheduleAutoLayoutSave() {
+  if (isInitializing.value) return;
+  enableLayoutPersistence();
+  if (pendingLayoutSave) {
+    clearTimeout(pendingLayoutSave);
+  }
+  pendingLayoutSave = setTimeout(() => {
+    saveLayout();
+    pendingLayoutSave = null;
+  }, 250);
 }
 
 function addCard() {
@@ -1319,6 +1610,7 @@ function confirmAddChart() {
   };
 
   tab.cards.push(newCard);
+  enableLayoutPersistence();
   saveLayout();
   showAddChartDialog.value = false;
   newChartValue.value = []; // Reset
@@ -1333,6 +1625,14 @@ function resetLayout() {
   if (
     confirm("Reset to default layout? This will remove all customizations.")
   ) {
+    removedMetrics.value.clear();
+    removedTables.value.clear();
+    removedHistograms.value.clear();
+    removedMedia.value.clear();
+    for (const key of Object.keys(tabSettings)) {
+      delete tabSettings[key];
+    }
+    ensureTabSettingsEntry(DEFAULT_TAB_NAME);
     localStorage.removeItem(storageKey.value);
     location.reload();
   }
@@ -1345,7 +1645,10 @@ function addTab() {
 
 function confirmAddTab() {
   if (newTabName.value.trim()) {
-    tabs.value.push({ name: newTabName.value.trim(), cards: [] });
+    const name = newTabName.value.trim();
+    tabs.value.push({ name, cards: [] });
+    ensureTabSettingsEntry(name);
+    enableLayoutPersistence();
     saveLayout();
     showAddTabDialog.value = false;
     newTabName.value = "";
@@ -1361,6 +1664,9 @@ function removeTab(tabName) {
   if (activeTab.value === tabName) {
     activeTab.value = tabs.value[0].name;
   }
+  delete tabSettings[tabName];
+  ensureTabSettingsEntry(activeTab.value);
+  enableLayoutPersistence();
   saveLayout();
 }
 
@@ -1422,9 +1728,10 @@ function updateCard({ id, config, syncAll, realtime }) {
       }
     } finally {
       if (!realtime) {
+        enableLayoutPersistence();
+        saveLayout();
         nextTick(() => {
           isUpdating.value = false;
-          saveLayout();
         });
       }
     }
@@ -1491,9 +1798,10 @@ function updateCard({ id, config, syncAll, realtime }) {
       }
     }
   } finally {
+    enableLayoutPersistence();
+    saveLayout();
     nextTick(() => {
       isUpdating.value = false;
-      saveLayout();
     });
   }
 }
@@ -1509,9 +1817,34 @@ function removeCard(id) {
         removedMetrics.value.add(metric);
         console.log(`[removeCard] Marked ${metric} as removed`);
       });
+    } else if (
+      cardToRemove?.config?.type === "table" &&
+      cardToRemove.config.tableName
+    ) {
+      removedTables.value.add(cardToRemove.config.tableName);
+      console.log(
+        `[removeCard] Marked table ${cardToRemove.config.tableName} as removed`,
+      );
+    } else if (
+      cardToRemove?.config?.type === "histogram" &&
+      cardToRemove.config.histogramName
+    ) {
+      removedHistograms.value.add(cardToRemove.config.histogramName);
+      console.log(
+        `[removeCard] Marked histogram ${cardToRemove.config.histogramName} as removed`,
+      );
+    } else if (
+      cardToRemove?.config?.type === "media" &&
+      cardToRemove.config.mediaName
+    ) {
+      removedMedia.value.add(cardToRemove.config.mediaName);
+      console.log(
+        `[removeCard] Marked media ${cardToRemove.config.mediaName} as removed`,
+      );
     }
 
     tab.cards = tab.cards.filter((c) => c.id !== id);
+    enableLayoutPersistence();
     saveLayout();
   }
 }
@@ -1520,20 +1853,20 @@ function removeCard(id) {
 const hasCustomSettings = computed(() => {
   const tab = tabs.value.find((t) => t.name === activeTab.value);
   if (!tab) return false;
+  const settings = currentTabSettings.value;
 
-  // Check if any card has custom settings different from global
   return tab.cards.some((card) => {
     if (card.config.type === "line") {
       return (
-        card.config.xMetric !== globalSettings.value.xAxis ||
+        card.config.xMetric !== settings.xAxis ||
         (card.config.smoothingMode !== undefined &&
-          card.config.smoothingMode !== globalSettings.value.smoothing)
+          card.config.smoothingMode !== settings.smoothing)
       );
     }
     if (card.config.type === "histogram") {
       return (
         card.config.histogramMode !== undefined &&
-        card.config.histogramMode !== globalSettings.value.histogramMode
+        card.config.histogramMode !== settings.histogramMode
       );
     }
     return false;
@@ -1543,18 +1876,19 @@ const hasCustomSettings = computed(() => {
 function applyGlobalSettings() {
   const tabIndex = tabs.value.findIndex((t) => t.name === activeTab.value);
   if (tabIndex === -1) return;
+  const settings = currentTabSettings.value;
 
   // Create completely new tab object to force Vue reactivity
   const newCards = tabs.value[tabIndex].cards.map((card) => {
     const newConfig = { ...card.config };
 
     if (card.config.type === "line") {
-      newConfig.xMetric = globalSettings.value.xAxis;
-      newConfig.smoothingMode = globalSettings.value.smoothing;
-      newConfig.smoothingValue = globalSettings.value.smoothingValue;
-      newConfig.downsampleRate = globalSettings.value.downsampleRate;
+      newConfig.xMetric = settings.xAxis;
+      newConfig.smoothingMode = settings.smoothing;
+      newConfig.smoothingValue = settings.smoothingValue;
+      newConfig.downsampleRate = settings.downsampleRate;
     } else if (card.config.type === "histogram") {
-      newConfig.histogramMode = globalSettings.value.histogramMode;
+      newConfig.histogramMode = settings.histogramMode;
     }
 
     return {
@@ -1571,6 +1905,7 @@ function applyGlobalSettings() {
   ];
 
   nextTick(() => {
+    enableLayoutPersistence();
     saveLayout();
     showGlobalSettings.value = false;
     ElMessage.success("Applied global settings to all cards");
@@ -1586,6 +1921,7 @@ function onDragEnd(evt) {
   const oldIndex = evt.oldIndex;
 
   if (draggedIndex === undefined || oldIndex === undefined) {
+    enableLayoutPersistence();
     saveLayout();
     return;
   }
@@ -1633,6 +1969,7 @@ function onDragEnd(evt) {
     }
   }
 
+  enableLayoutPersistence();
   saveLayout();
 }
 </script>
@@ -1960,7 +2297,7 @@ function onDragEnd(evt) {
         <el-divider content-position="left">Line Chart Settings</el-divider>
 
         <el-form-item label="X-Axis">
-          <el-select v-model="globalSettings.xAxis" class="w-full">
+          <el-select v-model="currentTabSettings.xAxis" class="w-full">
             <el-option
               v-for="metric in availableMetrics"
               :key="metric"
@@ -1971,7 +2308,7 @@ function onDragEnd(evt) {
         </el-form-item>
 
         <el-form-item label="Smoothing">
-          <el-select v-model="globalSettings.smoothing" class="w-full">
+          <el-select v-model="currentTabSettings.smoothing" class="w-full">
             <el-option label="Disabled" value="disabled" />
             <el-option label="EMA" value="ema" />
             <el-option label="Moving Average" value="ma" />
@@ -1980,21 +2317,21 @@ function onDragEnd(evt) {
         </el-form-item>
 
         <el-form-item
-          v-if="globalSettings.smoothing !== 'disabled'"
+          v-if="currentTabSettings.smoothing !== 'disabled'"
           label="Smoothing Value"
         >
           <el-input-number
-            v-model="globalSettings.smoothingValue"
+            v-model="currentTabSettings.smoothingValue"
             :min="0"
-            :max="globalSettings.smoothing === 'ema' ? 1 : 1000"
-            :step="globalSettings.smoothing === 'ema' ? 0.01 : 1"
+            :max="currentTabSettings.smoothing === 'ema' ? 1 : 1000"
+            :step="currentTabSettings.smoothing === 'ema' ? 0.01 : 1"
             class="w-full"
           />
         </el-form-item>
 
         <el-form-item label="Downsample Rate">
           <el-input-number
-            v-model="globalSettings.downsampleRate"
+            v-model="currentTabSettings.downsampleRate"
             :min="-1"
             :max="100"
             class="w-full"
@@ -2007,7 +2344,7 @@ function onDragEnd(evt) {
         <el-divider content-position="left">Histogram Settings</el-divider>
 
         <el-form-item label="Histogram Mode">
-          <el-select v-model="globalSettings.histogramMode" class="w-full">
+          <el-select v-model="currentTabSettings.histogramMode" class="w-full">
             <el-option label="Single Step" value="single" />
             <el-option label="Distribution Flow" value="flow" />
           </el-select>

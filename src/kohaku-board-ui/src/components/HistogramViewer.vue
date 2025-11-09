@@ -30,6 +30,152 @@ const colorscale = ref("Viridis");
 const normalize = ref("per-step"); // Default per-step for better contrast
 const showSettings = ref(false);
 const xAxisType = ref(props.xAxis);
+const DEFAULT_RELATIVE_UNIT = {
+  scale: 1,
+  label: "Seconds",
+  suffix: "s",
+};
+const MAX_COLUMN_UNITS = 12;
+
+function resolveRelativeTimeUnit(spanSeconds) {
+  if (!Number.isFinite(spanSeconds) || spanSeconds <= 0) {
+    return { ...DEFAULT_RELATIVE_UNIT };
+  }
+  if (spanSeconds > 150 * 60) {
+    return { scale: 3600, label: "Hours", suffix: " h" };
+  }
+  if (spanSeconds > 150) {
+    return { scale: 60, label: "Minutes", suffix: " min" };
+  }
+  return { ...DEFAULT_RELATIVE_UNIT };
+}
+
+function formatRelativeDurationValue(seconds, unit = DEFAULT_RELATIVE_UNIT) {
+  if (!Number.isFinite(seconds)) return "N/A";
+  if (unit.scale === 3600) {
+    const hours = Math.floor(seconds / 3600);
+    const mins = Math.floor((seconds % 3600) / 60);
+    const secs = Math.floor(seconds % 60);
+    return `${hours}h ${mins}m ${secs}s`;
+  }
+  if (unit.scale === 60) {
+    const mins = seconds / 60;
+    return `${mins.toFixed(2)} min`;
+  }
+  return `${seconds.toFixed(2)} s`;
+}
+
+function formatRelativeTickValue(seconds, unit = DEFAULT_RELATIVE_UNIT) {
+  if (!Number.isFinite(seconds)) return "";
+  const value = seconds / unit.scale;
+  if (unit.scale === 1) {
+    return `${value.toFixed(0)}${unit.suffix}`;
+  }
+  return `${value.toFixed(1)}${unit.suffix}`;
+}
+
+function getAxisValue(entry, axisType) {
+  if (axisType === "global_step") {
+    return entry.global_step ?? entry.step ?? 0;
+  }
+  if (axisType === "relative_walltime" && entry.relative_walltime != null) {
+    return entry.relative_walltime;
+  }
+  return entry.step ?? 0;
+}
+
+function getAxisTitle(axisType, unit) {
+  if (axisType === "global_step") return "Global Step";
+  if (axisType === "relative_walltime") {
+    const activeUnit = unit || DEFAULT_RELATIVE_UNIT;
+    return `Time (${activeUnit.label})`;
+  }
+  return "Training Step";
+}
+
+function formatAxisValue(value, axisType, unit) {
+  if (!Number.isFinite(value)) return "N/A";
+  if (axisType === "relative_walltime") {
+    return formatRelativeDurationValue(value, unit || DEFAULT_RELATIVE_UNIT);
+  }
+  return Math.round(value).toString();
+}
+
+function buildAxisGeometry(axisValues) {
+  if (!axisValues || axisValues.length === 0) {
+    return {
+      normalizedX: [],
+      columnCenters: [],
+      columnWidths: [],
+      totalWidth: 0,
+    };
+  }
+
+  const diffs = [];
+  for (let i = 0; i < axisValues.length - 1; i++) {
+    const diff = Math.abs(axisValues[i + 1] - axisValues[i]);
+    if (diff > 0) {
+      diffs.push(diff);
+    }
+  }
+
+  const minDiff =
+    diffs.length > 0 ? Math.max(Math.min(...diffs), Number.EPSILON) : 1;
+
+  const columnWidths = axisValues.map((value, idx) => {
+    let diff;
+    if (idx < axisValues.length - 1) {
+      diff = Math.abs(axisValues[idx + 1] - value);
+    } else {
+      diff = diffs.length > 0 ? diffs[diffs.length - 1] : minDiff;
+    }
+    let units = diff > 0 ? Math.round(diff / minDiff) : 1;
+    if (!Number.isFinite(units) || units <= 0) units = 1;
+    return Math.min(Math.max(units, 1), MAX_COLUMN_UNITS);
+  });
+
+  const normalizedX = [];
+  const columnCenters = [];
+  let cursor = 0;
+
+  columnWidths.forEach((width) => {
+    for (let r = 0; r < width; r++) {
+      normalizedX.push(cursor + r + 0.5);
+    }
+    columnCenters.push(cursor + width / 2);
+    cursor += width;
+  });
+
+  return {
+    normalizedX,
+    columnCenters,
+    columnWidths,
+    totalWidth: cursor,
+  };
+}
+
+function buildTickInfo(axisValues, columnCenters, axisType, unit) {
+  if (!axisValues || axisValues.length === 0) {
+    return { tickvals: [], ticktext: [] };
+  }
+  const desiredTicks = Math.min(6, axisValues.length);
+  const step = Math.max(1, Math.floor(axisValues.length / desiredTicks));
+  const tickvals = [];
+  const ticktext = [];
+
+  for (let i = 0; i < axisValues.length; i += step) {
+    tickvals.push(columnCenters[i]);
+    if (axisType === "relative_walltime") {
+      ticktext.push(
+        formatRelativeTickValue(axisValues[i], unit || DEFAULT_RELATIVE_UNIT),
+      );
+    } else {
+      ticktext.push(Math.round(axisValues[i]).toString());
+    }
+  }
+
+  return { tickvals, ticktext };
+}
 
 // Watch for prop changes and update viewMode (for global settings)
 watch(
@@ -229,102 +375,127 @@ function createDistributionFlowPlot(colors) {
       ? props.histogramData.filter((_, idx) => idx % rate === 0)
       : props.histogramData;
 
-  // Build heatmap data: x=steps, y=bin values, z=counts
-  const steps = [];
+  const axisValues = sampledData.map((entry) =>
+    getAxisValue(entry, xAxisType.value),
+  );
+
+  const axisSpan =
+    axisValues.length > 1
+      ? Math.max(...axisValues) - Math.min(...axisValues)
+      : 0;
+  const axisUnit =
+    xAxisType.value === "relative_walltime"
+      ? resolveRelativeTimeUnit(axisSpan)
+      : null;
+
+  const axisGeometry = buildAxisGeometry(axisValues);
+
   const allBins = sampledData[0].bins; // Use first entry's bins
   const binCenters = allBins.slice(0, -1).map((bin, i) => {
     return (bin + allBins[i + 1]) / 2;
   });
 
-  // Z matrix: [bin_idx][step_idx] = count
   const zMatrix = Array(binCenters.length)
     .fill(null)
     .map(() => []);
+  const customDataMatrix = Array(binCenters.length)
+    .fill(null)
+    .map(() => []);
 
-  for (const entry of sampledData) {
-    // Use selected x-axis (step or global_step)
-    const xValue =
-      xAxisType.value === "global_step" ? entry.global_step : entry.step;
-    steps.push(xValue);
+  sampledData.forEach((entry, entryIdx) => {
+    const widthUnits = axisGeometry.columnWidths[entryIdx];
+    const formattedValue = formatAxisValue(
+      axisValues[entryIdx],
+      xAxisType.value,
+      axisUnit,
+    );
 
-    // Add counts for each bin
     for (let binIdx = 0; binIdx < entry.counts.length; binIdx++) {
-      zMatrix[binIdx].push(entry.counts[binIdx]);
+      const value = entry.counts[binIdx];
+      for (let r = 0; r < widthUnits; r++) {
+        zMatrix[binIdx].push(value);
+        customDataMatrix[binIdx].push(formattedValue);
+      }
     }
-  }
+  });
 
-  // Normalize counts if needed
+  const columnCount = axisGeometry.normalizedX.length;
   let normalizedZ = zMatrix;
   if (normalize.value === "per-step") {
-    // Normalize each COLUMN (step) to 0-1
-    // Need to transpose, normalize, then transpose back
-    const numSteps = steps.length;
     const numBins = binCenters.length;
 
     normalizedZ = Array(numBins)
       .fill(null)
-      .map(() => Array(numSteps).fill(0));
+      .map(() => Array(columnCount).fill(0));
 
-    for (let stepIdx = 0; stepIdx < numSteps; stepIdx++) {
-      // Get all bins for this step
-      const stepColumn = zMatrix.map((binRow) => binRow[stepIdx]);
-      const maxInStep = Math.max(...stepColumn);
-
-      // Normalize this step's column
+    for (let colIdx = 0; colIdx < columnCount; colIdx++) {
+      const columnValues = zMatrix.map((binRow) => binRow[colIdx]);
+      const maxInColumn = Math.max(...columnValues);
       for (let binIdx = 0; binIdx < numBins; binIdx++) {
-        normalizedZ[binIdx][stepIdx] =
-          maxInStep > 0 ? zMatrix[binIdx][stepIdx] / maxInStep : 0;
+        normalizedZ[binIdx][colIdx] =
+          maxInColumn > 0 ? zMatrix[binIdx][colIdx] / maxInColumn : 0;
       }
     }
   } else {
-    // Global normalization
-    const globalMax = Math.max(...zMatrix.flat());
+    const flatValues = zMatrix.flat();
+    const globalMax =
+      flatValues.length > 0 ? Math.max(...flatValues) : Number.NaN;
     normalizedZ = zMatrix.map((binRow) =>
-      binRow.map((v) => (globalMax > 0 ? v / globalMax : v)),
+      binRow.map((v) => (globalMax > 0 ? v / globalMax : 0)),
     );
   }
 
   const trace = {
-    type: "heatmapgl", // Use WebGL for better performance
-    x: steps,
+    type: "heatmapgl",
+    x: axisGeometry.normalizedX,
     y: binCenters,
     z: normalizedZ,
+    customdata: customDataMatrix,
     colorscale: colorscale.value,
-    showscale: false, // Hide color bar
+    showscale: false,
     hoverongaps: false,
-    zsmooth: false, // Disable smoothing (steps may not be evenly spaced)
+    zsmooth: false,
     hovertemplate:
-      "<b>Step %{x}</b><br>" +
+      `<b>${getAxisTitle(xAxisType.value, axisUnit)} %{customdata}</b><br>` +
       "Bin Value: %{y:.4f}<br>" +
       "Normalized Density: %{z:.3f}<br>" +
       "<extra></extra>",
   };
 
-  // Calculate exact axis ranges to eliminate padding
-  const xMin = Math.min(...steps);
-  const xMax = Math.max(...steps);
   const yMin = Math.min(...binCenters);
   const yMax = Math.max(...binCenters);
+
+  const tickInfo = buildTickInfo(
+    axisValues,
+    axisGeometry.columnCenters,
+    xAxisType.value,
+    axisUnit,
+  );
 
   const layout = {
     xaxis: {
       gridcolor: colors.grid,
       color: colors.text,
-      title: "Training Step",
-      range: [xMin, xMax], // Exact range, no padding
+      title: getAxisTitle(xAxisType.value, axisUnit),
+      range: axisGeometry.normalizedX.length
+        ? [-0.5, axisGeometry.totalWidth + 0.5]
+        : [0, 1],
+      tickmode: "array",
+      tickvals: tickInfo.tickvals,
+      ticktext: tickInfo.ticktext,
       fixedrange: false,
     },
     yaxis: {
       gridcolor: colors.grid,
       color: colors.text,
       title: "Bin Value",
-      range: [yMin, yMax], // Exact range, no padding
+      range: [yMin, yMax],
       fixedrange: false,
     },
     height: props.height - 60,
     paper_bgcolor: "transparent",
     plot_bgcolor: "transparent",
-    margin: { t: 10, r: 10, b: 40, l: 70 }, // More left margin for y-axis labels
+    margin: { t: 10, r: 10, b: 40, l: 70 },
     autosize: true,
     hovermode: "closest",
   };
@@ -375,34 +546,44 @@ function resetZoom() {
       rate > 1
         ? props.histogramData.filter((_, idx) => idx % rate === 0)
         : props.histogramData;
-    const steps = sampledData.map((entry) =>
-      xAxisType.value === "global_step" ? entry.global_step : entry.step,
+    const axisValues = sampledData.map((entry) =>
+      getAxisValue(entry, xAxisType.value),
     );
+    const axisSpan =
+      axisValues.length > 1
+        ? Math.max(...axisValues) - Math.min(...axisValues)
+        : 0;
+    const axisUnit =
+      xAxisType.value === "relative_walltime"
+        ? resolveRelativeTimeUnit(axisSpan)
+        : null;
+    const axisGeometry = buildAxisGeometry(axisValues);
+    const tickInfo = buildTickInfo(
+      axisValues,
+      axisGeometry.columnCenters,
+      xAxisType.value,
+      axisUnit,
+    );
+
     const allBins = sampledData[0].bins;
     const binCenters = allBins
       .slice(0, -1)
       .map((bin, i) => (bin + allBins[i + 1]) / 2);
 
-    const xMin = Math.min(...steps);
-    const xMax = Math.max(...steps);
     const yMin = Math.min(...binCenters);
     const yMax = Math.max(...binCenters);
 
     // Only reset axes, keep height unchanged
     Plotly.relayout(plotDiv.value, {
-      "xaxis.range": [xMin, xMax],
+      "xaxis.range": axisGeometry.normalizedX.length
+        ? [-0.5, axisGeometry.totalWidth + 0.5]
+        : [0, 1],
+      "xaxis.tickvals": tickInfo.tickvals,
+      "xaxis.ticktext": tickInfo.ticktext,
       "yaxis.range": [yMin, yMax],
     });
     console.log(
-      "[HistogramViewer] Reset to ranges: x=[" +
-        xMin +
-        "," +
-        xMax +
-        "], y=[" +
-        yMin +
-        "," +
-        yMax +
-        "]",
+      "[HistogramViewer] Reset flow ranges, y=[" + yMin + "," + yMax + "]",
     );
   } else {
     console.log("[HistogramViewer] Resetting single step mode");

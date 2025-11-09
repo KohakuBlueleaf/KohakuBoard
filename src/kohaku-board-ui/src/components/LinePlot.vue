@@ -7,6 +7,68 @@ import { useHoverSync } from "@/composables/useHoverSync";
 const { animationsEnabled } = useAnimationPreference();
 const { registerChart, unregisterChart } = useHoverSync();
 
+const DEFAULT_RELATIVE_UNIT = {
+  scale: 1,
+  label: "Seconds",
+  suffix: "s",
+};
+
+function resolveRelativeTimeUnit(spanSeconds) {
+  if (!Number.isFinite(spanSeconds) || spanSeconds <= 0) {
+    return { ...DEFAULT_RELATIVE_UNIT };
+  }
+
+  if (spanSeconds > 150 * 60) {
+    return { scale: 3600, label: "Hours", suffix: " h" };
+  }
+  if (spanSeconds > 150) {
+    return { scale: 60, label: "Minutes", suffix: " min" };
+  }
+  return { ...DEFAULT_RELATIVE_UNIT };
+}
+
+function formatRelativeDurationValue(seconds, unit = DEFAULT_RELATIVE_UNIT) {
+  if (!Number.isFinite(seconds)) return "N/A";
+  if (unit.scale === 3600) {
+    const hours = Math.floor(seconds / 3600);
+    const mins = Math.floor((seconds % 3600) / 60);
+    const secs = Math.floor(seconds % 60);
+    return `${hours}h ${mins}m ${secs}s`;
+  }
+  if (unit.scale === 60) {
+    const mins = seconds / 60;
+    return `${mins.toFixed(2)} min`;
+  }
+  return `${seconds.toFixed(2)} s`;
+}
+
+function scaleRelativeValue(seconds, unit = DEFAULT_RELATIVE_UNIT) {
+  if (!Number.isFinite(seconds)) return seconds;
+  return seconds / unit.scale;
+}
+
+function computeRelativeAxisInfo(seriesList) {
+  let min = Infinity;
+  let max = -Infinity;
+
+  seriesList.forEach((series) => {
+    series.segments?.forEach((seg) => {
+      seg.x?.forEach((xVal) => {
+        if (Number.isFinite(xVal)) {
+          if (xVal < min) min = xVal;
+          if (xVal > max) max = xVal;
+        }
+      });
+    });
+  });
+
+  if (!Number.isFinite(min) || !Number.isFinite(max) || max <= min) {
+    return { ...DEFAULT_RELATIVE_UNIT };
+  }
+
+  return resolveRelativeTimeUnit(max - min);
+}
+
 // No emits needed - parent watches plotConfig directly via ref
 
 const props = defineProps({
@@ -307,21 +369,6 @@ function downsampleData(x, y, rate) {
   return { x: newX, y: newY };
 }
 
-function formatDuration(seconds) {
-  if (seconds < 60) {
-    return `${seconds.toFixed(2)}s`;
-  } else if (seconds < 3600) {
-    const mins = Math.floor(seconds / 60);
-    const secs = (seconds % 60).toFixed(0);
-    return `${mins}m ${secs}s`;
-  } else {
-    const hours = Math.floor(seconds / 3600);
-    const mins = Math.floor((seconds % 3600) / 60);
-    const secs = (seconds % 60).toFixed(0);
-    return `${hours}h ${mins}m ${secs}s`;
-  }
-}
-
 const processedData = computed(() => {
   const mode = config.smoothingMode;
   const value = config.smoothingValue;
@@ -473,6 +520,17 @@ function createPlot() {
 
   const colors = getThemeColors();
   const data = processedData.value;
+  const relativeAxisInfo =
+    props.xaxis === "relative_walltime" ? computeRelativeAxisInfo(data) : null;
+  const scaleXValues = (arr) =>
+    !relativeAxisInfo || relativeAxisInfo.scale === 1
+      ? arr
+      : arr.map((value) => scaleRelativeValue(value, relativeAxisInfo));
+  const formatRelativeValueForHover = (seconds) =>
+    formatRelativeDurationValue(
+      seconds,
+      relativeAxisInfo || DEFAULT_RELATIVE_UNIT,
+    );
 
   const plotlyColors = [
     "#3b82f6",
@@ -536,7 +594,7 @@ function createPlot() {
           type: "scattergl",
           mode: "lines",
           name: series.name, // Same name, no "(original)" suffix
-          x: seg.x,
+          x: scaleXValues(seg.x),
           y: seg.y,
           line: {
             width: config.lineWidth * 0.5,
@@ -554,12 +612,14 @@ function createPlot() {
       series.segments.forEach((seg, segIdx) => {
         const useTransparency = processedData.length > 1;
         const lineOpacity = useTransparency ? 0.6 : 1.0;
+        const rawSegmentX = seg.x || [];
+        const scaledSegmentX = scaleXValues(rawSegmentX);
 
         const trace = {
           type: "scattergl",
           mode: config.showMarkers ? "lines+markers" : "lines",
           name: series.name,
-          x: seg.x,
+          x: scaledSegmentX,
           y: seg.y,
           line: {
             width: config.lineWidth,
@@ -577,7 +637,7 @@ function createPlot() {
         // Custom hover template showing smoothed(original) if smoothing enabled
         if (hasSmoothing && originalSegments.length > 0) {
           // Build customdata with original values for hover
-          trace.customdata = seg.x.map((xVal, idx) => {
+          const originalHoverData = rawSegmentX.map((xVal) => {
             // Find original y value at this x position
             let originalY = null;
             for (const origSeg of originalSegments) {
@@ -589,11 +649,12 @@ function createPlot() {
             }
             return { originalY };
           });
+          trace.customdata = originalHoverData;
 
           if (props.xaxis === "relative_walltime") {
-            trace.customdata = seg.x.map((xVal, idx) => ({
-              duration: formatDuration(xVal),
-              originalY: trace.customdata[idx]?.originalY,
+            trace.customdata = rawSegmentX.map((xVal, idx) => ({
+              duration: formatRelativeValueForHover(xVal),
+              originalY: originalHoverData[idx]?.originalY,
             }));
             trace.hovertemplate =
               "<b>%{fullData.name}</b><br>" +
@@ -606,8 +667,8 @@ function createPlot() {
         } else {
           // No smoothing - simple hover
           if (props.xaxis === "relative_walltime") {
-            trace.customdata = seg.x.map((xVal) => ({
-              duration: formatDuration(xVal),
+            trace.customdata = rawSegmentX.map((xVal) => ({
+              duration: formatRelativeValueForHover(xVal),
             }));
             trace.hovertemplate =
               "<b>%{fullData.name}</b><br>" +
@@ -645,7 +706,7 @@ function createPlot() {
           type: "scattergl",
           mode: "markers",
           name: `${series.name} (NaN)`,
-          x: series.nanX,
+          x: scaleXValues(series.nanX),
           y: series.nanX.map(() => 1),
           marker: {
             symbol: "circle",
@@ -671,7 +732,7 @@ function createPlot() {
           type: "scattergl",
           mode: "markers",
           name: `${series.name} (+inf)`,
-          x: series.infX,
+          x: scaleXValues(series.infX),
           y: series.infX.map(() => 0.95),
           marker: {
             symbol: "triangle-up",
@@ -697,7 +758,7 @@ function createPlot() {
           type: "scattergl",
           mode: "markers",
           name: `${series.name} (-inf)`,
-          x: series.negInfX,
+          x: scaleXValues(series.negInfX),
           y: series.negInfX.map(() => 0.05),
           marker: {
             symbol: "triangle-down",
@@ -720,7 +781,15 @@ function createPlot() {
 
   const xAxisConfig = config.xRange.auto
     ? { autorange: true }
-    : { range: [config.xRange.min, config.xRange.max] };
+    : {
+        range:
+          props.xaxis === "relative_walltime" && relativeAxisInfo
+            ? [
+                scaleRelativeValue(config.xRange.min, relativeAxisInfo),
+                scaleRelativeValue(config.xRange.max, relativeAxisInfo),
+              ]
+            : [config.xRange.min, config.xRange.max],
+      };
 
   const yAxisConfig = config.yRange.auto
     ? { autorange: true }
@@ -804,12 +873,11 @@ function createPlot() {
     layout.xaxis.type = "date";
     layout.xaxis.hoverformat = "%Y-%m-%d %H:%M:%S"; // DateTime format
   } else if (props.xaxis === "relative_walltime") {
-    // Custom tick formatting for duration
-    layout.xaxis.title = "Time since start";
+    const unit = relativeAxisInfo || DEFAULT_RELATIVE_UNIT;
+    layout.xaxis.title = `Time (${unit.label})`;
     layout.xaxis.tickmode = "auto";
-    layout.xaxis.tickformat = ".1f";
-    layout.xaxis.ticksuffix = "s";
-    // Hover is handled by custom template above
+    layout.xaxis.tickformat = ".2f";
+    layout.xaxis.ticksuffix = unit.suffix;
   } else {
     layout.xaxis.hoverformat = ".4f"; // Default float format
   }
