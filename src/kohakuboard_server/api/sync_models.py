@@ -68,6 +68,30 @@ class HistogramData(BaseModel):
     precision: str = Field(..., description="Precision (i32 or u8)")
 
 
+class KernelDensityData(BaseModel):
+    """Kernel density entry"""
+
+    step: int = Field(..., description="Step number")
+    global_step: Optional[int] = Field(None, description="Global step number")
+    name: str = Field(..., description="Kernel density log name")
+    payload: str = Field(..., description="Base64-encoded grid/density payload")
+    kde_meta: Dict[str, Any] = Field(
+        default_factory=dict, description="Kernel density metadata"
+    )
+
+
+class TensorData(BaseModel):
+    """Tensor payload entry"""
+
+    step: int = Field(..., description="Step number")
+    global_step: Optional[int] = Field(None, description="Global step number")
+    name: str = Field(..., description="Tensor log name")
+    payload: str = Field(..., description="Base64-encoded tensor payload")
+    tensor_meta: Dict[str, Any] = Field(
+        default_factory=dict, description="Tensor metadata (dtype, shape, etc.)"
+    )
+
+
 class LogSyncRequest(BaseModel):
     """Request payload for incremental log sync
 
@@ -88,6 +112,12 @@ class LogSyncRequest(BaseModel):
     tables: List[TableData] = Field(default_factory=list, description="Table entries")
     histograms: List[HistogramData] = Field(
         default_factory=list, description="Histogram entries"
+    )
+    kernel_density: List[KernelDensityData] = Field(
+        default_factory=list, description="Kernel density entries"
+    )
+    tensors: List[TensorData] = Field(
+        default_factory=list, description="Tensor payload entries"
     )
     metadata: Optional[Dict[str, Any]] = Field(
         None, description="Board metadata (name, config, etc.)"

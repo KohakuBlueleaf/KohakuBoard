@@ -33,22 +33,9 @@ class BatchScalarsRequest(BaseModel):
     metrics: list[str]
 
 
-def get_run_path(
+def _resolve_run_path(
     project: str, run_id: str, current_user: User | None
 ) -> tuple[Path, Board | None]:
-    """Resolve run path based on mode.
-
-    Args:
-        project: Project name
-        run_id: Run ID
-        current_user: Current user (optional)
-
-    Returns:
-        Tuple of (run_path, board) - board is None in local mode
-
-    Raises:
-        HTTPException: 401/403/404 if access denied or not found
-    """
     base_dir = Path(cfg.app.board_data_dir)
 
     if cfg.app.mode == "local":
@@ -78,29 +65,38 @@ def get_run_path(
         return base_dir / board.storage_path, board
 
 
+async def get_run_path(
+    project: str, run_id: str, current_user: User | None
+) -> tuple[Path, Board | None]:
+    """Async wrapper that resolves run path without blocking the event loop."""
+    return await asyncio.to_thread(_resolve_run_path, project, run_id, current_user)
+
+
+async def _call_in_thread(func, *args, **kwargs):
+    """Run blocking storage operation in a thread."""
+    return await asyncio.to_thread(func, *args, **kwargs)
+
+
 @router.get("/projects/{project}/runs/{run_id}/status")
 async def get_run_status(
     project: str,
     run_id: str,
     current_user: User | None = Depends(get_optional_user),
 ):
-    """Get run status with latest update timestamp
+    """Get run status with latest update timestamp"""
+    logger_api.info(f"start run_status {project}/{run_id}")
+    run_path, _ = await get_run_path(project, run_id, current_user)
 
-    Returns minimal info for polling (last update time, row counts)
-    """
-    run_path, _ = get_run_path(project, run_id, current_user)
-
-    # Check metadata for creation time
+    # Check metadata for creation time without blocking loop
     metadata_file = run_path / "metadata.json"
-    if metadata_file.exists():
-        # Use asyncio.to_thread to avoid blocking
-        def read_metadata():
-            with open(metadata_file, "r") as f:
-                return json.load(f)
 
-        metadata = await asyncio.to_thread(read_metadata)
-    else:
-        metadata = {}
+    def read_metadata():
+        if not metadata_file.exists():
+            return {}
+        with open(metadata_file, "r") as f:
+            return json.load(f)
+
+    metadata = await asyncio.to_thread(read_metadata)
 
     # Get row count and last update from storage
     metrics_count = 0
@@ -112,7 +108,7 @@ async def get_run_status(
         # Check if hybrid backend (has get_latest_step method)
         if hasattr(reader, "get_latest_step"):
             # Hybrid backend - get latest from steps table
-            latest_step_info = reader.get_latest_step()
+            latest_step_info = await _call_in_thread(reader.get_latest_step)
             if latest_step_info:
                 metrics_count = latest_step_info.get("step", 0) + 1  # step count
                 # Convert timestamp ms to ISO string
@@ -125,12 +121,13 @@ async def get_run_status(
     except Exception as e:
         logger_api.warning(f"Failed to get status: {e}")
 
-    return {
+    result = {
         "run_id": run_id,
         "project": project,
         "metrics_count": metrics_count,
         "last_updated": last_updated,
     }
+    return result
 
 
 @router.get("/projects/{project}/runs/{run_id}/summary")
@@ -150,16 +147,15 @@ async def get_run_summary(
         dict: Run summary with metadata, counts, available metrics/media/tables
         Same format as experiments API for compatibility
     """
-    logger_api.info(f"Fetching summary for {project}/{run_id}")
-
-    run_path, _ = get_run_path(project, run_id, current_user)
+    logger_api.info(f"start run_summary {project}/{run_id}")
+    run_path, _ = await get_run_path(project, run_id, current_user)
     reader = BoardReader(run_path)
-    summary = reader.get_summary()
+    summary = await _call_in_thread(reader.get_summary)
 
     # Return in same format as experiments API for frontend compatibility
     metadata = summary["metadata"]
 
-    return {
+    result = {
         "experiment_id": run_id,  # For compatibility with ConfigurableChartCard
         "project": project,
         "run_id": run_id,
@@ -182,6 +178,7 @@ async def get_run_summary(
             "kernel_density": summary.get("available_kernel_density", []),
         },
     }
+    return result
 
 
 @router.get("/projects/{project}/runs/{run_id}/metadata")
@@ -191,12 +188,10 @@ async def get_run_metadata(
     current_user: User | None = Depends(get_optional_user),
 ):
     """Get run metadata"""
-    logger_api.info(f"Fetching metadata for {project}/{run_id}")
-
-    run_path, _ = get_run_path(project, run_id, current_user)
+    logger_api.info(f"start run_metadata {project}/{run_id}")
+    run_path, _ = await get_run_path(project, run_id, current_user)
     reader = BoardReader(run_path)
-    metadata = reader.get_metadata()
-
+    metadata = await _call_in_thread(reader.get_metadata)
     return metadata
 
 
@@ -207,12 +202,10 @@ async def get_available_scalars(
     current_user: User | None = Depends(get_optional_user),
 ):
     """Get list of available scalar metrics"""
-    logger_api.info(f"Fetching available scalars for {project}/{run_id}")
-
-    run_path, _ = get_run_path(project, run_id, current_user)
+    logger_api.info(f"start scalars_list {project}/{run_id}")
+    run_path, _ = await get_run_path(project, run_id, current_user)
     reader = BoardReader(run_path)
-    metrics = reader.get_available_metrics()
-
+    metrics = await _call_in_thread(reader.get_available_metrics)
     return {"metrics": metrics}
 
 
@@ -229,11 +222,10 @@ async def get_scalar_data(
     Note: metric can contain slashes (e.g., "train/loss")
     FastAPI path parameter automatically URL-decodes it
     """
-    logger_api.info(f"Fetching scalar data for {project}/{run_id}/{metric}")
-
-    run_path, _ = get_run_path(project, run_id, current_user)
+    logger_api.info(f"start scalar_data {project}/{run_id}/{metric}")
+    run_path, _ = await get_run_path(project, run_id, current_user)
     reader = BoardReader(run_path)
-    data = reader.get_scalar_data(metric, limit=limit)
+    data = await _call_in_thread(reader.get_scalar_data, metric, limit=limit)
 
     # data is now columnar format: {steps: [], global_steps: [], timestamps: [], values: []}
     return {"metric": metric, **data}
@@ -246,11 +238,10 @@ async def get_available_media(
     current_user: User | None = Depends(get_optional_user),
 ):
     """Get list of available media log names"""
-    logger_api.info(f"Fetching available media for {project}/{run_id}")
-
-    run_path, _ = get_run_path(project, run_id, current_user)
+    logger_api.info(f"start media_list {project}/{run_id}")
+    run_path, _ = await get_run_path(project, run_id, current_user)
     reader = BoardReader(run_path)
-    media_names = reader.get_available_media_names()
+    media_names = await _call_in_thread(reader.get_available_media_names)
 
     return {"media": media_names}
 
@@ -264,11 +255,10 @@ async def get_media_data(
     current_user: User | None = Depends(get_optional_user),
 ):
     """Get media data for a specific log name"""
-    logger_api.info(f"Fetching media data for {project}/{run_id}/{name}")
-
-    run_path, _ = get_run_path(project, run_id, current_user)
+    logger_api.info(f"start media_data {project}/{run_id}/{name}")
+    run_path, _ = await get_run_path(project, run_id, current_user)
     reader = BoardReader(run_path)
-    data = reader.get_media_data(name, limit=limit)
+    data = await _call_in_thread(reader.get_media_data, name, limit=limit)
 
     # Transform to same format as experiments API
     media_entries = []
@@ -296,11 +286,10 @@ async def get_media_file(
     current_user: User | None = Depends(get_optional_user),
 ):
     """Serve media file (image/video/audio) from SQLite KV storage"""
-    logger_api.info(f"Serving media file: {project}/{run_id}/{filename}")
-
-    run_path, _ = get_run_path(project, run_id, current_user)
+    logger_api.info(f"start media_file {project}/{run_id}/{filename}")
+    run_path, _ = await get_run_path(project, run_id, current_user)
     reader = BoardReader(run_path)
-    media_data = reader.get_media_data(filename)
+    media_data = await _call_in_thread(reader.get_media_data, filename)
 
     if not media_data:
         raise HTTPException(404, detail={"error": "Media file not found"})
@@ -322,11 +311,12 @@ async def get_media_file(
 
     media_type = media_types.get(suffix, "application/octet-stream")
 
-    return Response(
+    response = Response(
         content=media_data,
         media_type=media_type,
         headers={"Content-Disposition": f'inline; filename="{filename}"'},
     )
+    return response
 
 
 @router.get("/projects/{project}/runs/{run_id}/tables")
@@ -336,12 +326,10 @@ async def get_available_tables(
     current_user: User | None = Depends(get_optional_user),
 ):
     """Get list of available table log names"""
-    logger_api.info(f"Fetching available tables for {project}/{run_id}")
-
-    run_path, _ = get_run_path(project, run_id, current_user)
+    logger_api.info(f"start tables_list {project}/{run_id}")
+    run_path, _ = await get_run_path(project, run_id, current_user)
     reader = BoardReader(run_path)
-    table_names = reader.get_available_table_names()
-
+    table_names = await _call_in_thread(reader.get_available_table_names)
     return {"tables": table_names}
 
 
@@ -354,12 +342,10 @@ async def get_table_data(
     current_user: User | None = Depends(get_optional_user),
 ):
     """Get table data for a specific log name"""
-    logger_api.info(f"Fetching table data for {project}/{run_id}/{name}")
-
-    run_path, _ = get_run_path(project, run_id, current_user)
+    logger_api.info(f"start table_data {project}/{run_id}/{name}")
+    run_path, _ = await get_run_path(project, run_id, current_user)
     reader = BoardReader(run_path)
-    data = reader.get_table_data(name, limit=limit)
-
+    data = await _call_in_thread(reader.get_table_data, name, limit=limit)
     return {"experiment_id": run_id, "table_name": name, "data": data}
 
 
@@ -370,12 +356,10 @@ async def get_available_histograms(
     current_user: User | None = Depends(get_optional_user),
 ):
     """Get list of available histogram log names"""
-    logger_api.info(f"Fetching available histograms for {project}/{run_id}")
-
-    run_path, _ = get_run_path(project, run_id, current_user)
+    logger_api.info(f"start hist_list {project}/{run_id}")
+    run_path, _ = await get_run_path(project, run_id, current_user)
     reader = BoardReader(run_path)
-    histogram_names = reader.get_available_histogram_names()
-
+    histogram_names = await _call_in_thread(reader.get_available_histogram_names)
     return {"histograms": histogram_names}
 
 
@@ -400,14 +384,14 @@ async def get_histogram_data(
     current_user: User | None = Depends(get_optional_user),
 ):
     """Get histogram data for a specific log name"""
-    logger_api.info(f"Fetching histogram data for {project}/{run_id}/{name}")
-
+    logger_api.info(f"start hist_data {project}/{run_id}/{name}")
     if range_min is not None and range_max is not None and range_min >= range_max:
         raise HTTPException(400, detail={"error": "range_min must be < range_max"})
 
-    run_path, _ = get_run_path(project, run_id, current_user)
+    run_path, _ = await get_run_path(project, run_id, current_user)
     reader = BoardReader(run_path)
-    data = reader.get_histogram_data(
+    data = await _call_in_thread(
+        reader.get_histogram_data,
         name,
         limit=limit,
         bins=bins,
@@ -425,12 +409,10 @@ async def get_available_tensors(
     current_user: User | None = Depends(get_optional_user),
 ):
     """Get list of available tensor log names."""
-    logger_api.info(f"Fetching tensor list for {project}/{run_id}")
-
-    run_path, _ = get_run_path(project, run_id, current_user)
+    logger_api.info(f"start tensor_list {project}/{run_id}")
+    run_path, _ = await get_run_path(project, run_id, current_user)
     reader = BoardReader(run_path)
-    tensor_names = reader.get_available_tensor_names()
-
+    tensor_names = await _call_in_thread(reader.get_available_tensor_names)
     return {"tensors": tensor_names}
 
 
@@ -445,11 +427,12 @@ async def get_tensor_data(
     current_user: User | None = Depends(get_optional_user),
 ):
     """Get tensor metadata (and optionally payload) for a specific log name."""
-    logger_api.info(f"Fetching tensor data for {project}/{run_id}/{name}")
-
-    run_path, _ = get_run_path(project, run_id, current_user)
+    logger_api.info(f"start tensor_data {project}/{run_id}/{name}")
+    run_path, _ = await get_run_path(project, run_id, current_user)
     reader = BoardReader(run_path)
-    entries = reader.get_tensor_data(name, include_payload=include_data)
+    entries = await _call_in_thread(
+        reader.get_tensor_data, name, include_payload=include_data
+    )
 
     for entry in entries:
         payload = entry.pop("payload", None)
@@ -483,12 +466,12 @@ async def batch_get_run_summaries(
         dict: Map of run_id -> summary data (with params/gradients filtered)
     """
     logger_api.info(
-        f"Batch fetching summaries for {len(batch_request.run_ids)} runs in {project}"
+        f"start batch_run_summaries {project} ({len(batch_request.run_ids)} runs)"
     )
 
     async def fetch_one_summary(run_id: str) -> tuple[str, dict | None]:
         try:
-            run_path, _ = get_run_path(project, run_id, current_user)
+            run_path, _ = await get_run_path(project, run_id, current_user)
             reader = BoardReader(run_path)
 
             def get_summary_sync():
@@ -583,7 +566,8 @@ async def batch_get_scalar_data(
         dict: Nested map of run_id -> metric -> data
     """
     logger_api.info(
-        f"Batch fetching {len(body.metrics)} metrics for {len(body.run_ids)} runs in {project}"
+        f"start batch_scalar_data {project} "
+        f"({len(body.metrics)} metrics x {len(body.run_ids)} runs)"
     )
 
     # Filter out params/ and gradients/ metrics
@@ -597,7 +581,7 @@ async def batch_get_scalar_data(
         run_id: str, metric: str
     ) -> tuple[str, str, dict | None]:
         try:
-            run_path, _ = get_run_path(project, run_id, current_user)
+            run_path, _ = await get_run_path(project, run_id, current_user)
             reader = BoardReader(run_path)
 
             def get_scalar_sync():

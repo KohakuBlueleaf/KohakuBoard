@@ -1,5 +1,7 @@
 """Sync API endpoints for uploading boards to remote server"""
 
+import asyncio
+import base64
 import hashlib
 import json
 from datetime import datetime, timezone
@@ -61,6 +63,8 @@ async def sync_run(
     Raises:
         HTTPException: 400 if mode is local, 401 if not authenticated
     """
+    logger_api.info(f"start sync_run {project_name}")
+
     if cfg.app.mode != "remote":
         raise HTTPException(
             400,
@@ -93,98 +97,28 @@ async def sync_run(
 
     logger_api.info(f"Run ID: {run_id}, Name: {name}, Private: {private}")
 
-    # Determine owner (support org/project format)
-    owner = current_user
-    if "/" in project_name:
-        # Format: {org_name}/{project}
-        org_name, actual_project = project_name.split("/", 1)
-        org = get_organization(org_name)
-        if not org:
-            raise HTTPException(
-                404, detail={"error": f"Organization '{org_name}' not found"}
-            )
-
-        # Check if user is member of org
-        membership = get_user_organization(current_user, org)
-        if not membership or membership.role not in ["member", "admin", "super-admin"]:
-            raise HTTPException(
-                403,
-                detail={
-                    "error": f"You don't have permission to sync to organization '{org_name}'"
-                },
-            )
-
-        owner = org
-        project_name = actual_project
-
-    # Check if board exists
-    existing = Board.get_or_none(
-        (Board.owner == owner)
-        & (Board.project_name == project_name)
-        & (Board.run_id == run_id)
+    board, run_dir, created = await asyncio.to_thread(
+        _get_or_create_board, project_name, run_id, current_user
     )
+    project_name = board.project_name
 
-    if existing:
-        # Update existing
-        board = existing
-        logger_api.info(f"Updating existing board: {board.id}")
-    else:
-        # Create new
-        storage_path = f"users/{owner.username}/{project_name}/{run_id}"
-        board = Board.create(
-            run_id=run_id,
-            name=name,
-            project_name=project_name,
-            owner=owner,
-            private=private,
-            config=json.dumps(config),
-            storage_path=storage_path,
-        )
-        logger_api.info(f"Created new board: {board.id} (owner: {owner.username})")
+    duckdb_bytes = await duckdb_file.read()
+    media_payloads = []
+    for media_file in media_files:
+        media_payloads.append((media_file.filename, await media_file.read()))
 
-    # Save files to filesystem
-    base_dir = Path(cfg.app.board_data_dir)
-    run_dir = base_dir / board.storage_path
-    run_dir.mkdir(parents=True, exist_ok=True)
-
-    # Save DuckDB file
-    data_dir = run_dir / "data"
-    data_dir.mkdir(exist_ok=True)
-    duckdb_path = data_dir / "board.duckdb"
-
-    logger_api.info(f"Saving DuckDB file to: {duckdb_path}")
-    content = await duckdb_file.read()
-    async with aiofiles.open(duckdb_path, "wb") as f:
-        await f.write(content)
-    total_size = len(content)
-
-    # Save media files to KVault
-    media_kv_path = run_dir / "media" / "blobs.db"
-    media_kv = KVault(str(media_kv_path))
-
-    logger_api.info(f"Saving {len(media_files)} media files to KVault")
-    try:
-        # Use .cache() for bulk media writes (64MB cache)
-        with media_kv.cache(64 * 1024 * 1024):
-            for media_file in media_files:
-                key = media_file.filename  # Key is {media_hash}.{format}
-                logger_api.debug(f"Saving media to KVault: {media_file.filename}")
-                content = await media_file.read()
-                media_kv[key] = content
-                total_size += len(content)
-    finally:
-        media_kv.close()
-
-    # Save metadata.json
-    metadata_path = run_dir / "metadata.json"
-    async with aiofiles.open(metadata_path, "w") as f:
-        await f.write(json.dumps(meta, indent=2))
-
-    # Update Board record
-    board.total_size_bytes = total_size
-    board.last_synced_at = datetime.now(timezone.utc)
-    board.updated_at = datetime.now(timezone.utc)
-    board.save()
+    total_size = await asyncio.to_thread(
+        _write_full_sync_run,
+        board,
+        run_dir,
+        duckdb_bytes,
+        media_payloads,
+        meta,
+        name,
+        private,
+        config,
+        created,
+    )
 
     logger_api.info(f"Sync completed: {run_id} ({total_size} bytes)")
 
@@ -204,7 +138,7 @@ async def sync_run(
 
 def _get_or_create_board(
     project_name: str, run_id: str, current_user: User
-) -> tuple[Board, Path]:
+) -> tuple[Board, Path, bool]:
     """Get existing board or create new one
 
     Args:
@@ -213,7 +147,7 @@ def _get_or_create_board(
         current_user: Authenticated user
 
     Returns:
-        Tuple of (Board, storage_path)
+        Tuple of (Board, storage_path, created_flag)
     """
     # Determine owner (support org/project format)
     owner = current_user
@@ -246,6 +180,7 @@ def _get_or_create_board(
         & (Board.run_id == run_id)
     )
 
+    created = False
     if existing:
         board = existing
     else:
@@ -261,6 +196,7 @@ def _get_or_create_board(
             storage_path=storage_path,
         )
         logger_api.info(f"Created new board: {board.id} (owner: {owner.username})")
+        created = True
 
     # Get storage path
     base_dir = Path(cfg.app.board_data_dir)
@@ -271,7 +207,277 @@ def _get_or_create_board(
     (board_dir / "data").mkdir(exist_ok=True)
     (board_dir / "media").mkdir(exist_ok=True)
 
-    return board, board_dir
+    return board, board_dir, created
+
+
+def _write_full_sync_run(
+    board: Board,
+    run_dir: Path,
+    duckdb_bytes: bytes,
+    media_payloads: list[tuple[str | None, bytes]],
+    metadata: dict,
+    name: str,
+    private: bool,
+    config: dict,
+    created: bool,
+) -> int:
+    """Blocking helper to write full sync payload to disk."""
+    run_dir.mkdir(parents=True, exist_ok=True)
+    data_dir = run_dir / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    duckdb_path = data_dir / "board.duckdb"
+
+    logger_api.info(f"Saving DuckDB file to: {duckdb_path}")
+    with open(duckdb_path, "wb") as f:
+        f.write(duckdb_bytes)
+    total_size = len(duckdb_bytes)
+
+    media_dir = run_dir / "media"
+    media_dir.mkdir(parents=True, exist_ok=True)
+    media_kv_path = media_dir / "blobs.db"
+    media_kv = KVault(str(media_kv_path))
+
+    logger_api.info(f"Saving {len(media_payloads)} media files to KVault")
+    try:
+        with media_kv.cache(64 * 1024 * 1024):
+            for filename, content in media_payloads:
+                if not filename:
+                    continue
+                key = filename
+                logger_api.debug(f"Saving media to KVault: {filename}")
+                media_kv[key] = content
+                total_size += len(content)
+    finally:
+        media_kv.close()
+
+    metadata_path = run_dir / "metadata.json"
+    with open(metadata_path, "w") as f:
+        json.dump(metadata, f, indent=2)
+
+    if created:
+        board.name = name
+        board.private = private
+        board.config = json.dumps(config)
+
+    board.total_size_bytes = total_size
+    board.last_synced_at = datetime.now(timezone.utc)
+    board.updated_at = datetime.now(timezone.utc)
+    board.save()
+
+    return total_size
+
+
+def _process_incremental_sync(
+    board: Board, board_dir: Path, request: LogSyncRequest
+) -> tuple[dict[str, str], list[str]]:
+    """Blocking helper to persist incremental sync payload."""
+    storage = HybridStorage(board_dir / "data", logger=logger_api)
+
+    scalars_by_step: dict[int, dict] = {}
+    for metric_name, points in request.scalars.items():
+        for point in points:
+            if point.step not in scalars_by_step:
+                scalars_by_step[point.step] = {
+                    "global_step": None,
+                    "timestamp_ms": None,
+                    "metrics": {},
+                }
+            scalars_by_step[point.step]["metrics"][metric_name] = point.value
+
+    for step_data in request.steps:
+        container = scalars_by_step.setdefault(
+            step_data.step,
+            {
+                "global_step": None,
+                "timestamp_ms": None,
+                "metrics": {},
+            },
+        )
+        container["global_step"] = step_data.global_step
+        container["timestamp_ms"] = step_data.timestamp
+
+    for step, data in scalars_by_step.items():
+        metrics = data["metrics"]
+        if not metrics and data["timestamp_ms"] is None:
+            continue
+        timestamp_ms = data["timestamp_ms"]
+        timestamp = (
+            datetime.fromtimestamp(timestamp_ms / 1000, tz=timezone.utc)
+            if timestamp_ms
+            else None
+        )
+        storage.append_metrics(
+            step=step,
+            global_step=data["global_step"],
+            metrics=metrics,
+            timestamp=timestamp or datetime.now(timezone.utc),
+        )
+
+    for media_data in request.media:
+        media_list = [
+            {
+                "media_hash": media_data.media_hash,
+                "format": media_data.format,
+                "type": media_data.type,
+                "size_bytes": media_data.size_bytes or 0,
+                "width": media_data.width,
+                "height": media_data.height,
+            }
+        ]
+        storage.append_media(
+            step=media_data.step,
+            global_step=media_data.global_step,
+            name=media_data.name,
+            media_list=media_list,
+            caption=media_data.caption,
+        )
+
+    for table_data in request.tables:
+        table_dict = {
+            "columns": table_data.columns,
+            "column_types": table_data.column_types,
+            "rows": table_data.rows,
+        }
+        storage.append_table(
+            step=table_data.step,
+            global_step=table_data.global_step,
+            name=table_data.name,
+            table_data=table_dict,
+        )
+
+    for hist_data in request.histograms:
+        storage.append_histogram(
+            step=hist_data.step,
+            global_step=hist_data.global_step,
+            name=hist_data.name,
+            bins=hist_data.bins,
+            counts=hist_data.counts,
+            precision=hist_data.precision,
+        )
+
+    for kde_data in request.kernel_density:
+        try:
+            payload_bytes = base64.b64decode(kde_data.payload)
+        except Exception as exc:
+            logger_api.warning(
+                f"Failed to decode kernel density payload {kde_data.name}: {exc}"
+            )
+            continue
+
+        storage.append_kernel_density(
+            step=kde_data.step,
+            global_step=kde_data.global_step,
+            name=kde_data.name,
+            payload=payload_bytes,
+            kde_meta=kde_data.kde_meta or {},
+        )
+
+    for tensor_data in request.tensors:
+        try:
+            payload_bytes = base64.b64decode(tensor_data.payload)
+        except Exception as exc:
+            logger_api.warning(
+                f"Failed to decode tensor payload {tensor_data.name}: {exc}"
+            )
+            continue
+
+        storage.append_tensor(
+            step=tensor_data.step,
+            global_step=tensor_data.global_step,
+            name=tensor_data.name,
+            payload=payload_bytes,
+            tensor_meta=tensor_data.tensor_meta or {},
+        )
+
+    storage.flush_all()
+
+    if request.metadata:
+        metadata_path = board_dir / "metadata.json"
+        with open(metadata_path, "w") as f:
+            json.dump(request.metadata, f, indent=2)
+        logger_api.debug(f"Saved metadata.json to {metadata_path}")
+
+        if "name" in request.metadata:
+            board.name = request.metadata["name"]
+        if "config" in request.metadata:
+            board.config = json.dumps(request.metadata["config"])
+
+    log_dir = board_dir / "logs"
+    log_dir.mkdir(exist_ok=True)
+    server_log_hashes = {}
+    for log_name in [
+        "output.log",
+        "board.log",
+        "writer.log",
+        "sync_worker.log",
+        "storage.log",
+    ]:
+        log_file = log_dir / log_name
+        if log_file.exists():
+            try:
+                content = log_file.read_bytes()
+                server_log_hashes[log_name] = hashlib.sha256(content).hexdigest()
+            except Exception:
+                pass
+
+    media_kv_path = board_dir / "media" / "blobs.db"
+    missing_media: list[str] = []
+    if not media_kv_path.exists():
+        missing_media = [media_data.media_hash for media_data in request.media]
+    else:
+        media_kv = KVault(str(media_kv_path))
+        try:
+            for media_data in request.media:
+                key = f"{media_data.media_hash}.{media_data.format}"
+                if key not in media_kv:
+                    missing_media.append(media_data.media_hash)
+        finally:
+            media_kv.close()
+
+    board.last_synced_at = datetime.now(timezone.utc)
+    board.updated_at = datetime.now(timezone.utc)
+    board.save()
+
+    return server_log_hashes, missing_media
+
+
+def _store_media_files(
+    board: Board, board_dir: Path, payloads: list[tuple[str | None, bytes]]
+) -> tuple[list[str], int]:
+    """Blocking helper that persists media blobs to KVault."""
+    media_kv_path = board_dir / "media" / "blobs.db"
+    media_kv = KVault(str(media_kv_path))
+
+    uploaded_hashes: list[str] = []
+    skipped_count = 0
+
+    try:
+        with media_kv.cache(64 * 1024 * 1024):
+            for filename, content in payloads:
+                if not filename or "." not in filename:
+                    logger_api.warning(f"Invalid media filename: {filename}")
+                    continue
+
+                key = filename
+                media_hash = filename.rsplit(".", 1)[0]
+
+                if key in media_kv:
+                    logger_api.debug(f"Media already exists in KVault: {filename}")
+                    skipped_count += 1
+                    continue
+
+                media_kv[key] = content
+                uploaded_hashes.append(media_hash)
+                logger_api.debug(
+                    f"Uploaded media to KVault: {filename} ({len(content)} bytes)"
+                )
+    finally:
+        media_kv.close()
+
+    board.updated_at = datetime.now(timezone.utc)
+    board.save()
+
+    return uploaded_hashes, skipped_count
 
 
 @router.post("/projects/{project_name}/runs/{run_id}/log")
@@ -298,6 +504,11 @@ async def sync_logs_incremental(
     Raises:
         HTTPException: 400/401/403/404 on error
     """
+    logger_api.info(
+        f"start incremental_sync {project_name}/{run_id} "
+        f"(steps {request.sync_range.start_step}-{request.sync_range.end_step})"
+    )
+
     if cfg.app.mode != "remote":
         raise HTTPException(
             400,
@@ -309,177 +520,23 @@ async def sync_logs_incremental(
         f"(steps {request.sync_range.start_step}-{request.sync_range.end_step})"
     )
 
-    # Get or create board
-    board, board_dir = _get_or_create_board(project_name, run_id, current_user)
+    # Get or create board without blocking
+    board, board_dir, _ = await asyncio.to_thread(
+        _get_or_create_board, project_name, run_id, current_user
+    )
 
-    # Write data using hybrid storage
     try:
-        storage = HybridStorage(board_dir / "data", logger=logger_api)
-
-        # Group scalars by step for batch writing
-        scalars_by_step = {}
-        for metric_name, points in request.scalars.items():
-            for point in points:
-                if point.step not in scalars_by_step:
-                    scalars_by_step[point.step] = {
-                        "global_step": None,
-                        "timestamp_ms": None,
-                        "metrics": {},
-                    }
-                scalars_by_step[point.step]["metrics"][metric_name] = point.value
-
-        # Merge step info from request.steps into scalars_by_step
-        for step_data in request.steps:
-            if step_data.step in scalars_by_step:
-                scalars_by_step[step_data.step]["global_step"] = step_data.global_step
-                scalars_by_step[step_data.step]["timestamp_ms"] = step_data.timestamp
-            else:
-                # Step with no scalars, still need to record it
-                scalars_by_step[step_data.step] = {
-                    "global_step": step_data.global_step,
-                    "timestamp_ms": step_data.timestamp,
-                    "metrics": {},
-                }
-
-        # Write scalars with step info
-        for step, data in scalars_by_step.items():
-            # Convert timestamp_ms to datetime for append_metrics
-            if data["timestamp_ms"]:
-                timestamp_obj = datetime.fromtimestamp(
-                    data["timestamp_ms"] / 1000.0, tz=timezone.utc
-                )
-            else:
-                timestamp_obj = datetime.now(timezone.utc)
-
-            # Only call append_metrics if there are actual metrics
-            if data["metrics"]:
-                storage.append_metrics(
-                    step=step,
-                    global_step=data["global_step"],
-                    metrics=data["metrics"],
-                    timestamp=timestamp_obj,
-                )
-            else:
-                # Just record step info without metrics
-                timestamp_ms = (
-                    data["timestamp_ms"]
-                    if data["timestamp_ms"]
-                    else int(timestamp_obj.timestamp() * 1000)
-                )
-                storage.metadata_storage.append_step_info(
-                    step=step,
-                    global_step=data["global_step"],
-                    timestamp=timestamp_ms,
-                )
-
-        # Write media metadata (convert to media_list format expected by SQLite)
-        for media_data in request.media:
-            media_list = [
-                {
-                    "media_hash": media_data.media_hash,
-                    "format": media_data.format,
-                    "type": media_data.type,
-                    "size_bytes": media_data.size_bytes or 0,
-                    "width": media_data.width,
-                    "height": media_data.height,
-                }
-            ]
-            storage.append_media(
-                step=media_data.step,
-                global_step=media_data.global_step,
-                name=media_data.name,
-                media_list=media_list,
-                caption=media_data.caption,
-            )
-
-        # Write tables
-        for table_data in request.tables:
-            table_dict = {
-                "columns": table_data.columns,
-                "column_types": table_data.column_types,
-                "rows": table_data.rows,
-            }
-            storage.append_table(
-                step=table_data.step,
-                global_step=table_data.global_step,
-                name=table_data.name,
-                table_data=table_dict,
-            )
-
-        # Write histograms
-        for hist_data in request.histograms:
-            storage.append_histogram(
-                step=hist_data.step,
-                global_step=hist_data.global_step,
-                name=hist_data.name,
-                bins=hist_data.bins,
-                counts=hist_data.counts,
-                precision=hist_data.precision,
-            )
-
-        # Flush all buffers to disk
-        storage.flush_all()
-
-        # Save metadata.json if provided
-        if request.metadata:
-            metadata_path = board_dir / "metadata.json"
-            async with aiofiles.open(metadata_path, "w") as f:
-                await f.write(json.dumps(request.metadata, indent=2))
-            logger_api.debug(f"Saved metadata.json to {metadata_path}")
-
-            # Update board name from metadata if available
-            if "name" in request.metadata:
-                board.name = request.metadata["name"]
-            if "config" in request.metadata:
-                board.config = json.dumps(request.metadata["config"])
-
-        # Collect server-side log file hashes for comparison
-        log_dir = board_dir / "logs"
-        log_dir.mkdir(exist_ok=True)
-
-        server_log_hashes = {}
-        for log_name in [
-            "output.log",
-            "board.log",
-            "writer.log",
-            "sync_worker.log",
-            "storage.log",
-        ]:
-            log_file = log_dir / log_name
-            if log_file.exists():
-                try:
-                    content = log_file.read_bytes()
-                    server_log_hashes[log_name] = hashlib.sha256(content).hexdigest()
-                except:
-                    pass
-
-        # Check which media files we don't have in SQLite KV
-        media_kv_path = board_dir / "media" / "blobs.db"
-        missing_media = []
-
-        # If KV database doesn't exist yet, all media is missing
-        if not media_kv_path.exists():
-            missing_media = [media_data.media_hash for media_data in request.media]
-        else:
-            # KV database exists, check which media we have
-            media_kv = KVault(str(media_kv_path))
-            try:
-                for media_data in request.media:
-                    key = f"{media_data.media_hash}.{media_data.format}"
-                    if key not in media_kv:
-                        missing_media.append(media_data.media_hash)
-            finally:
-                media_kv.close()
-
-        # Update board metadata
-        board.last_synced_at = datetime.now(timezone.utc)
-        board.updated_at = datetime.now(timezone.utc)
-        board.save()
+        server_log_hashes, missing_media = await asyncio.to_thread(
+            _process_incremental_sync, board, board_dir, request
+        )
 
         logger_api.info(
             f"Incremental sync completed: {len(request.steps)} steps, "
             f"{len(request.scalars)} metrics, "
             f"{len(request.media)} media, "
+            f"{len(request.histograms)} histograms, "
+            f"{len(request.kernel_density)} kernel density entries, "
+            f"{len(request.tensors)} tensors, "
             f"{len(missing_media)} missing media files"
         )
 
@@ -518,6 +575,8 @@ async def upload_log_file(
     Returns:
         Success status with hash
     """
+    logger_api.info(f"start upload_log_file {project_name}/{run_id}/{log_filename}")
+
     # Validate log filename (security)
     allowed_logs = [
         "output.log",
@@ -535,7 +594,9 @@ async def upload_log_file(
     logger_api.info(f"Log upload: {project_name}/{run_id}/{log_filename}")
 
     # Get or create board
-    board, board_dir = _get_or_create_board(project_name, run_id, current_user)
+    board, board_dir, _ = await asyncio.to_thread(
+        _get_or_create_board, project_name, run_id, current_user
+    )
 
     # Read binary body
     content_bytes = await request.body()
@@ -587,6 +648,8 @@ async def upload_media_files(
     Raises:
         HTTPException: 400/401/403/404 on error
     """
+    logger_api.info(f"start upload_media {project_name}/{run_id} ({len(files)} files)")
+
     if cfg.app.mode != "remote":
         raise HTTPException(
             400,
@@ -595,50 +658,18 @@ async def upload_media_files(
 
     logger_api.info(f"Media upload: {project_name}/{run_id} ({len(files)} files)")
 
-    # Get board
-    board, board_dir = _get_or_create_board(project_name, run_id, current_user)
+    # Get board without blocking
+    board, board_dir, _ = await asyncio.to_thread(
+        _get_or_create_board, project_name, run_id, current_user
+    )
 
-    # Initialize KVault storage for media
-    media_kv_path = board_dir / "media" / "blobs.db"
-    media_kv = KVault(str(media_kv_path))
+    payloads: list[tuple[str | None, bytes]] = []
+    for file in files:
+        payloads.append((file.filename, await file.read()))
 
-    uploaded_hashes = []
-    skipped_count = 0
-
-    try:
-        # Use .cache() for bulk media uploads (64MB cache)
-        with media_kv.cache(64 * 1024 * 1024):
-            for file in files:
-                # Validate filename format
-                if not file.filename or "." not in file.filename:
-                    logger_api.warning(f"Invalid media filename: {file.filename}")
-                    continue
-
-                # Extract hash from filename
-                media_hash = file.filename.rsplit(".", 1)[0]
-                key = file.filename  # Key is {media_hash}.{format}
-
-                # Check if already exists in KVault
-                if key in media_kv:
-                    logger_api.debug(f"Media already exists in KVault: {file.filename}")
-                    skipped_count += 1
-                    continue
-
-                # Read file content and store in KVault
-                content = await file.read()
-                media_kv[key] = content
-
-                uploaded_hashes.append(media_hash)
-                logger_api.debug(
-                    f"Uploaded media to KVault: {file.filename} ({len(content)} bytes)"
-                )
-    finally:
-        # Close KVault connection
-        media_kv.close()
-
-    # Update board
-    board.updated_at = datetime.now(timezone.utc)
-    board.save()
+    uploaded_hashes, skipped_count = await asyncio.to_thread(
+        _store_media_files, board, board_dir, payloads
+    )
 
     logger_api.info(
         f"Media upload completed: {len(uploaded_hashes)} uploaded, "

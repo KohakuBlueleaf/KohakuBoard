@@ -1,5 +1,6 @@
 """Project management API endpoints"""
 
+import asyncio
 import json
 from collections import defaultdict
 from pathlib import Path
@@ -30,16 +31,7 @@ def _group_boards_by_project(base_dir: Path):
     return projects
 
 
-def fetchProjectRuns(project_name: str, current_user: User | None):
-    """Helper to fetch project runs based on mode.
-
-    Args:
-        project_name: Project name
-        current_user: Current user (optional)
-
-    Returns:
-        dict with project info and runs list
-    """
+def _fetch_project_runs_sync(project_name: str, current_user: User | None):
     if cfg.app.mode == "local":
         base_dir = Path(cfg.app.board_data_dir)
         projects = _group_boards_by_project(base_dir)
@@ -65,50 +57,63 @@ def fetchProjectRuns(project_name: str, current_user: User | None):
             )
 
         return {"project": project_name, "runs": runs}
-    else:
-        # Remote mode: require authentication
-        if not current_user:
-            raise HTTPException(401, detail={"error": "Authentication required"})
 
-        # Query runs from DB for current user
-        runs_query = (
-            Board.select()
-            .where((Board.owner == current_user) & (Board.project_name == project_name))
-            .order_by(Board.created_at.desc())
+    # Remote mode: require authentication
+    if not current_user:
+        raise HTTPException(401, detail={"error": "Authentication required"})
+
+    base_dir = Path(cfg.app.board_data_dir)
+
+    runs_query = (
+        Board.select()
+        .where((Board.owner == current_user) & (Board.project_name == project_name))
+        .order_by(Board.created_at.desc())
+    )
+
+    runs = []
+    for run in runs_query:
+        updated_at = safe_isoformat(run.updated_at)
+        try:
+            board_path = base_dir / run.storage_path
+            if board_path.exists():
+                reader = BoardReader(board_path)
+                latest_step = reader.get_latest_step()
+                if latest_step and latest_step.get("timestamp"):
+                    updated_at = latest_step["timestamp"]
+        except Exception as e:
+            logger_api.debug(f"Failed to get latest step for {run.run_id}: {e}")
+
+        runs.append(
+            {
+                "run_id": run.run_id,
+                "name": run.name,
+                "private": run.private,
+                "created_at": safe_isoformat(run.created_at),
+                "updated_at": updated_at,
+                "last_synced_at": safe_isoformat(run.last_synced_at),
+                "total_size": run.total_size_bytes,
+                "config": json.loads(run.config) if run.config else {},
+            }
         )
 
-        runs = []
-        for run in runs_query:
-            # Get actual updated_at from latest step in board storage
-            updated_at = safe_isoformat(run.updated_at)
-            try:
-                board_path = Path(cfg.app.board_data_dir) / run.storage_path
-                if board_path.exists():
-                    reader = BoardReader(board_path)
-                    latest_step = reader.get_latest_step()
-                    if latest_step and latest_step.get("timestamp"):
-                        updated_at = latest_step["timestamp"]
-            except Exception as e:
-                logger_api.debug(f"Failed to get latest step for {run.run_id}: {e}")
+    return {
+        "project": project_name,
+        "owner": current_user.username,
+        "runs": runs,
+    }
 
-            runs.append(
-                {
-                    "run_id": run.run_id,
-                    "name": run.name,
-                    "private": run.private,
-                    "created_at": safe_isoformat(run.created_at),
-                    "updated_at": updated_at,
-                    "last_synced_at": safe_isoformat(run.last_synced_at),
-                    "total_size": run.total_size_bytes,
-                    "config": json.loads(run.config) if run.config else {},
-                }
-            )
 
-        return {
-            "project": project_name,
-            "owner": current_user.username,
-            "runs": runs,
-        }
+async def fetchProjectRuns(project_name: str, current_user: User | None):
+    """Helper to fetch project runs based on mode.
+
+    Args:
+        project_name: Project name
+        current_user: Current user (optional)
+
+    Returns:
+        dict with project info and runs list
+    """
+    return await asyncio.to_thread(_fetch_project_runs_sync, project_name, current_user)
 
 
 @router.get("/projects")
@@ -123,7 +128,7 @@ async def list_projects(current_user: User | None = Depends(get_optional_user)):
     """
     if cfg.app.mode == "local":
         base_dir = Path(cfg.app.board_data_dir)
-        grouped = _group_boards_by_project(base_dir)
+        grouped = await asyncio.to_thread(_group_boards_by_project, base_dir)
 
         project_list = []
         for name, boards in grouped.items():
@@ -159,31 +164,33 @@ async def list_projects(current_user: User | None = Depends(get_optional_user)):
             # Anonymous: no projects
             return {"projects": []}
 
-        # Query user's projects from DB
-        query = (
-            Board.select(
-                Board.project_name,
-                fn.COUNT(Board.id).alias("run_count"),
-                fn.MIN(Board.created_at).alias("created_at"),
-                fn.MAX(Board.updated_at).alias("updated_at"),
-            )
-            .where(Board.owner == current_user)
-            .group_by(Board.project_name)
-            .order_by(Board.project_name)
-        )
-
-        projects = []
-        for project in query:
-            projects.append(
-                {
-                    "name": project.project_name,
-                    "display_name": project.project_name.replace("-", " ").title(),
-                    "run_count": project.run_count,
-                    "created_at": safe_isoformat(project.created_at),
-                    "updated_at": safe_isoformat(project.updated_at),
-                }
+        def _list_remote_projects(user: User):
+            query = (
+                Board.select(
+                    Board.project_name,
+                    fn.COUNT(Board.id).alias("run_count"),
+                    fn.MIN(Board.created_at).alias("created_at"),
+                    fn.MAX(Board.updated_at).alias("updated_at"),
+                )
+                .where(Board.owner == user)
+                .group_by(Board.project_name)
+                .order_by(Board.project_name)
             )
 
+            projects = []
+            for project in query:
+                projects.append(
+                    {
+                        "name": project.project_name,
+                        "display_name": project.project_name.replace("-", " ").title(),
+                        "run_count": project.run_count,
+                        "created_at": safe_isoformat(project.created_at),
+                        "updated_at": safe_isoformat(project.updated_at),
+                    }
+                )
+            return projects
+
+        projects = await asyncio.to_thread(_list_remote_projects, current_user)
         return {"projects": projects}
 
 
@@ -202,4 +209,4 @@ async def list_runs(
         dict: {"project": ..., "runs": [...], "owner": ...}
     """
     logger_api.info(f"Listing runs for project: {project_name}")
-    return fetchProjectRuns(project_name, current_user)
+    return await fetchProjectRuns(project_name, current_user)
