@@ -16,16 +16,28 @@ const runMetadata = ref(null);
 
 const router = useRouter();
 const currentProject = computed(() => route.params.project);
+const runId = computed(() => route.params.id);
 const runTitle = computed(() => {
   return (
     runMetadata.value?.name ||
     availableSummary.value?.metadata?.name ||
-    runAnnotation.value
+    runId.value
   );
 });
-const runAnnotation = computed(
-  () => runMetadata.value?.run_id || route.params.id,
-);
+const runAnnotation = computed(() => {
+  return (
+    runMetadata.value?.annotation ||
+    availableSummary.value?.metadata?.annotation ||
+    ""
+  );
+});
+const annotationDisplay = computed(() => {
+  const label =
+    runAnnotation.value && runAnnotation.value.trim().length > 0
+      ? runAnnotation.value
+      : "No annotation";
+  return `${label}(${runId.value})`;
+});
 const canEditAnnotation = computed(() => !!runMetadata.value?.finished_at);
 
 const isEditingName = ref(false);
@@ -57,10 +69,7 @@ const layoutPersistenceEnabled = ref(false);
 
 async function hydrateRunNameFromProjectList(runId) {
   if (!currentProject.value || !runId) return;
-  if (
-    runMetadata.value?.name &&
-    runMetadata.value.name !== runAnnotation.value
-  ) {
+  if (runMetadata.value?.name && runMetadata.value.name !== runId) {
     return;
   }
 
@@ -69,8 +78,9 @@ async function hydrateRunNameFromProjectList(runId) {
     const match = data.runs?.find((run) => run.run_id === runId);
     if (match?.name && match.name !== match.run_id) {
       runMetadata.value = {
-        ...(runMetadata.value || { run_id: runId }),
+        ...(runMetadata.value || {}),
         name: match.name,
+        annotation: match.annotation,
       };
       if (availableSummary.value?.metadata) {
         availableSummary.value = {
@@ -78,6 +88,7 @@ async function hydrateRunNameFromProjectList(runId) {
           metadata: {
             ...(availableSummary.value.metadata || {}),
             name: match.name,
+            annotation: match.annotation,
           },
           experiment_info: {
             ...(availableSummary.value.experiment_info || {}),
@@ -126,7 +137,7 @@ async function saveName() {
 
   isSavingName.value = true;
   try {
-    await updateRun(currentProject.value, runAnnotation.value, {
+    await updateRun(currentProject.value, runId.value, {
       name: trimmed,
     });
     runMetadata.value = {
@@ -142,7 +153,7 @@ async function saveName() {
         },
       };
     }
-    await hydrateRunNameFromProjectList(runAnnotation.value);
+    await hydrateRunNameFromProjectList(runId.value);
     ElMessage.success("Run name updated");
     isEditingName.value = false;
   } catch (error) {
@@ -185,32 +196,24 @@ async function saveAnnotation() {
   isSavingAnnotation.value = true;
   const currentAnnotation = runAnnotation.value;
   try {
-    const result = await updateRun(currentProject.value, currentAnnotation, {
+    const result = await updateRun(currentProject.value, runId.value, {
       annotation: trimmed,
     });
     runMetadata.value = {
       ...(runMetadata.value || {}),
-      run_id: result.run_id,
-      board_id: result.run_id,
+      annotation: result.annotation,
     };
     if (availableSummary.value) {
       availableSummary.value = {
         ...availableSummary.value,
         metadata: {
           ...(availableSummary.value.metadata || {}),
-          run_id: result.run_id,
-          board_id: result.run_id,
+          annotation: result.annotation,
         },
       };
     }
     ElMessage.success("Annotation updated");
     isEditingAnnotation.value = false;
-
-    if (result.run_id && result.run_id !== route.params.id) {
-      router.replace({
-        path: `/projects/${currentProject.value}/${result.run_id}`,
-      });
-    }
     await hydrateRunNameFromProjectList(result.run_id);
   } catch (error) {
     ElMessage.error(extractErrorMessage(error, "Failed to update annotation"));
@@ -389,7 +392,6 @@ async function initializeExperiment() {
     availableSummary.value = summary;
     runMetadata.value = {
       ...(summary.metadata || {}),
-      run_id: summary.metadata?.run_id || runId,
     };
     availableMetrics.value = summary.available_data.scalars;
 
@@ -774,7 +776,7 @@ async function initializeExperiment() {
     // Determine default x-axis (prefer global_step if it's used, otherwise step)
     await determineDefaultXAxis();
 
-    await hydrateRunNameFromProjectList(runMetadata.value?.run_id || runId);
+    await hydrateRunNameFromProjectList(runId);
 
     // Initialization complete - allow watch to fire on user tab changes
     isInitializing.value = false;
@@ -2021,7 +2023,9 @@ function onDragEnd(evt) {
           title="Double-click to rename annotation"
           @dblclick="startEditAnnotation"
         >
-          <span class="font-mono">{{ runAnnotation }}</span>
+          <span class="font-mono">
+            {{ annotationDisplay }}
+          </span>
           <el-tag v-if="!canEditAnnotation" type="info" size="small">
             Finish run to rename
           </el-tag>

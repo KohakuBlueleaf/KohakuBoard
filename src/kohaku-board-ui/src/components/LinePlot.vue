@@ -558,7 +558,9 @@ function createPlot() {
   const smoothedTraces = [];
   const specialMarkerTraces = [];
 
-  data.forEach((series, index) => {
+  const seriesForRendering = props.multiRunMode ? [...data].reverse() : data;
+
+  seriesForRendering.forEach((series, index) => {
     console.log(
       `[LinePlot] createPlot - processing series ${series.name}: ${series.segments?.length || 0} segments, nanX=${series.nanX?.length || 0}, infX=${series.infX?.length || 0}, negInfX=${series.negInfX?.length || 0}`,
     );

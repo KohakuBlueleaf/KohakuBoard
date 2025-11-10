@@ -24,6 +24,14 @@ function handleColorChange(runId, event) {
   const color = event.target.value;
   emit("update-color", runId, color);
 }
+
+const formatAnnotation = (run) => {
+  const label =
+    run.annotation && run.annotation.trim().length > 0
+      ? run.annotation
+      : "No annotation";
+  return `${label}(${run.run_id})`;
+};
 </script>
 
 <template>
@@ -58,7 +66,7 @@ function handleColorChange(runId, event) {
               {{ run.name || run.run_id }}
             </span>
             <span class="text-xs truncate text-gray-500 dark:text-gray-400">
-              {{ run.run_id }}
+              {{ formatAnnotation(run) }}
             </span>
           </div>
         </div>

@@ -38,94 +38,48 @@ const currentPage = ref(1);
 const runsPerPage = 20;
 const loading = ref(false);
 
-// Base color palette for runs
-const RUN_COLORS = [
-  "#FF6B6B",
-  "#4ECDC4",
-  "#45B7D1",
-  "#FFA07A",
-  "#98D8C8",
-  "#F7DC6F",
-  "#BB8FCE",
-  "#85C1E2",
-  "#F8B88B",
-  "#52BE80",
-  "#E74C3C",
-  "#3498DB",
-  "#9B59B6",
-  "#1ABC9C",
-  "#F39C12",
-  "#E67E22",
-  "#95A5A6",
-  "#34495E",
-  "#16A085",
-  "#27AE60",
-];
+function getRunSortTimestamp(run) {
+  const updated = Date.parse(run?.updated_at ?? "");
+  if (!Number.isNaN(updated)) return updated;
+  const created = Date.parse(run?.created_at ?? "");
+  if (!Number.isNaN(created)) return created;
+  return 0;
+}
 
 /**
  * Get deterministic color for a run
  * Strategy: Use ONLY run_id hash for full determinism
  *
  * - Base color selected from palette using run_id hash (always stable)
- * - Slight HSL jitter based on run_id hash (makes each run unique)
+ * - Hash-driven HSL jitter (now wider) with brightness guard rails so colors stay vivid
  * - Same run_id ALWAYS gets same color, regardless of run order/deletion
  */
 function getRunColor(runId) {
-  // Generate hash from run_id for palette selection
-  let hash = 0;
+  // Hash run_id into 32-bit unsigned int
+  let hash = 2166136261;
   for (let i = 0; i < runId.length; i++) {
-    const char = runId.charCodeAt(i);
-    hash = (hash << 5) - hash + char;
-    hash = hash & hash;
+    hash ^= runId.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
   }
+  hash >>>= 0;
 
-  // Use hash to select base color from palette (deterministic)
-  const paletteIndex = Math.abs(hash) % RUN_COLORS.length;
-  const baseColor = RUN_COLORS[paletteIndex];
+  const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
+  const baseHue = (hash & 0xffff) / 0xffff; // 0-1
+  const hueJitter = (((hash >> 16) & 0xff) / 255 - 0.5) * 60; // ±30°
+  const hue = (baseHue * 360 + hueJitter + 360) % 360;
 
-  // Use the same hash to generate jitter values (-15 to +15 for hue, -10% to +10% for saturation/lightness)
-  const hueJitter = (hash % 30) - 15;
-  const satJitter = (((hash >> 8) % 20) - 10) / 100;
-  const lightJitter = (((hash >> 16) % 20) - 10) / 100;
+  const satBase = 0.65;
+  const satJitter = (((hash >> 24) & 0xff) / 255 - 0.5) * 0.3; // ±0.15
+  const saturation = clamp(satBase + satJitter, 0.5, 0.95);
 
-  // Parse base color to RGB
-  const hex = baseColor.replace("#", "");
-  const r = parseInt(hex.substr(0, 2), 16) / 255;
-  const g = parseInt(hex.substr(2, 2), 16) / 255;
-  const b = parseInt(hex.substr(4, 2), 16) / 255;
+  const lightBase = 0.55;
+  const lightJitter = (((hash >> 8) & 0xff) / 255 - 0.5) * 0.25; // ±0.125
+  const lightness = clamp(lightBase + lightJitter, 0.35, 0.7);
 
-  // Convert RGB to HSL
-  const max = Math.max(r, g, b);
-  const min = Math.min(r, g, b);
-  let h,
-    s,
-    l = (max + min) / 2;
+  const h = hue / 360;
+  const s = saturation;
+  const l = lightness;
 
-  if (max === min) {
-    h = s = 0;
-  } else {
-    const d = max - min;
-    s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
-
-    switch (max) {
-      case r:
-        h = ((g - b) / d + (g < b ? 6 : 0)) / 6;
-        break;
-      case g:
-        h = ((b - r) / d + 2) / 6;
-        break;
-      case b:
-        h = ((r - g) / d + 4) / 6;
-        break;
-    }
-  }
-
-  // Apply jitter
-  h = (h * 360 + hueJitter) % 360;
-  s = Math.max(0, Math.min(1, s + satJitter));
-  l = Math.max(0, Math.min(1, l + lightJitter));
-
-  // Convert HSL back to RGB
   const hue2rgb = (p, q, t) => {
     if (t < 0) t += 1;
     if (t > 1) t -= 1;
@@ -135,24 +89,23 @@ function getRunColor(runId) {
     return p;
   };
 
-  let r2, g2, b2;
+  let r, g, b;
   if (s === 0) {
-    r2 = g2 = b2 = l;
+    r = g = b = l;
   } else {
     const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
     const p = 2 * l - q;
-    r2 = hue2rgb(p, q, h / 360 + 1 / 3);
-    g2 = hue2rgb(p, q, h / 360);
-    b2 = hue2rgb(p, q, h / 360 - 1 / 3);
+    r = hue2rgb(p, q, h + 1 / 3);
+    g = hue2rgb(p, q, h);
+    b = hue2rgb(p, q, h - 1 / 3);
   }
 
-  // Convert back to hex
-  const toHex = (x) => {
-    const hex = Math.round(x * 255).toString(16);
-    return hex.length === 1 ? "0" + hex : hex;
+  const toHex = (value) => {
+    const hex = Math.round(value * 255).toString(16);
+    return hex.length === 1 ? `0${hex}` : hex;
   };
 
-  return `#${toHex(r2)}${toHex(g2)}${toHex(b2)}`;
+  return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
 }
 
 // Multi-run data cache (run_id -> metric -> sparse array)
@@ -322,13 +275,16 @@ const runColors = computed(() => {
 const runNames = computed(() => {
   const names = {};
   allRuns.value.forEach((run) => {
-    const useName = legendMode.value === "name" && run.name;
-    names[run.run_id] = useName ? run.name : run.run_id;
+    if (legendMode.value === "name") {
+      names[run.run_id] = run.name || run.annotation || run.run_id;
+    } else {
+      names[run.run_id] = run.annotation || run.run_id;
+    }
   });
   return names;
 });
 
-// Displayed runs (first 10 selected, which are the latest since allRuns is sorted)
+// Displayed runs (first 10 selected, which are the most recently updated since allRuns is sorted)
 const displayedRuns = computed(() => {
   const selected = Array.from(selectedRunIds.value);
 
@@ -363,12 +319,10 @@ async function fetchRuns() {
     }
 
     const data = await response.json();
-    // Sort runs by created_at (latest first)
-    allRuns.value = (data.runs || []).sort((a, b) => {
-      const dateA = new Date(a.created_at || 0);
-      const dateB = new Date(b.created_at || 0);
-      return dateB - dateA; // Latest first
-    });
+    // Sort runs by last update time (fallback to creation)
+    allRuns.value = (data.runs || []).sort(
+      (a, b) => getRunSortTimestamp(b) - getRunSortTimestamp(a),
+    );
 
     // Load saved hidden runs, default to all visible
     const savedLayout = loadProjectLayoutFromStorage();
@@ -401,11 +355,9 @@ async function pollRuns() {
     }
 
     const data = await response.json();
-    const newRuns = (data.runs || []).sort((a, b) => {
-      const dateA = new Date(a.created_at || 0);
-      const dateB = new Date(b.created_at || 0);
-      return dateB - dateA;
-    });
+    const newRuns = (data.runs || []).sort(
+      (a, b) => getRunSortTimestamp(b) - getRunSortTimestamp(a),
+    );
 
     console.log(`[Polling] Fetched ${newRuns.length} runs from server`);
     console.log(`[Polling] Current allRuns count:`, allRuns.value.length);
