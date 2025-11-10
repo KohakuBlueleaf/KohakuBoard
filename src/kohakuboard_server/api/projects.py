@@ -35,6 +35,7 @@ def _fetch_project_runs_sync(project_name: str, current_user: User | None):
     if cfg.app.mode == "local":
         base_dir = Path(cfg.app.board_data_dir)
         projects = _group_boards_by_project(base_dir)
+        logger_api.info(projects[project_name])
 
         if project_name not in projects:
             raise HTTPException(404, detail={"error": "Project not found"})
@@ -45,9 +46,15 @@ def _fetch_project_runs_sync(project_name: str, current_user: User | None):
             key=lambda b: b.get("created_at") or "",
             reverse=True,
         ):
+            board_id = board["board_id"]
+            run_id = board.get("run_id") or board_id.split("_", 1)[0]
+            annotation = board.get("annotation")
+            if annotation is None and "_" in board_id:
+                _, annotation = board_id.split("_", 1)
             runs.append(
                 {
-                    "run_id": board["board_id"],
+                    "run_id": run_id,
+                    "annotation": annotation,
                     "name": board["name"],
                     "created_at": board["created_at"],
                     "updated_at": board.get("updated_at"),
@@ -73,19 +80,28 @@ def _fetch_project_runs_sync(project_name: str, current_user: User | None):
     runs = []
     for run in runs_query:
         updated_at = safe_isoformat(run.updated_at)
+        annotation = None
+        folder_name = None
         try:
             board_path = base_dir / run.storage_path
+            folder_name = board_path.name
             if board_path.exists():
                 reader = BoardReader(board_path)
                 latest_step = reader.get_latest_step()
                 if latest_step and latest_step.get("timestamp"):
                     updated_at = latest_step["timestamp"]
+                metadata = reader.get_metadata()
+                annotation = metadata.get("annotation")
         except Exception as e:
             logger_api.debug(f"Failed to get latest step for {run.run_id}: {e}")
+
+        if not annotation and folder_name and "_" in folder_name:
+            _, annotation = folder_name.split("_", 1)
 
         runs.append(
             {
                 "run_id": run.run_id,
+                "annotation": annotation,
                 "name": run.name,
                 "private": run.private,
                 "created_at": safe_isoformat(run.created_at),
@@ -103,7 +119,7 @@ def _fetch_project_runs_sync(project_name: str, current_user: User | None):
     }
 
 
-async def fetchProjectRuns(project_name: str, current_user: User | None):
+async def fetch_project_runs(project_name: str, current_user: User | None):
     """Helper to fetch project runs based on mode.
 
     Args:
@@ -208,5 +224,5 @@ async def list_runs(
     Returns:
         dict: {"project": ..., "runs": [...], "owner": ...}
     """
-    logger_api.info(f"Listing runs for project: {project_name}")
-    return await fetchProjectRuns(project_name, current_user)
+    logger_api.info(f"Listing runs for project server-side: {project_name}")
+    return await fetch_project_runs(project_name, current_user)

@@ -250,9 +250,12 @@ def _write_full_sync_run(
     finally:
         media_kv.close()
 
+    metadata_to_save = dict(metadata)
+    metadata_to_save.pop("run_id", None)
+    metadata_to_save["board_id"] = run_dir.name
     metadata_path = run_dir / "metadata.json"
     with open(metadata_path, "w") as f:
-        json.dump(metadata, f, indent=2)
+        json.dump(metadata_to_save, f, indent=2)
 
     if created:
         board.name = name
@@ -392,15 +395,18 @@ def _process_incremental_sync(
     storage.flush_all()
 
     if request.metadata:
+        metadata_to_save = dict(request.metadata)
+        metadata_to_save.pop("run_id", None)
+        metadata_to_save["board_id"] = board_dir.name
         metadata_path = board_dir / "metadata.json"
         with open(metadata_path, "w") as f:
-            json.dump(request.metadata, f, indent=2)
+            json.dump(metadata_to_save, f, indent=2)
         logger_api.debug(f"Saved metadata.json to {metadata_path}")
 
-        if "name" in request.metadata:
-            board.name = request.metadata["name"]
-        if "config" in request.metadata:
-            board.config = json.dumps(request.metadata["config"])
+        if "name" in metadata_to_save:
+            board.name = metadata_to_save["name"]
+        if "config" in metadata_to_save:
+            board.config = json.dumps(metadata_to_save["config"])
 
     log_dir = board_dir / "logs"
     log_dir.mkdir(exist_ok=True)

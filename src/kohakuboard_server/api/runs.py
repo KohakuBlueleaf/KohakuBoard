@@ -15,6 +15,11 @@ from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
 from kohakuboard.utils.board_reader import BoardReader, DEFAULT_LOCAL_PROJECT
+from kohakuboard.utils.run_id import (
+    find_run_dir_by_id,
+    split_run_dir_name,
+    build_run_dir_name,
+)
 from kohakuboard_server.auth import get_optional_user
 from kohakuboard_server.auth.permissions import check_board_read_permission
 from kohakuboard_server.config import cfg
@@ -39,17 +44,35 @@ def _resolve_run_path(
     base_dir = Path(cfg.app.board_data_dir)
 
     if cfg.app.mode == "local":
-        if project == DEFAULT_LOCAL_PROJECT:
-            run_path = base_dir / project / run_id
-            if not run_path.exists():
-                run_path = base_dir / run_id
-        else:
-            run_path = base_dir / project / run_id
+        checked = set()
 
-        if not run_path.exists():
-            raise HTTPException(404, detail={"error": "Run not found"})
+        def iter_candidate_dirs():
+            primary = base_dir / project
+            yield primary
+            if project == DEFAULT_LOCAL_PROJECT:
+                yield base_dir
 
-        return run_path, None
+            users_root = base_dir / "users"
+            if users_root.exists():
+                for owner_dir in users_root.iterdir():
+                    if not owner_dir.is_dir():
+                        continue
+                    yield owner_dir / project
+
+        for candidate_dir in iter_candidate_dirs():
+            key = str(candidate_dir.resolve(strict=False))
+            if key in checked:
+                continue
+            checked.add(key)
+
+            if not candidate_dir.exists():
+                continue
+
+            run_path = find_run_dir_by_id(candidate_dir, run_id)
+            if run_path:
+                return run_path, None
+
+        raise HTTPException(404, detail={"error": "Run not found"})
 
     else:  # remote mode
         # Get board from DB (don't filter by owner - check permissions instead)
@@ -86,6 +109,7 @@ async def get_run_status(
     """Get run status with latest update timestamp"""
     logger_api.info(f"start run_status {project}/{run_id}")
     run_path, _ = await get_run_path(project, run_id, current_user)
+    folder_run_id, annotation = split_run_dir_name(run_path.name)
 
     # Check metadata for creation time without blocking loop
     metadata_file = run_path / "metadata.json"
@@ -122,10 +146,11 @@ async def get_run_status(
         logger_api.warning(f"Failed to get status: {e}")
 
     result = {
-        "run_id": run_id,
+        "run_id": folder_run_id,
         "project": project,
         "metrics_count": metrics_count,
         "last_updated": last_updated,
+        "annotation": annotation,
     }
     return result
 
@@ -152,21 +177,25 @@ async def get_run_summary(
     reader = BoardReader(run_path)
     summary = await _call_in_thread(reader.get_summary)
 
-    # Return in same format as experiments API for frontend compatibility
-    metadata = summary["metadata"]
+    folder_run_id, annotation = split_run_dir_name(run_path.name)
+    metadata = dict(summary.get("metadata") or {})
+    metadata.setdefault("run_id", folder_run_id)
+    metadata["annotation"] = annotation
+    summary["metadata"] = metadata
 
     result = {
-        "experiment_id": run_id,  # For compatibility with ConfigurableChartCard
+        "experiment_id": folder_run_id,  # For compatibility with ConfigurableChartCard
         "project": project,
-        "run_id": run_id,
+        "run_id": folder_run_id,
         "experiment_info": {
-            "id": run_id,
-            "name": metadata.get("name", run_id),
+            "id": folder_run_id,
+            "name": metadata.get("name", folder_run_id),
             "description": f"Config: {metadata.get('config', {})}",
             "status": "completed",
             "total_steps": summary["metrics_count"],
             "duration": "N/A",
             "created_at": metadata.get("created_at", ""),
+            "annotation": annotation,
         },
         "total_steps": summary["metrics_count"],
         "available_data": {
@@ -192,6 +221,10 @@ async def get_run_metadata(
     run_path, _ = await get_run_path(project, run_id, current_user)
     reader = BoardReader(run_path)
     metadata = await _call_in_thread(reader.get_metadata)
+    metadata = dict(metadata or {})
+    folder_run_id, annotation = split_run_dir_name(run_path.name)
+    metadata.setdefault("run_id", folder_run_id)
+    metadata["annotation"] = annotation
     return metadata
 
 
@@ -501,19 +534,25 @@ async def batch_get_run_summaries(
             ]
 
             # Return in same format as single summary endpoint
-            metadata = filtered_summary["metadata"]
+            folder_run_id, annotation = split_run_dir_name(run_path.name)
+            metadata = dict(filtered_summary.get("metadata") or {})
+            metadata.setdefault("run_id", folder_run_id)
+            metadata["annotation"] = annotation
+            filtered_summary["metadata"] = metadata
+
             return run_id, {
-                "experiment_id": run_id,
+                "experiment_id": folder_run_id,
                 "project": project,
-                "run_id": run_id,
+                "run_id": folder_run_id,
                 "experiment_info": {
-                    "id": run_id,
-                    "name": metadata.get("name", run_id),
+                    "id": folder_run_id,
+                    "name": metadata.get("name", folder_run_id),
                     "description": f"Config: {metadata.get('config', {})}",
                     "status": "completed",
                     "total_steps": filtered_summary["metrics_count"],
                     "duration": "N/A",
                     "created_at": metadata.get("created_at", ""),
+                    "annotation": annotation,
                 },
                 "total_steps": filtered_summary["metrics_count"],
                 "available_data": {

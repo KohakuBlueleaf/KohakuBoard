@@ -7,6 +7,7 @@ from fastapi import APIRouter, HTTPException
 
 from kohakuboard_server.config import cfg
 from kohakuboard_server.logger import logger_api
+from kohakuboard.utils.run_id import split_run_dir_name
 
 router = APIRouter()
 
@@ -38,9 +39,15 @@ def list_boards(base_dir: Path):
             with open(metadata_file) as f:
                 metadata = json.load(f)
 
+            stored_run_id = metadata.get("run_id")
+            stored_annotation = metadata.get("annotation")
+            parsed_run_id, parsed_annotation = split_run_dir_name(board_dir.name)
+
             boards.append(
                 {
                     "board_id": board_dir.name,
+                    "run_id": stored_run_id or parsed_run_id,
+                    "annotation": stored_annotation or parsed_annotation,
                     "name": metadata.get("name", board_dir.name),
                     "created_at": metadata.get("created_at"),
                     "updated_at": metadata.get("updated_at"),
