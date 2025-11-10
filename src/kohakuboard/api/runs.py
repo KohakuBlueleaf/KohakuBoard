@@ -16,7 +16,12 @@ from pydantic import BaseModel
 from kohakuvault import KVault
 
 from kohakuboard.utils.board_reader import BoardReader, DEFAULT_LOCAL_PROJECT
-from kohakuboard.utils.run_id import sanitize_annotation
+from kohakuboard.utils.run_id import (
+    sanitize_annotation,
+    split_run_dir_name,
+    build_run_dir_name,
+    find_run_dir_by_id,
+)
 from kohakuboard.config import cfg
 from kohakuboard.logger import logger_api
 
@@ -42,17 +47,34 @@ def get_run_path(project: str, run_id: str) -> Path:
     """Resolve run path in local mode."""
     base_dir = Path(cfg.app.board_data_dir)
 
-    if project == DEFAULT_LOCAL_PROJECT:
-        run_path = base_dir / project / run_id
-        if not run_path.exists():
-            run_path = base_dir / run_id
-    else:
-        run_path = base_dir / project / run_id
+    checked = set()
 
-    if not run_path.exists():
-        raise HTTPException(404, detail={"error": "Run not found"})
+    def iter_candidate_dirs():
+        primary = base_dir / project
+        yield primary
+        if project == DEFAULT_LOCAL_PROJECT:
+            yield base_dir
 
-    return run_path
+        users_root = base_dir / "users"
+        if users_root.exists():
+            for owner_dir in users_root.iterdir():
+                if not owner_dir.is_dir():
+                    continue
+                yield owner_dir / project
+
+    for candidate_dir in iter_candidate_dirs():
+        key = str(candidate_dir.resolve(strict=False))
+        if key in checked:
+            continue
+        checked.add(key)
+
+        if not candidate_dir.exists():
+            continue
+        run_path = find_run_dir_by_id(candidate_dir, run_id)
+        if run_path:
+            return run_path
+
+    raise HTTPException(404, detail={"error": "Run not found"})
 
 
 @router.get("/projects/{project}/runs/{run_id}/status")
@@ -62,6 +84,7 @@ async def get_run_status(project: str, run_id: str):
     Returns minimal info for polling (last update time, row counts)
     """
     run_path = get_run_path(project, run_id)
+    folder_run_id, annotation = split_run_dir_name(run_path.name)
 
     # Check metadata for creation time
     metadata_file = run_path / "metadata.json"
@@ -99,10 +122,11 @@ async def get_run_status(project: str, run_id: str):
         logger_api.warning(f"Failed to get status: {e}")
 
     return {
-        "run_id": run_id,
+        "run_id": folder_run_id,
         "project": project,
         "metrics_count": metrics_count,
         "last_updated": last_updated,
+        "annotation": annotation,
     }
 
 
@@ -131,10 +155,13 @@ async def update_run(
     with open(metadata_file, "r") as f:
         metadata = json.load(f)
 
+    effective_run_id, current_annotation = split_run_dir_name(run_path.name)
+
     changed = False
     response_data = {
-        "run_id": metadata.get("run_id", run_id),
-        "name": metadata.get("name", metadata.get("run_id", run_id)),
+        "run_id": effective_run_id,
+        "annotation": current_annotation,
+        "name": metadata.get("name", effective_run_id),
         "finished_at": metadata.get("finished_at"),
     }
 
@@ -165,9 +192,10 @@ async def update_run(
                 },
             )
 
-        current_annotation = metadata.get("run_id", run_path.name)
         if sanitized != current_annotation:
-            target_path = run_path.parent / sanitized
+            target_path = run_path.parent / build_run_dir_name(
+                effective_run_id, sanitized
+            )
             if target_path.exists():
                 raise HTTPException(
                     409,
@@ -178,9 +206,8 @@ async def update_run(
             run_path.rename(target_path)
             run_path = target_path
 
-        metadata["run_id"] = sanitized
-        metadata["board_id"] = sanitized
-        response_data["run_id"] = sanitized
+        current_annotation = sanitized
+        response_data["annotation"] = sanitized
         changed = True
 
     if not changed:
@@ -217,18 +244,20 @@ async def get_run_summary(
     # Return in same format as experiments API for frontend compatibility
     metadata = summary["metadata"]
 
+    folder_run_id, annotation = split_run_dir_name(run_path.name)
     return {
-        "experiment_id": run_id,  # For compatibility with ConfigurableChartCard
+        "experiment_id": folder_run_id,  # For compatibility with ConfigurableChartCard
         "project": project,
-        "run_id": run_id,
+        "run_id": folder_run_id,
         "experiment_info": {
-            "id": run_id,
-            "name": metadata.get("name", run_id),
+            "id": folder_run_id,
+            "name": metadata.get("name", folder_run_id),
             "description": f"Config: {metadata.get('config', {})}",
             "status": "completed",
             "total_steps": summary["metrics_count"],
             "duration": "N/A",
             "created_at": metadata.get("created_at", ""),
+            "annotation": annotation,
         },
         "total_steps": summary["metrics_count"],
         "available_data": {
@@ -251,7 +280,6 @@ async def get_run_metadata(
     run_path = get_run_path(project, run_id)
     reader = BoardReader(run_path)
     metadata = reader.get_metadata()
-
     return metadata
 
 
@@ -529,19 +557,21 @@ async def batch_get_run_summaries(
             ]
 
             # Return in same format as single summary endpoint
-            metadata = filtered_summary["metadata"]
+            folder_run_id, annotation = split_run_dir_name(run_path.name)
+            metadata = filtered_summary.get("metadata", {})
             return run_id, {
-                "experiment_id": run_id,
+                "experiment_id": folder_run_id,
                 "project": project,
-                "run_id": run_id,
+                "run_id": folder_run_id,
                 "experiment_info": {
-                    "id": run_id,
-                    "name": metadata.get("name", run_id),
+                    "id": folder_run_id,
+                    "name": metadata.get("name", folder_run_id),
                     "description": f"Config: {metadata.get('config', {})}",
                     "status": "completed",
                     "total_steps": filtered_summary["metrics_count"],
                     "duration": "N/A",
                     "created_at": metadata.get("created_at", ""),
+                    "annotation": annotation,
                 },
                 "total_steps": filtered_summary["metrics_count"],
                 "available_data": {

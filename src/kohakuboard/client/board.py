@@ -34,9 +34,11 @@ from kohakuboard.client.writer import writer_process_main
 from kohakuboard.logger import get_logger
 from kohakuboard.utils.board_reader import DEFAULT_LOCAL_PROJECT
 from kohakuboard.utils.run_id import (
-    generate_annotation_id,
+    build_run_dir_name,
     generate_friendly_name,
+    generate_run_id,
     sanitize_annotation,
+    find_run_dir_by_id,
 )
 
 
@@ -112,7 +114,7 @@ class Board:
 
         Args:
             name: Human-readable name for this board (defaults to friendly words)
-            board_id: Legacy alias for annotation/run_id (deprecated)
+            board_id: Explicit run identifier (defaults to random 4-char code)
             config: Configuration dict for this run (hyperparameters, etc.)
             project: Project folder name (default: "default")
             base_dir: Base directory for boards (default: ./kohakuboard)
@@ -123,7 +125,7 @@ class Board:
             sync_enabled: Whether to enable real-time sync to remote server
             sync_interval: Sync check interval in seconds (default: 10)
             memory_mode: Store data in memory-only mode (requires remote sync to persist)
-            annotation: Explicit run identifier (defaults to unique 4-char code)
+            annotation: Optional annotation appended to run directory name
         """
 
         # Board metadata
@@ -137,8 +139,13 @@ class Board:
         # Setup directories
         self.base_dir = Path(base_dir) if base_dir else Path.cwd() / "kohakuboard"
         self.project_dir = self.base_dir / self.project
-        self.board_id = self._prepare_annotation(annotation or board_id)
-        self.board_dir = self.project_dir / self.board_id
+        self.project_dir.mkdir(parents=True, exist_ok=True)
+
+        self.run_id = self._prepare_run_id(board_id)
+        self.annotation = self._prepare_annotation(annotation)
+        folder_name = build_run_dir_name(self.run_id, self.annotation)
+        self.board_id = folder_name  # Backwards-compatible property
+        self.board_dir = self.project_dir / folder_name
 
         self.board_dir.mkdir(parents=True, exist_ok=True)
         (self.board_dir / "data").mkdir(exist_ok=True)
@@ -205,7 +212,7 @@ class Board:
                 "remote_url": remote_url,
                 "remote_token": remote_token,
                 "project": remote_project or self.project,
-                "run_id": self.board_id,
+                "run_id": self.run_id,
                 "sync_interval": sync_interval,
                 "metadata": deepcopy(self._metadata),
             }
@@ -265,7 +272,9 @@ class Board:
         # Register signal handlers with weakref (doesn't prevent GC)
         self._register_signal_handlers()
 
-        self.logger.info(f"Board created: {self.name} (ID: {self.board_id})")
+        self.logger.info(
+            f"Board created: {self.name} (run_id: {self.run_id}, annotation: {self.annotation or '—'})"
+        )
         self.logger.info(f"Board directory: {self.board_dir}")
 
     def log(
@@ -1256,35 +1265,38 @@ class Board:
         normalized = sanitize_annotation(value)
         return normalized
 
-    def _prepare_annotation(self, annotation: Optional[str]) -> str:
-        """Resolve user-provided annotation or generate a unique one."""
-        if annotation:
-            normalized = self._normalize_annotation(annotation)
-            if not normalized:
-                raise ValueError("Annotation must contain alphanumeric characters")
-            candidate_path = self.project_dir / normalized
-            if candidate_path.exists():
+    def _prepare_annotation(self, annotation: Optional[str]) -> str | None:
+        """Sanitize annotation or return None when absent."""
+        if annotation is None:
+            return None
+        normalized = self._normalize_annotation(annotation)
+        return normalized or None
+
+    def _prepare_run_id(self, provided: Optional[str]) -> str:
+        """Validate provided run_id or generate a unique one."""
+        if provided:
+            candidate = provided.strip()
+            if len(candidate) != 4 or not candidate.isalnum():
+                raise ValueError("Run ID must be exactly 4 alphanumeric characters")
+            if find_run_dir_by_id(self.project_dir, candidate):
                 raise FileExistsError(
-                    f"Run annotation '{normalized}' already exists in project '{self.project}'"
+                    f"Run ID '{candidate}' already exists in project '{self.project}'"
                 )
-            return normalized
+            return candidate
+        return self._generate_unique_run_id()
 
-        return self._generate_annotation()
-
-    def _generate_annotation(self) -> str:
-        """Generate a unique 4-character annotation within the project."""
-        for _ in range(256):
-            candidate = generate_annotation_id()
-            if not (self.project_dir / candidate).exists():
+    def _generate_unique_run_id(self) -> str:
+        """Generate a unique 4-character run identifier within the project."""
+        for _ in range(1024):
+            candidate = generate_run_id()
+            if not find_run_dir_by_id(self.project_dir, candidate):
                 return candidate
-        raise RuntimeError("Unable to generate unique run annotation")
+        raise RuntimeError("Unable to generate unique run ID")
 
     def _save_metadata(self):
         """Save board metadata to JSON"""
         metadata = {
             "name": self.name,
-            "board_id": self.board_id,
-            "run_id": self.board_id,
             "config": self.config,
             "created_at": self.created_at.isoformat(),
             "project": self.project,

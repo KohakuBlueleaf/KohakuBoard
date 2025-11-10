@@ -10,26 +10,35 @@ from kohakuvault import KVault
 from kohakuboard.utils.board_reader import BoardReader, list_boards
 from kohakuboard.config import cfg
 from kohakuboard.logger import logger_api
+from kohakuboard.utils.run_id import split_run_dir_name
 
 
 router = APIRouter()
 
 
 def resolve_board_dir(board_id: str) -> Path:
-    """Locate a board directory (supports project-based layouts)."""
+    """Locate a board directory (supports project/user layouts)."""
     base_dir = Path(cfg.app.board_data_dir)
+    if not base_dir.exists():
+        raise FileNotFoundError(f"Board data directory missing: {base_dir}")
 
+    def matches(path: Path) -> bool:
+        if not path.is_dir():
+            return False
+        run_prefix, _ = split_run_dir_name(path.name)
+        return run_prefix == board_id
+
+    # Direct match at root
     direct = base_dir / board_id
-    if direct.exists():
+    if matches(direct):
         return direct
 
     for entry in base_dir.iterdir():
         if not entry.is_dir():
             continue
 
-        candidate = entry / board_id
-        if candidate.exists():
-            return candidate
+        if matches(entry):
+            return entry
 
         if entry.name == "users":
             for user_dir in entry.iterdir():
@@ -38,9 +47,14 @@ def resolve_board_dir(board_id: str) -> Path:
                 for project_dir in user_dir.iterdir():
                     if not project_dir.is_dir():
                         continue
-                    candidate = project_dir / board_id
-                    if candidate.exists():
-                        return candidate
+                    for board_dir in project_dir.iterdir():
+                        if matches(board_dir):
+                            return board_dir
+            continue
+
+        for board_dir in entry.iterdir():
+            if matches(board_dir):
+                return board_dir
 
     raise FileNotFoundError(f"Board '{board_id}' not found")
 

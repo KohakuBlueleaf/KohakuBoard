@@ -8,6 +8,7 @@ from typing import Any, Dict, List
 
 from kohakuboard.logger import get_logger
 from kohakuboard.utils.board_reader_hybrid import HybridBoardReader
+from kohakuboard.utils.run_id import split_run_dir_name
 
 # Get logger for board reader
 logger = get_logger("READER")
@@ -89,9 +90,14 @@ def list_boards(base_dir: Path) -> List[Dict[str, Any]]:
             except Exception as e:
                 logger.debug(f"Failed to get latest step for {board_dir.name}: {e}")
 
+            parsed_run_id, parsed_annotation = split_run_dir_name(board_dir.name)
+            annotation = metadata.get("annotation") or parsed_annotation
+
             boards.append(
                 {
                     "board_id": board_dir.name,
+                    "run_id": parsed_run_id,
+                    "annotation": annotation,
                     "name": metadata.get("name", board_dir.name),
                     "created_at": metadata.get("created_at"),
                     "updated_at": updated_at,

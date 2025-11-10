@@ -22,7 +22,7 @@ def _group_boards_by_project(base_dir: Path):
     return projects
 
 
-def fetchProjectRuns(project_name: str):
+def fetch_project_runs(project_name: str):
     """Fetch project runs in local mode."""
     base_dir = Path(cfg.app.board_data_dir)
     projects = _group_boards_by_project(base_dir)
@@ -34,9 +34,14 @@ def fetchProjectRuns(project_name: str):
     for board in sorted(
         projects[project_name], key=lambda b: b.get("created_at") or "", reverse=True
     ):
+        run_id = board.get("run_id") or board["board_id"]
+        annotation = board.get("annotation")
+        if annotation is None and "_" in board["board_id"]:
+            _, annotation = board["board_id"].split("_", 1)
         runs.append(
             {
-                "run_id": board["board_id"],
+                "run_id": run_id,
+                "annotation": annotation,
                 "name": board["name"],
                 "created_at": board["created_at"],
                 "updated_at": board.get("updated_at"),
@@ -92,4 +97,4 @@ async def list_projects():
 async def list_runs(project_name: str):
     """List runs within a project in local mode"""
     logger_api.info(f"Listing runs for project: {project_name}")
-    return fetchProjectRuns(project_name)
+    return fetch_project_runs(project_name)

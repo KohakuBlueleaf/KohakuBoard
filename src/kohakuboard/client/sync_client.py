@@ -5,6 +5,7 @@ from pathlib import Path
 
 import requests
 from kohakuboard.logger import get_logger
+from kohakuboard.utils.run_id import split_run_dir_name
 
 
 logger = get_logger("CLIENT")
@@ -63,7 +64,11 @@ class SyncClient:
         # Update metadata with sync settings
         metadata["project"] = project
         metadata["private"] = private
-        metadata["run_id"] = board_dir.name
+        run_id, annotation = split_run_dir_name(board_dir.name)
+        metadata["run_id"] = run_id
+        metadata["board_id"] = board_dir.name
+        if annotation:
+            metadata["annotation"] = annotation
 
         logger.info(f"Syncing board: {metadata['run_id']}")
         logger.info(f"  Project: {project}")
