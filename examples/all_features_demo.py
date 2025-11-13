@@ -520,7 +520,7 @@ def main():
                 "tensors",
                 "kernel_density",
             ],
-            "storage": "hybrid (Lance + SQLite + SQLite KV)",
+            "storage": "hybrid (KohakuVault ColumnVault + SQLite metadata + KV)",
         },
         remote_url=args.remote_url,
         remote_token=args.remote_token,

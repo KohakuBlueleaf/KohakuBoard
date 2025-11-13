@@ -254,7 +254,7 @@ python examples/quick_start.py \
 
 ### How It Works
 
-1. **Logs locally** - Full logging to local storage (SQLite KV + Lance + SQLite metadata)
+1. **Logs locally** - Full logging to local storage (KohakuVault ColumnVault + SQLite metadata + KV)
 2. **Syncs to remote** - Background worker syncs incremental changes every N seconds
 3. **View anywhere** - Access logs locally OR remotely
 
@@ -306,9 +306,9 @@ python examples/kohakuboard_cifar_training.py \
 - Histograms (precomputed bins/counts)
 - Board configuration
 
-📍 **Always local:**
+📍 **Always local (unless you copy the folder):**
 - SQLite KV database (`media/blobs.db`)
-- Lance datasets (`data/metrics/*.lance`)
+- ColumnVault metric files (`data/metrics/*.db`)
 - SQLite metadata (`data/metadata.db`)
 
 **Result:** You get the best of both worlds - fast local access + cloud backup/sharing!
