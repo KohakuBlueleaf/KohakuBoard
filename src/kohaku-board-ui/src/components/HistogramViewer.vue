@@ -60,6 +60,7 @@ const colorscale = ref("Viridis");
 const normalize = ref("per-step"); // Default per-step for better contrast
 const showSettings = ref(false);
 const xAxisType = ref(props.xAxis);
+const surfacePlotRef = ref(null);
 const surfaceModeActive = computed(
   () => viewMode.value === "flow" && props.flowSurfaceEnabled,
 );
@@ -158,7 +159,8 @@ function formatAxisValue(value, axisType, unit) {
   return Math.round(value).toString();
 }
 
-function computeGlobalValueRange(entries, fallbackEdges, paddingRatio = 0.05) {
+function computeGlobalValueRange(entries, fallbackEdges, options = {}) {
+  const { paddingRatio = 0, minPadding = 0.5 } = options;
   let min = Number.POSITIVE_INFINITY;
   let max = Number.NEGATIVE_INFINITY;
 
@@ -185,7 +187,7 @@ function computeGlobalValueRange(entries, fallbackEdges, paddingRatio = 0.05) {
   }
 
   if (min === max) {
-    const pad = Math.max(Math.abs(min) * 0.05, 0.5);
+    const pad = Math.max(Math.abs(min) * 0.05, minPadding);
     return { min: min - pad, max: max + pad };
   }
 
@@ -235,7 +237,7 @@ function buildTickInfo(axisValues, axisType, unit) {
   return { tickvals, ticktext };
 }
 
-function computeAxisRange(axisValues) {
+function computeAxisRange(axisValues, paddingRatio = 0.05) {
   if (!axisValues || axisValues.length === 0) {
     return [0, 1];
   }
@@ -247,7 +249,7 @@ function computeAxisRange(axisValues) {
   if (min === max) {
     return [min - 0.5, max + 0.5];
   }
-  const padding = (max - min) * 0.05 || 0.5;
+  const padding = (max - min) * paddingRatio;
   return [min - padding, max + padding];
 }
 
@@ -299,7 +301,10 @@ const histogramValueRange = computed(() => {
   const fallbackEdges = props.histogramData.find(
     (entry) => Array.isArray(entry.bins) && entry.bins.length > 1,
   )?.bins;
-  return computeGlobalValueRange(props.histogramData, fallbackEdges);
+  return computeGlobalValueRange(props.histogramData, fallbackEdges, {
+    paddingRatio: 0.1,
+    minPadding: 0.5,
+  });
 });
 
 watch(
@@ -562,7 +567,10 @@ function createDistributionFlowPlot(colors) {
   const columnCount = axisValues.length;
   if (columnCount === 0) return;
 
-  const valueRange = computeGlobalValueRange(filteredEntries, binEdges);
+  const valueRange = computeGlobalValueRange(filteredEntries, binEdges, {
+    paddingRatio: 0,
+    minPadding: 0.5,
+  });
   let normalizedZ = zMatrix;
   if (normalize.value === "per-step") {
     const numBins = binCenters.length;
@@ -589,7 +597,7 @@ function createDistributionFlowPlot(colors) {
   }
 
   const tickInfo = buildTickInfo(axisValues, xAxisType.value, axisUnit);
-  const xRange = computeAxisRange(axisValues);
+  const xRange = computeAxisRange(axisValues, 0);
 
   const trace = {
     type: "heatmapgl",
@@ -664,6 +672,16 @@ function resetZoom() {
     "plotDiv:",
     !!plotDiv.value,
   );
+  if (surfaceModeActive.value) {
+    console.log("[HistogramViewer] Resetting surface camera");
+    if (surfacePlotRef.value?.resetCamera) {
+      surfacePlotRef.value.resetCamera();
+    } else {
+      console.warn("[HistogramViewer] Surface plot ref missing resetCamera");
+    }
+    return;
+  }
+
   if (!plotDiv.value) {
     console.warn("[HistogramViewer] resetZoom aborted - no plotDiv");
     return;
@@ -721,8 +739,11 @@ function resetZoom() {
         ? resolveRelativeTimeUnit(axisSpan)
         : null;
     const tickInfo = buildTickInfo(axisValues, xAxisType.value, axisUnit);
-    const xRange = computeAxisRange(axisValues);
-    const valueRange = computeGlobalValueRange(filteredEntries, binEdges);
+    const xRange = computeAxisRange(axisValues, 0);
+    const valueRange = computeGlobalValueRange(filteredEntries, binEdges, {
+      paddingRatio: 0,
+      minPadding: 0.5,
+    });
 
     const relayoutUpdate = {
       "xaxis.range": xRange,
@@ -775,6 +796,7 @@ defineExpose({
           </div>
           <div v-if="shouldShowSurface" class="flex-1 min-h-[200px]">
             <HistogramSurfaceMini
+              ref="surfacePlotRef"
               :surface-data="props.surfaceData"
               :height="surfacePlotHeight"
               :axis-label="surfaceAxisLabel"

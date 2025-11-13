@@ -634,6 +634,21 @@ function resetView() {
   }
 }
 
+async function refreshCard() {
+  if (isCardLoading.value) {
+    console.log(
+      `[${props.cardId}] Refresh requested but card is already loading`,
+    );
+    return;
+  }
+
+  await hydrateCardArtifacts();
+
+  if (plotRef.value?.resetView) {
+    plotRef.value.resetView();
+  }
+}
+
 function exportPNG() {
   if (plotRef.value?.exportPNG) {
     plotRef.value.exportPNG();
@@ -897,6 +912,13 @@ function startResizeRight(e) {
           <div
             class="flex flex-wrap items-center gap-1 border-t border-gray-100 dark:border-gray-700 pt-2"
           >
+            <el-button
+              size="small"
+              @click.stop="refreshCard"
+              title="Refresh Data"
+            >
+              <i class="i-ep-refresh"></i>
+            </el-button>
             <el-button size="small" @click.stop="resetView" title="Reset View">
               <i class="i-ep-refresh-left"></i>
             </el-button>

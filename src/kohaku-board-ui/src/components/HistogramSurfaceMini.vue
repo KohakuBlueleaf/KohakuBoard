@@ -145,13 +145,14 @@ function createPlot() {
   const colors = getThemeColors();
   const axisInfo = buildAxisInfo(payload);
   const matrix = payload.matrix || [];
+  const normalizeMode = payload?.normalize || "none";
+  const matrixMax = computeMatrixMax(matrix);
   const containerHeight =
     plotContainer.value?.clientHeight ?? Math.max(props.height, 240);
   const rawMax = Number.isFinite(payload.raw_max_value)
     ? payload.raw_max_value
-    : computeMatrixMax(matrix);
-  const zPadding = rawMax > 0 ? rawMax * 0.05 : 1;
-  const zRangeUpper = rawMax + zPadding;
+    : matrixMax;
+  const densityRange = resolveDensityRange(normalizeMode, matrixMax, rawMax);
   const trace = {
     type: "surface",
     x: payload.bin_centers,
@@ -192,7 +193,7 @@ function createPlot() {
         color: colors.text,
         gridcolor: colors.grid,
         zerolinecolor: colors.grid,
-        range: [0, Math.max(zRangeUpper, 0.1)],
+        range: [densityRange.min, Math.max(densityRange.max, 0.1)],
       },
       camera: cameraState || {
         eye: { x: 1.6, y: -1.6, z: 0.9 },
@@ -247,6 +248,22 @@ function buildAxisInfo(payload) {
     label: payload?.axis_label || "Step",
     suffix: "",
   };
+}
+
+function resolveDensityRange(normalizeMode, matrixMax, rawMax) {
+  const normalized = normalizeMode && normalizeMode !== "none";
+  const matrixUpper = Number.isFinite(matrixMax) ? matrixMax : 0;
+  const rawUpper = Number.isFinite(rawMax) ? rawMax : matrixUpper;
+
+  if (normalized) {
+    const upper = Math.max(matrixUpper, 1);
+    const padding = Math.max(upper * 0.05, 0.05);
+    return { min: 0, max: upper + padding };
+  }
+
+  const upper = rawUpper > 0 ? rawUpper : 1;
+  const padding = Math.max(upper * 0.05, 0.1);
+  return { min: 0, max: upper + padding };
 }
 
 function bindRelayoutHandler() {
