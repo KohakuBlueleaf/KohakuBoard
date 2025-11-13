@@ -6,9 +6,12 @@ Works in both local and remote modes with project-based organization.
 
 import asyncio
 import json
+import math
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
+import numpy as np
 from fastapi import APIRouter, Body, HTTPException, Query
 from fastapi.responses import Response
 from pydantic import BaseModel
@@ -470,6 +473,261 @@ async def get_available_histograms(
     histogram_names = reader.get_available_histogram_names()
 
     return {"histograms": histogram_names}
+
+
+AXIS_LABELS = {
+    "step": "Training Step",
+    "global_step": "Global Step",
+    "relative_walltime": "Relative Time (s)",
+}
+
+
+def _extract_axis_value(entry: dict[str, Any], axis_type: str) -> float | None:
+    if axis_type == "step":
+        return entry.get("step")
+    if axis_type == "global_step":
+        return entry.get("global_step")
+    if axis_type == "relative_walltime":
+        wall = entry.get("relative_walltime")
+        if wall is not None:
+            return wall
+    return entry.get("step") or entry.get("global_step")
+
+
+def _resample_counts(
+    bins: list[float], counts: list[float], target_edges: np.ndarray
+) -> np.ndarray:
+    bins_arr = np.asarray(bins, dtype=np.float64)
+    counts_arr = np.asarray(counts, dtype=np.float64)
+
+    if bins_arr.size != counts_arr.size + 1:
+        raise ValueError("bins/counts length mismatch")
+
+    centers = 0.5 * (bins_arr[:-1] + bins_arr[1:])
+    widths = np.diff(bins_arr)
+    safe_widths = np.clip(widths, 1e-9, None)
+    densities = counts_arr / safe_widths
+
+    target_centers = 0.5 * (target_edges[:-1] + target_edges[1:])
+    interp_density = np.interp(
+        target_centers,
+        centers,
+        densities,
+        left=0.0,
+        right=0.0,
+    )
+
+    target_widths = np.diff(target_edges)
+    return interp_density * target_widths
+
+
+def _build_histogram_surface_payload(
+    entries: list[dict[str, Any]],
+    axis_type: str,
+    normalize_mode: str,
+    downsample: int,
+    target_bins: int | None,
+) -> dict[str, Any]:
+    usable_entries = [
+        entry for entry in entries if entry.get("bins") and entry.get("counts")
+    ]
+
+    if not usable_entries:
+        raise ValueError("Histogram surface view requires precomputed bins and counts")
+
+    requested_bins = (
+        target_bins if target_bins is not None else len(usable_entries[0]["counts"])
+    )
+    requested_bins = max(8, min(int(requested_bins), 1024))
+
+    canonical_min = min(float(entry["bins"][0]) for entry in usable_entries)
+    canonical_max = max(float(entry["bins"][-1]) for entry in usable_entries)
+    if canonical_min >= canonical_max:
+        canonical_max = canonical_min + 1.0
+
+    target_edges = np.linspace(
+        canonical_min,
+        canonical_max,
+        requested_bins + 1,
+        dtype=np.float32,
+    )
+    bin_centers = ((target_edges[:-1] + target_edges[1:]) / 2.0).tolist()
+
+    stride = 1
+    if downsample == -1:
+        target_rows = 180
+        stride = max(1, math.ceil(len(usable_entries) / target_rows))
+    elif downsample and downsample > 1:
+        stride = downsample
+
+    sampled_entries = usable_entries[::stride]
+    if not sampled_entries:
+        sampled_entries = [usable_entries[-1]]
+        stride = len(usable_entries)
+
+    matrix_rows: list[np.ndarray] = []
+    axis_values: list[float] = []
+    steps: list[int | None] = []
+    global_steps: list[int | None] = []
+    axis_fallback_used = False
+
+    for idx, entry in enumerate(sampled_entries):
+        try:
+            row = _resample_counts(entry["bins"], entry["counts"], target_edges)
+        except ValueError as exc:
+            logger_api.warning(
+                f"Skipping malformed histogram entry for surface view: {exc}"
+            )
+            continue
+
+        axis_value = _extract_axis_value(entry, axis_type)
+        if axis_value is None:
+            fallback_value = entry.get("step") or entry.get("global_step")
+            if fallback_value is None:
+                fallback_value = idx
+            axis_value = fallback_value
+            axis_fallback_used = True
+
+        matrix_rows.append(row.astype(np.float32))
+        axis_values.append(float(axis_value))
+        steps.append(entry.get("step"))
+        global_steps.append(entry.get("global_step"))
+
+    if not matrix_rows:
+        raise ValueError("No valid histogram entries after resampling")
+
+    raw_matrix = np.vstack(matrix_rows)
+    normalized_matrix = raw_matrix.copy()
+
+    internal_mode = (normalize_mode or "none").replace("-", "_")
+    if internal_mode == "per_step":
+        row_max = np.max(normalized_matrix, axis=1, keepdims=True)
+        row_max[row_max == 0] = 1.0
+        normalized_matrix = normalized_matrix / row_max
+    elif internal_mode == "global":
+        global_max = float(np.max(normalized_matrix))
+        if global_max > 0:
+            normalized_matrix = normalized_matrix / global_max
+    else:
+        internal_mode = "none"
+
+    if internal_mode == "none":
+        matrix_data = raw_matrix
+    else:
+        matrix_data = normalized_matrix
+
+    resolved_axis_type = (
+        "step" if axis_fallback_used and axis_type != "step" else axis_type
+    )
+
+    return {
+        "axis_values": axis_values,
+        "axis_type": resolved_axis_type,
+        "axis_requested": axis_type,
+        "axis_label": AXIS_LABELS.get(resolved_axis_type, "Training Step"),
+        "axis_stats": {
+            "min": float(min(axis_values)),
+            "max": float(max(axis_values)),
+            "count": len(axis_values),
+        },
+        "steps": steps,
+        "global_steps": global_steps,
+        "bin_edges": target_edges.tolist(),
+        "bin_centers": bin_centers,
+        "bin_range": {
+            "min": float(target_edges[0]),
+            "max": float(target_edges[-1]),
+        },
+        "matrix": matrix_data.tolist(),
+        "raw_max_value": float(np.max(raw_matrix)),
+        "downsample_rate": stride,
+        "original_entries": len(usable_entries),
+        "sampled_entries": len(matrix_rows),
+        "normalize": normalize_mode,
+    }
+
+
+@router.get("/projects/{project}/runs/{run_id}/histograms/{name:path}/surface")
+async def get_histogram_surface_data(
+    project: str,
+    run_id: str,
+    name: str,
+    axis: str = Query(
+        "global_step",
+        description="Axis for surface plot ('step', 'global_step', 'relative_walltime')",
+    ),
+    normalize: str = Query(
+        "none",
+        description="Normalization mode: 'per-step', 'global', or 'none'",
+    ),
+    downsample: int = Query(
+        -1,
+        ge=-1,
+        description="Downsample stride (-1 = auto target ~180 entries)",
+    ),
+    bins: int | None = Query(
+        None,
+        ge=8,
+        le=1024,
+        description="Target number of bins for the surface grid",
+    ),
+    limit: int | None = Query(None, description="Maximum number of entries"),
+    range_min: float | None = Query(
+        None, description="Override minimum value for KDE resampling"
+    ),
+    range_max: float | None = Query(
+        None, description="Override maximum value for KDE resampling"
+    ),
+):
+    """Get histogram surface-ready data for Plotly 3D rendering."""
+
+    logger_api.info(f"Fetching histogram surface for {project}/{run_id}/{name}")
+
+    if range_min is not None and range_max is not None and range_min >= range_max:
+        raise HTTPException(400, detail={"error": "range_min must be < range_max"})
+
+    allowed_axes = {"step", "global_step", "relative_walltime"}
+    if axis not in allowed_axes:
+        raise HTTPException(
+            400, detail={"error": f"axis must be one of {sorted(allowed_axes)}"}
+        )
+
+    allowed_normalize = {"per-step", "global", "none"}
+    if normalize not in allowed_normalize:
+        raise HTTPException(
+            400,
+            detail={"error": f"normalize must be one of {sorted(allowed_normalize)}"},
+        )
+
+    run_path = get_run_path(project, run_id)
+    reader = BoardReader(run_path)
+    data = reader.get_histogram_data(
+        name,
+        limit=limit,
+        bins=bins,
+        range_min=range_min,
+        range_max=range_max,
+    )
+
+    if not data:
+        raise HTTPException(404, detail={"error": "Histogram not found"})
+
+    try:
+        payload = _build_histogram_surface_payload(
+            data,
+            axis_type=axis,
+            normalize_mode=normalize,
+            downsample=downsample,
+            target_bins=bins,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, detail={"error": str(exc)})
+
+    return {
+        "experiment_id": run_id,
+        "histogram_name": name,
+        **payload,
+    }
 
 
 @router.get("/projects/{project}/runs/{run_id}/histograms/{name:path}")

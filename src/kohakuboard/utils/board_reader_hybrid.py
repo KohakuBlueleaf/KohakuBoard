@@ -63,6 +63,7 @@ class HybridBoardReader:
             self.media_kv = KVault(str(self.media_kv_path))
 
         self._tensor_vaults: dict[str, KVault] = {}
+        self._relative_walltime_cache: dict[int, float] | None = None
 
         # Retry configuration (for SQLite locks)
         self.max_retries = 5
@@ -379,6 +380,46 @@ class HybridBoardReader:
         finally:
             conn.close()
 
+    def _get_relative_walltime_map(self) -> dict[int, float]:
+        """Build (or reuse) a cache mapping step -> relative walltime seconds."""
+        if self._relative_walltime_cache is not None:
+            return self._relative_walltime_cache
+
+        cache: dict[int, float] = {}
+        self._relative_walltime_cache = cache
+
+        if not self.sqlite_db.exists():
+            return cache
+
+        conn = self._get_sqlite_connection()
+        try:
+            cursor = conn.execute(
+                "SELECT step, timestamp FROM steps WHERE timestamp IS NOT NULL ORDER BY step ASC"
+            )
+            rows = cursor.fetchall()
+        except Exception as exc:
+            logger.error(f"Failed to build relative walltime map: {exc}")
+            rows = []
+        finally:
+            conn.close()
+
+        if not rows:
+            return cache
+
+        first_ts = None
+        for step_value, ts in rows:
+            if ts is None:
+                continue
+            if first_ts is None:
+                first_ts = ts
+            relative = (ts - first_ts) / 1000.0
+            try:
+                cache[int(step_value)] = float(relative)
+            except (TypeError, ValueError):
+                continue
+
+        return cache
+
     def get_available_media_names(self) -> list[str]:
         """Get list of available media names
 
@@ -562,6 +603,7 @@ class HybridBoardReader:
 
         namespace = name.split("/")[0] if "/" in name else name.replace("/", "__")
         name_bytes = name.encode("utf-8")
+        relative_walltime_map = self._get_relative_walltime_map()
 
         def iter_candidate_files():
             for db_file in sorted(histograms_dir.glob("*.db")):
@@ -627,6 +669,9 @@ class HybridBoardReader:
                             ),
                             "bins": bin_edges,
                             "counts": counts,
+                            "relative_walltime": relative_walltime_map.get(
+                                int(steps[idx])
+                            ),
                         }
                     )
 
@@ -650,6 +695,8 @@ class HybridBoardReader:
     ) -> list[dict[str, Any]]:
         if not self.sqlite_db.exists():
             return []
+
+        relative_walltime_map = self._get_relative_walltime_map()
 
         try:
             conn = self._get_sqlite_connection()
@@ -691,6 +738,7 @@ class HybridBoardReader:
                 "range_max": float(row[8]) if row[8] is not None else None,
                 "num_points": int(row[9]) if row[9] is not None else None,
                 "metadata": meta,
+                "relative_walltime": relative_walltime_map.get(int(row[0])),
             }
 
             try:
