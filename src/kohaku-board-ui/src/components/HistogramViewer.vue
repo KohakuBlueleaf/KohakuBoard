@@ -158,6 +158,45 @@ function formatAxisValue(value, axisType, unit) {
   return Math.round(value).toString();
 }
 
+function computeGlobalValueRange(entries, fallbackEdges, paddingRatio = 0.05) {
+  let min = Number.POSITIVE_INFINITY;
+  let max = Number.NEGATIVE_INFINITY;
+
+  const updateRange = (edges) => {
+    if (!Array.isArray(edges) || edges.length < 2) return;
+    const entryMin = edges[0];
+    const entryMax = edges[edges.length - 1];
+    if (Number.isFinite(entryMin) && entryMin < min) {
+      min = entryMin;
+    }
+    if (Number.isFinite(entryMax) && entryMax > max) {
+      max = entryMax;
+    }
+  };
+
+  entries.forEach((entry) => updateRange(entry.bins));
+
+  if (!Number.isFinite(min) || !Number.isFinite(max) || min === max) {
+    updateRange(fallbackEdges);
+  }
+
+  if (!Number.isFinite(min) || !Number.isFinite(max)) {
+    return { min: 0, max: 1 };
+  }
+
+  if (min === max) {
+    const pad = Math.max(Math.abs(min) * 0.05, 0.5);
+    return { min: min - pad, max: max + pad };
+  }
+
+  const span = max - min;
+  const pad = span * paddingRatio;
+  return {
+    min: min - pad,
+    max: max + pad,
+  };
+}
+
 function buildTickInfo(axisValues, axisType, unit) {
   if (!axisValues || axisValues.length === 0) {
     return { tickvals: [], ticktext: [] };
@@ -253,6 +292,14 @@ const currentHistogram = computed(() => {
   if (!props.histogramData || props.histogramData.length === 0) return null;
   const index = stepIndex.value >= 0 ? stepIndex.value : 0;
   return props.histogramData[index];
+});
+
+const histogramValueRange = computed(() => {
+  if (!props.histogramData || props.histogramData.length === 0) return null;
+  const fallbackEdges = props.histogramData.find(
+    (entry) => Array.isArray(entry.bins) && entry.bins.length > 1,
+  )?.bins;
+  return computeGlobalValueRange(props.histogramData, fallbackEdges);
 });
 
 watch(
@@ -401,8 +448,21 @@ function createSingleStepPlot(colors) {
           },
         };
 
+  const globalRange = histogramValueRange.value;
+  const xAxisRange =
+    globalRange &&
+    Number.isFinite(globalRange.min) &&
+    Number.isFinite(globalRange.max)
+      ? [globalRange.min, globalRange.max]
+      : null;
+
   const layout = {
-    xaxis: { gridcolor: colors.grid, color: colors.text, title: "Value" },
+    xaxis: {
+      gridcolor: colors.grid,
+      color: colors.text,
+      title: "Value",
+      ...(xAxisRange ? { range: xAxisRange } : {}),
+    },
     yaxis: { gridcolor: colors.grid, color: colors.text, title: "Count" },
     height: props.height - 100,
     paper_bgcolor: "transparent",
@@ -501,6 +561,8 @@ function createDistributionFlowPlot(colors) {
 
   const columnCount = axisValues.length;
   if (columnCount === 0) return;
+
+  const valueRange = computeGlobalValueRange(filteredEntries, binEdges);
   let normalizedZ = zMatrix;
   if (normalize.value === "per-step") {
     const numBins = binCenters.length;
@@ -546,9 +608,6 @@ function createDistributionFlowPlot(colors) {
       "<extra></extra>",
   };
 
-  const yMin = Math.min(...binCenters);
-  const yMax = Math.max(...binCenters);
-
   const tickConfig =
     tickInfo.tickvals.length > 0
       ? {
@@ -571,7 +630,7 @@ function createDistributionFlowPlot(colors) {
       gridcolor: colors.grid,
       color: colors.text,
       title: "Bin Value",
-      range: [yMin, yMax],
+      range: [valueRange.min, valueRange.max],
       fixedrange: false,
     },
     height: props.height - 60,
@@ -635,12 +694,10 @@ function resetZoom() {
     if (!referenceEntry) return;
 
     const binEdges = referenceEntry.bins;
-    const binCenters = binEdges
-      .slice(0, -1)
-      .map((bin, i) => (bin + binEdges[i + 1]) / 2);
     const expectedBinCount = binEdges.length;
 
     const axisValues = [];
+    const filteredEntries = [];
     sampledData.forEach((entry) => {
       if (
         Array.isArray(entry.counts) &&
@@ -649,10 +706,11 @@ function resetZoom() {
         entry.bins.length === expectedBinCount
       ) {
         axisValues.push(getAxisValue(entry, xAxisType.value));
+        filteredEntries.push(entry);
       }
     });
 
-    if (!axisValues.length) return;
+    if (!axisValues.length || !filteredEntries.length) return;
 
     const axisSpan =
       axisValues.length > 1
@@ -664,13 +722,11 @@ function resetZoom() {
         : null;
     const tickInfo = buildTickInfo(axisValues, xAxisType.value, axisUnit);
     const xRange = computeAxisRange(axisValues);
-
-    const yMin = Math.min(...binCenters);
-    const yMax = Math.max(...binCenters);
+    const valueRange = computeGlobalValueRange(filteredEntries, binEdges);
 
     const relayoutUpdate = {
       "xaxis.range": xRange,
-      "yaxis.range": [yMin, yMax],
+      "yaxis.range": [valueRange.min, valueRange.max],
     };
     if (tickInfo.tickvals.length > 0) {
       relayoutUpdate["xaxis.tickmode"] = "array";
@@ -684,7 +740,11 @@ function resetZoom() {
 
     Plotly.relayout(plotDiv.value, relayoutUpdate);
     console.log(
-      "[HistogramViewer] Reset flow ranges, y=[" + yMin + "," + yMax + "]",
+      "[HistogramViewer] Reset flow ranges, y=[" +
+        valueRange.min +
+        "," +
+        valueRange.max +
+        "]",
     );
   } else {
     console.log("[HistogramViewer] Resetting single step mode");
