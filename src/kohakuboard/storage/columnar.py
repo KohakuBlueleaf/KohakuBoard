@@ -1,6 +1,6 @@
 """KohakuVault-based storage for scalar metrics using ColumnVault (per-metric files)
 
-Uses one ColumnVault DB per metric (like Lance but with SQLite):
+Uses one ColumnVault DB per metric (SQLite-based column store):
 - metrics/train__loss.db
 - metrics/val__acc.db
 

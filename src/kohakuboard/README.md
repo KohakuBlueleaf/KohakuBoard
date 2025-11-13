@@ -138,11 +138,11 @@ src/kohakuboard/
 # View local boards (fully working)
 kobo open ./kohakuboard --browser
 
-# Start server (WIP)
-kobo serve --reload --port 48889
+# Start authenticated server (WIP, requires kohakuboard_server)
+kobo-serve --data-dir ./kohakuboard --reload --port 48889
 
-# Sync to remote (WIP)
-kobo sync ./kohakuboard/{board_id} -r https://board.example.com -p my-project
+# Share runs with the server (copy folders today)
+rsync -a ./kohakuboard/default/{board_id} /var/kohakuboard/default/
 ```
 
 ---

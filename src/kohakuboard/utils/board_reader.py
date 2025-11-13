@@ -1,6 +1,4 @@
-"""Board reader factory for SQLite/Lance backends
-Auto-detects backend type and delegates to HybridBoardReader.
-"""
+"""Board reader factory for hybrid KohakuVault + SQLite backends."""
 
 import json
 from pathlib import Path
@@ -21,12 +19,12 @@ class BoardReader:
     """Read-only interface for accessing board data (factory pattern)
 
     v0.2.0+: Returns HybridBoardReader for all boards.
-    Both 'sqlite' and 'hybrid' backends use the same reader since they share
-    the same SQLite metadata structure.
+    Both legacy SQLite-only runs and modern hybrid runs share the same
+    SQLite metadata structure, so a single reader works for all.
 
     The HybridBoardReader handles:
-    - Pure SQLite backends: Reads from metadata.db only
-    - Hybrid backends: Reads metrics from Lance, metadata from SQLite
+    - Pure SQLite metadata tables (steps, tables, tensors, etc.)
+    - KohakuVault ColumnVault metric files + KVault media stores
     """
 
     def __new__(cls, board_dir: Path):
