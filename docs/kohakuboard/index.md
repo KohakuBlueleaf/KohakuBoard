@@ -16,9 +16,9 @@ KohakuBoard is a **local-first experiment tracking system** designed for ML/AI t
 
 - **Non-blocking logging** - Background writer process, zero training overhead
 - **Rich data types** - Scalars, images, videos, histograms, tables
-- **Flexible storage** - 3 backend options (Hybrid/DuckDB/Parquet)
+- **Unified storage** - KohakuVault ColumnVault + SQLite metadata (identical on train + server)
 - **Local-first** - View experiments locally with `kobo open`, no server needed
-- **Optional remote sync** - Upload to shared server (WIP)
+- **Manual remote sync** - Copy run folders directly into any server's data directory
 
 ---
 
@@ -59,9 +59,9 @@ Complete API documentation for the Python client
 Command-line interface for managing boards
 
 **Topics:**
-- `kobo open` - Browse local boards
-- `kobo serve` - Start remote server (WIP)
-- `kobo sync` - Upload to remote (WIP)
+- `kobo open` - Browse local boards (no auth)
+- `kobo-serve` - Authenticated FastAPI server (still stabilizing)
+- Manual file copy workflow (recommended sync method today)
 - Environment variables
 - Systemd service setup
 
@@ -74,10 +74,10 @@ Command-line interface for managing boards
 Storage backends, performance tuning, advanced configuration
 
 **Topics:**
-- Storage backends (Hybrid/DuckDB/Parquet)
-- Performance optimization
-- Queue configuration
+- KohakuVault ColumnVault + SQLite layout
+- Performance optimization and queue sizing
 - Directory structure
+- Memory mode vs. on-disk mode
 
 **Use this** to optimize for your use case.
 
@@ -93,7 +93,19 @@ Remote server deployment (work in progress)
 - Authentication
 - Frontend overview
 
-⚠️ **Note:** Remote mode is not fully usable yet. Use `kobo open` for local viewing.
+⚠️ **Note:** Remote mode is still stabilizing. Until the sync APIs are refreshed, move runs by copying the `{project}/{run_id}` folders into the server's `--data-dir`.
+
+---
+
+### [Usage Manual](/docs/kohakuboard/usage-manual)
+
+Hands-on workflow for capturing, inspecting, and sharing boards with your team.
+
+**Topics:**
+- Training loop checklist
+- Recommended logging cadence
+- Manual rsync/copy steps for sharing runs
+- Troubleshooting queue pressure, disk usage, and metadata issues
 
 ---
 
@@ -111,13 +123,12 @@ pip install -e src/kohakuboard/
 ```python
 from kohakuboard.client import Board
 
-board = Board(name="my-experiment")
+board = Board(name="my-experiment", project="vision")
 
-for epoch in range(10):
-    board.step()
-    for batch in train_loader:
-        loss = train_step(batch)
-        board.log(loss=loss)
+for batch in train_loader:
+    loss = train_step(batch)
+    board.step()              # optimizer step
+    board.log(loss=loss.item())
 ```
 
 ### View Results
@@ -186,8 +197,10 @@ kobo open ./kohakuboard      # View locally
 |------|-------------|---------|
 | **Scalars** | Metrics (loss, accuracy, etc.) | `board.log(loss=0.5)` |
 | **Media** | Images, videos, audio | `board.log(img=Media(array))` |
-| **Tables** | Structured data | `board.log(results=Table(data))` |
-| **Histograms** | Distributions | `board.log(grad=Histogram(values))` |
+| **Tables** | Structured data (can embed Media) | `board.log(results=Table(data))` |
+| **Histograms** | Distributions with compression | `board.log(grad=Histogram(values))` |
+| **TensorLog** | High-dimensional tensors | `board.log(weights=TensorLog(tensor))` |
+| **KernelDensity** | KDE results or raw samples | `board.log(density=KernelDensity(values))` |
 
 ---
 
@@ -203,7 +216,7 @@ Python Script                    Local Viewer
      │                                │
 Writer Process                        │
      ├─ Drain queue                   │
-     ├─ Write to KohakuVault/DuckDB         │
+     ├─ Write to KohakuVault column stores + SQLite
      └─ Flush to disk                 │
                                       │
                     kobo open ./kohakuboard
@@ -227,21 +240,20 @@ Python Script              Remote Server              Web UI
      ├─ Board.log(...)          │                       │
      │  └─> Local storage       │                       │
      │                          │                       │
-kobo sync                       │                       │
-     └─────> Upload ────────────┤                       │
+rsync / copy board folder  ─────┤                       │
                                 │                       │
-                          FastAPI + Auth                │
+                          FastAPI + Auth (kobo-serve)   │
                                 │                       │
-                          PostgreSQL                    │
+                          PostgreSQL / SQLite metadata  │
                                 │                       │
                                 └───────> View ─────────┤
 ```
 
 **Status:** ⚠️ Work in progress
-- ⏳ Server authentication
-- ⏳ Project management
-- ⏳ Sync protocol
-- ⏳ Frontend integration
+- ✅ Manual sync by copying `{project}/{run}` folders into the server data dir
+- ⏳ Authenticated multi-user flows (kobo-serve)
+- ⏳ New HTTP sync protocol (will replace legacy DuckDB uploader)
+- ⏳ Frontend integration for multi-project dashboards
 
 ---
 
@@ -270,17 +282,20 @@ kobo open ./kohakuboard --browser
 - ❌ No multi-user collaboration
 - ❌ No remote access
 
-### Remote Workflow (WIP)
+### Remote Workflow (Manual Copy Today)
 
 ```bash
 # 1. Start server (once)
-kobo serve --db postgresql://... --workers 4
+kobo-serve --db postgresql://... --workers 4 --data-dir /var/kohakuboard
 
 # 2. Train locally
 python train.py
 
-# 3. Sync to server
-kobo sync ./kohakuboard/{board_id} -r https://board.example.com -p my-project
+# 3. Copy run folder into the server's data dir
+rsync -a ./kohakuboard/default/20250201_120301_xyz \
+      server:/var/kohakuboard/default/
+
+# 4. Refresh the UI
 ```
 
 **Pros:**
@@ -290,8 +305,8 @@ kobo sync ./kohakuboard/{board_id} -r https://board.example.com -p my-project
 
 **Cons:**
 - ❌ Requires server setup
-- ❌ Authentication needed
-- ⚠️ Still in development
+- ❌ Authentication config still stabilizing
+- ⚠️ Command-line sync (`kobo sync`) is not compatible with current storage yet
 
 ---
 
@@ -341,15 +356,15 @@ board.log(weights=hist)
 
 ---
 
-## 🔧 Storage Backends
+## 🔧 Storage Architecture
 
-| Backend | Metric Write | Concurrency | NaN/Inf | Use Case |
-|---------|--------------|-------------|---------|----------|
-| **Hybrid** | Fastest | Excellent | Converts to None | **Default** |
-| **DuckDB** | Fast | Good | Preserves | SQL queries |
-| **Parquet** | Slower | Excellent | Converts to None | Compatibility |
+Modern boards always use the hybrid KohakuVault + SQLite layout:
 
-**Recommendation:** Use default (Hybrid) unless you need specific features.
+1. **ColumnVault per metric (`data/metrics/*.db`)** – columnar blobs for scalars/histograms with SWMR safety.
+2. **SQLite metadata (`data/metadata.db`)** – tables, tensors, steps, namespaces.
+3. **KVault media store (`media/blobs.db` + files)** – content-addressed images/video/audio/tensors.
+
+Because every layer is plain SQLite, copying `{project}/{run}` directories between machines is safe and fast. Legacy DuckDB/Parquet backends have been removed from the training client.
 
 ---
 
@@ -433,7 +448,7 @@ WARNING: Queue size is 40000 (80% capacity)
 - [x] Python client library
 - [x] Rich data types (scalars, media, tables, histograms)
 - [x] Non-blocking async logging
-- [x] Multiple storage backends
+- [x] Hybrid KohakuVault + SQLite storage
 - [x] Local viewer (`kobo open`)
 - [x] Step management
 - [x] Namespace organization
@@ -443,7 +458,7 @@ WARNING: Queue size is 40000 (80% capacity)
 - [ ] Remote server mode
 - [ ] Authentication system
 - [ ] Project management
-- [ ] Sync protocol (`kobo sync`)
+- [ ] New sync protocol + refreshed `kobo sync`
 - [ ] Frontend UI improvements
 - [ ] Multi-user collaboration
 

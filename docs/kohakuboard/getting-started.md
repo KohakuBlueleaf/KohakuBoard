@@ -40,10 +40,11 @@ board = Board(
 
 # Training loop
 for epoch in range(10):
-    board.step()  # Mark new epoch
-
     for batch_idx, (data, target) in enumerate(train_loader):
         loss = train_step(data, target)
+
+        # Increment ONCE per optimizer/batch update
+        board.step()
 
         # Log metrics (non-blocking!)
         board.log(
@@ -60,7 +61,7 @@ for epoch in range(10):
 
 ## 📊 Rich Data Types
 
-KohakuBoard supports 4 data types in a unified API:
+KohakuBoard supports 6 data types in a unified API:
 
 ### 1. Scalars (metrics)
 
@@ -129,6 +130,28 @@ board.log(
 # Precompute for efficiency (optional)
 hist = Histogram(gradients).compute_bins()
 board.log(grad_distribution=hist)
+```
+
+### 5. Tensor Logs (high-dimensional arrays)
+
+```python
+from kohakuboard.client import TensorLog
+
+# Store tensors exactly once, reader fetches lazily
+board.log(
+    attention_map=TensorLog(tensor, namespace="layer3", metadata={"head": 2})
+)
+```
+
+### 6. Kernel Density Estimates
+
+```python
+from kohakuboard.client import KernelDensity
+
+# Either pass raw values or precomputed grid/density
+board.log(
+    val_logits=KernelDensity(values=logits.cpu().numpy(), grid_size=256)
+)
 ```
 
 ---
@@ -211,8 +234,6 @@ board = Board(
 
 # Training loop
 for epoch in range(100):
-    board.step()  # Global step for epoch
-
     # Training phase
     model.train()
     for batch_idx, (data, target) in enumerate(train_loader):
@@ -221,6 +242,8 @@ for epoch in range(100):
         loss = criterion(output, target)
         loss.backward()
         optimizer.step()
+
+        board.step()  # Increment ONCE per optimizer step
 
         # Log training metrics
         board.log(**{
@@ -300,28 +323,16 @@ kohakuboard/
 
 ## ⚙️ Configuration
 
-### Storage Backends
+### Storage Layout
 
-KohakuBoard supports 3 storage backends:
+Modern boards always use the hybrid KohakuVault + SQLite architecture:
 
-```python
-# Hybrid (default, recommended)
-board = Board(name="exp")
-# - Metrics: KohakuVault (fastest)
-# - Media/Tables: SQLite (best concurrency)
+- **`data/metrics/*.db`** – KohakuVault ColumnVault files (one per metric).
+- **`data/metadata.db`** – SQLite tables for media/table/tensor metadata.
+- **`media/blobs.db` + files** – Content-addressed blobs, deduplicated by hash.
+- **`data/tensors/*.db`** – Optional KVault stores for `TensorLog`.
 
-# DuckDB
-board = Board(name="exp")
-# - NaN/inf preservation
-# - SQL query support
-
-# Parquet
-board = Board(name="exp", backend="sqlite")
-# - Maximum compatibility
-# - Good for post-processing
-```
-
-See [Configuration Guide](/docs/kohakuboard/configuration) for details.
+This layout is identical on laptops, servers, and CI. Sharing a run is as easy as copying the `{project}/{run_id}` folder to another machine. See the [Usage Manual](/docs/kohakuboard/usage-manual) for copy/rsync examples.
 
 ### Context Manager
 
@@ -347,6 +358,22 @@ board.finish()
 
 ---
 
+## 🚛 Sharing Runs Between Machines
+
+Local mode (`kobo open`) and the authenticated server (`kobo-serve`) read the exact same folder structure. To share a run:
+
+1. Copy the run folder:
+   ```bash
+   rsync -a ./kohakuboard/default/20250201_120301_xyz \
+         server:/var/kohakuboard/default/
+   ```
+2. Ensure file permissions allow the server/viewer to read the files.
+3. Restart or refresh the viewer. The run appears immediately (no import needed).
+
+> The legacy `kobo sync` command still targets the old DuckDB exporter and will fail on new boards. Stick to manual copy/rsync until the refreshed sync API ships.
+
+---
+
 ## 🔧 Advanced Features
 
 ### Step Control
@@ -358,11 +385,18 @@ board.log(loss=0.5, auto_step=True)
 # Manual control
 board.log(loss=0.5, auto_step=False)  # No step increment
 
-# Global step for grouping
-for epoch in range(100):
-    board.step()  # global_step = epoch
-    for batch in train_loader:
-        board.log(loss=loss)  # All batches share global_step
+# Global step for optimizer steps (recommended)
+for batch in train_loader:
+    board.step()  # Increment ONCE per optimizer update
+    board.log(loss=loss)
+```
+
+```python
+# If you really need manual control (e.g., gradient accumulation)
+if (batch_idx + 1) % accumulation_steps == 0:
+    board.step(increment=1)
+else:
+    board.log(loss=loss, auto_step=False)  # same global_step
 ```
 
 ### Histogram Optimization

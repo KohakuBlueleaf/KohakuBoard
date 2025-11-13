@@ -53,11 +53,11 @@ for batch_idx, (data, target) in enumerate(dataloader):
 ### View Results
 
 ```bash
-# Start backend
-python -m kohakuboard.main
+# Local viewer (no auth)
+kobo open ./kohakuboard --browser
 
-# Open browser
-# http://localhost:48889
+# Optional authenticated server (requires kohakuboard_server)
+kobo-serve --data-dir ./kohakuboard --port 48889
 ```
 
 ---
@@ -206,7 +206,9 @@ CREATE TABLE tables (
 └── {board_id_timestamp}/
     ├── metadata.json           # Board info, config, timestamps
     ├── data/
-    │   └── metrics/*.db        # Single KohakuVault file
+    │   ├── metrics/*.db        # Per-metric KohakuVault ColumnVault files
+    │   ├── metadata.db         # SQLite tables (media/tables/tensors/steps)
+    │   └── tensors/*.db        # Optional tensor payload vaults
     ├── media/
     │   ├── {name}_{idx}_{step}_{hash}.png
     │   ├── {name}_{idx}_{step}_{hash}.mp4
@@ -216,6 +218,16 @@ CREATE TABLE tables (
         └── writer.log          # Writer process logs
 ```
 
+### Manual Sync / Sharing
+
+Local viewers and the authenticated server read the exact same folder layout. To share a run:
+
+1. Copy the folder `{base_dir}/{project}/{board_id}` to the destination machine.
+2. Place it under the viewer/server data directory (`--data-dir` for `kobo-serve` or the path you pass to `kobo open`).
+3. Refresh the UI. The run is available immediately because the metrics/media already live in KohakuVault + SQLite files.
+
+> The legacy `kobo sync` command still expects a DuckDB export and is not compatible with modern boards. Stick to manual copy/rsync until the refreshed sync API ships.
+
 ---
 
 ## API Reference
@@ -224,12 +236,20 @@ CREATE TABLE tables (
 
 ```python
 Board(
-    name: str,                    # Human-readable name
-    board_id: Optional[str] = None,  # Auto-generated if not provided
-    config: Optional[Dict] = None,   # Hyperparameters, etc.
-    base_dir: Optional[Path] = None,  # Default: ./kohakuboard
-    capture_output: bool = True,     # Capture stdout/stderr
-    backend: str = "duckdb"          # Storage backend
+    name: str | None = None,
+    board_id: str | None = None,
+    config: dict | None = None,
+    project: str | None = None,
+    base_dir: str | Path | None = None,
+    capture_output: bool = True,
+    remote_url: str | None = None,
+    remote_token: str | None = None,
+    remote_project: str | None = None,
+    sync_enabled: bool = False,
+    sync_interval: int = 10,
+    memory_mode: bool = False,
+    *,
+    annotation: str | None = None,
 )
 ```
 
@@ -487,9 +507,9 @@ export KOHAKU_BOARD_DATA_DIR="./kohakuboard"
 # Client configuration (in code)
 board = Board(
     name="my_training",
+    project="vision",
     base_dir="./my_boards",  # Override default
-    ,         # or "parquet" (legacy)
-    capture_output=True       # Capture stdout/stderr
+    capture_output=True      # Capture stdout/stderr
 )
 ```
 
@@ -548,7 +568,7 @@ See `examples/` directory:
 | **Latency** | ~10ms | ~1ms | ~5ms | < 1µs |
 | **Offline** | ❌ No | ✅ Yes | ✅ Yes | ✅ Yes |
 | **File-based** | ❌ No | ✅ Yes | ❌ No | ✅ Yes |
-| **SQL Queries** | ❌ No | ❌ No | ✅ Yes | ✅ Yes (KohakuVault) |
+| **Columnar Reads** | ❌ No | ❌ No | ✅ Yes | ✅ Yes (KohakuVault ColumnVault) |
 | **WebGL Charts** | ❌ No | ❌ No | ❌ No | ✅ Yes |
 | **Non-blocking** | ❌ No | ❌ No | ❌ No | ✅ Yes |
 | **Self-hosted** | Limited | ✅ Yes | ✅ Yes | ✅ Yes |
@@ -584,14 +604,14 @@ KohakuBoard is part of the KohakuHub project.
 - ✅ Media logging
 - ✅ Table logging
 
-**Next (v0.2):**
-- [ ] Histogram logging
+**Next:**
+- [ ] Refreshed sync workflow (HTTP + CLI)
 - [ ] Run comparison UI
-- [ ] Export to CSV/JSON
-- [ ] PyTorch/TensorFlow callbacks
+- [ ] Export to CSV/JSON from the UI
+- [ ] Official PyTorch/TensorFlow callbacks
 
-**Future (v1.0):**
-- [ ] Remote sync (upload to server)
-- [ ] Multi-user support
+**Future:**
+- [ ] Hardened remote server (auth, RBAC, projects)
+- [ ] Multi-user collaboration
 - [ ] Advanced analysis tools
 - [ ] KohakuHub integration

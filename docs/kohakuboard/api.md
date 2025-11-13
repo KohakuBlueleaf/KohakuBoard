@@ -18,12 +18,20 @@ Main interface for experiment logging.
 
 ```python
 Board(
-    name: str,
-    board_id: Optional[str] = None,
-    config: Optional[Dict[str, Any]] = None,
-    base_dir: Optional[Union[str, Path]] = None,
+    name: str | None = None,
+    board_id: str | None = None,
+    config: dict[str, Any] | None = None,
+    project: str | None = None,
+    base_dir: str | Path | None = None,
     capture_output: bool = True,
-    backend: str = "hybrid"
+    remote_url: str | None = None,
+    remote_token: str | None = None,
+    remote_project: str | None = None,
+    sync_enabled: bool = False,
+    sync_interval: int = 10,
+    memory_mode: bool = False,
+    *,
+    annotation: str | None = None,
 )
 ```
 
@@ -31,12 +39,19 @@ Board(
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `name` | `str` | Required | Human-readable board name |
-| `board_id` | `str \| None` | Auto-generated | Unique ID (format: `YYYYmmdd_HHMMSS_{uuid}`) |
+| `name` | `str \| None` | Friendly words | Human-readable board name (auto-generated if `None`) |
+| `board_id` | `str \| None` | Auto-generated | Stable ID (`YYYYmmdd_HHMMSS_<4-char>`) |
 | `config` | `dict \| None` | `{}` | Hyperparameters/configuration dict |
-| `base_dir` | `str \| Path \| None` | `./kohakuboard` | Base directory for all boards |
-| `capture_output` | `bool` | `True` | Capture stdout/stderr to `logs/output.log` |
-| `backend` | `str` | `"hybrid"` | Storage backend (`hybrid`, `duckdb`, `parquet`) |
+| `project` | `str \| None` | `"default"` | Subdirectory for grouping runs |
+| `base_dir` | `str \| Path \| None` | `./kohakuboard` | Root directory containing projects |
+| `capture_output` | `bool` | `True` | Mirror stdout/stderr into `logs/output.log` |
+| `remote_url` | `str \| None` | - | Remote server base URL (future sync) |
+| `remote_token` | `str \| None` | - | Auth token for remote sync |
+| `remote_project` | `str \| None` | Project name | Remote project override |
+| `sync_enabled` | `bool` | `False` | Start sync worker (requires remote_* args) |
+| `sync_interval` | `int` | `10` | Seconds between sync attempts |
+| `memory_mode` | `bool` | `False` | Keep storage in RAM only (requires sync to persist) |
+| `annotation` | `str \| None` | `None` | Optional suffix appended to folder name |
 
 **Example:**
 
@@ -94,6 +109,8 @@ board.log(
 2. **Media**: `Media` objects (images, video, audio)
 3. **Tables**: `Table` objects (structured data)
 4. **Histograms**: `Histogram` objects (distributions)
+5. **TensorLog**: Large tensors stored once, streamed on demand
+6. **KernelDensity**: KDE objects (precomputed or raw samples)
 
 **Examples:**
 
@@ -306,6 +323,83 @@ board.log_histogram("weights", param.data, precision="compact")
 
 ---
 
+### board.log_tensor()
+
+Log high-dimensional tensors once and stream them lazily in the UI.
+
+```python
+from kohakuboard.client import TensorLog
+
+board.log_tensor(
+    name: str,
+    values: Any,
+    precision: Any | None = None,
+    metadata: dict[str, Any] | None = None,
+)
+```
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `name` | `str` | Log name (namespaces supported) |
+| `values` | `Any` | Tensor/array-like payload (PyTorch, NumPy, etc.) |
+| `precision` | `Any \| None` | Optional dtype override during serialization |
+| `metadata` | `dict \| None` | Additional metadata stored alongside the tensor |
+
+**Usage:**
+
+```python
+board.log_tensor(
+    "attention/layer3",
+    values=attn_tensor,
+    metadata={"head": 4, "token": 128},
+)
+```
+
+---
+
+### board.log_kernel_density()
+
+Log Kernel Density Estimates (KDE) either from raw samples or precomputed arrays.
+
+```python
+from kohakuboard.client import KernelDensity
+
+board.log_kernel_density(
+    name: str,
+    grid: Any | None = None,
+    density: Any | None = None,
+    *,
+    values: Any | None = None,
+    num_points: int = 256,
+    kernel: str = "gaussian",
+    bandwidth: float | str | None = None,
+    sample_count: int | None = None,
+    range_min: float | None = None,
+    range_max: float | None = None,
+    percentile_clip: tuple[float, float] = (1.0, 99.0),
+    metadata: dict[str, Any] | None = None,
+    approximate: bool = False,
+    approximate_bins: int | None = None,
+)
+```
+
+- Pass `values=` to have the writer compute the KDE automatically.
+- Pass `grid=` + `density=` to reuse existing KDE computations.
+- `approximate=True` switches to a histogram+FFT path for very large sample counts.
+
+```python
+board.log_kernel_density(
+    "val/logits",
+    values=logits.cpu().numpy(),
+    num_points=512,
+    percentile_clip=(0.5, 99.5),
+)
+```
+
+---
+
 ## Step Management
 
 ### board.step()
@@ -324,12 +418,15 @@ board.step(increment: int = 1)
 
 **Example:**
 
-```python
-for epoch in range(100):
-    board.step()  # global_step = 0, 1, 2, ...
+Call this **once per optimizer step** (not per epoch).
 
-    for batch in train_loader:
-        board.log(loss=loss)  # All batches share same global_step
+```python
+for batch_idx, batch in enumerate(train_loader):
+    loss = train_step(batch)
+    optimizer.step()
+
+    board.step()  # global_step += 1
+    board.log(loss=loss.item())
 ```
 
 **Two Step Tracking Systems:**

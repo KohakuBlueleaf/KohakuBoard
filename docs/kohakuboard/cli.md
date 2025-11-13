@@ -97,16 +97,16 @@ kohakuboard/                    # Root directory
 
 ---
 
-### `kobo serve` - Start Remote Server
+### `kobo-serve` - Start Remote Server
 
-Start KohakuBoard server in remote mode with authentication.
+Start the authenticated KohakuBoard server (separate `kohakuboard_server` package).
 
-⚠️ **Status:** WIP - Not fully usable yet. Use `kobo open` for local viewing.
+⚠️ **Status:** Still stabilizing. Manual file copy is the supported sync flow today.
 
 **Usage:**
 
 ```bash
-kobo serve [OPTIONS]
+kobo-serve [OPTIONS]
 ```
 
 **Options:**
@@ -115,41 +115,36 @@ kobo serve [OPTIONS]
 |--------|---------|-------------|
 | `--host` | `0.0.0.0` | Server host |
 | `--port` | `48889` | Server port |
-| `--data-dir` | `./kohakuboard` | Board data directory |
-| `--db` | `sqlite:///kohakuboard.db` | Database URL |
-| `--db-backend` | `sqlite` | Database backend (`sqlite`, `postgres`) |
-| `--reload` | `False` | Enable auto-reload |
-| `--workers` | `1` | Number of worker processes |
-| `--session-secret` | - | Session secret for authentication (required in production) |
+| `--data-dir` | `./kohakuboard` | Directory containing board folders (same as local mode) |
+| `--db` | `sqlite:///kohakuboard.db` | Auth database URL |
+| `--db-backend` | `sqlite` | Auth DB backend (`sqlite`, `postgres`) |
+| `--reload` | `False` | Enable auto-reload (dev only) |
+| `--workers` | `1` | Uvicorn workers |
+| `--session-secret` | - | Required secret for production |
 | `--browser` | `False` | Open browser automatically |
+| `--no-auth` | `False` | Disable auth (testing only) |
 
 **Examples:**
 
 ```bash
-# Development with auto-reload (SQLite)
-kobo serve --reload
+# Development with auto-reload (SQLite auth DB)
+kobo-serve --reload
 
-# Production with PostgreSQL
-kobo serve \\
+# Production with PostgreSQL auth DB
+kobo-serve \\
     --db postgresql://user:pass@localhost/kohakuboard \\
     --db-backend postgres \\
+    --data-dir /var/kohakuboard \\
     --workers 4 \\
     --session-secret $(openssl rand -hex 32)
-
-# Custom configuration
-kobo serve \\
-    --port 8080 \\
-    --data-dir /var/kohakuboard \\
-    --db sqlite:///data/board.db \\
-    --workers 2
 ```
 
 **What It Does:**
 
-1. Starts FastAPI server in **remote mode** (with authentication)
-2. Initializes database for user accounts and projects
-3. Enables multi-user collaboration
-4. Supports uploading boards from clients
+1. Starts FastAPI server with authentication (when not using `--no-auth`)
+2. Reads the same board folders produced by the training client (`--data-dir`)
+3. Serves the Vue frontend + REST APIs over HTTPS-friendly endpoints
+4. Relies on you copying/rsyncing runs into the data directory (for now)
 
 **Features:**
 
@@ -157,47 +152,31 @@ kobo serve \\
 - ✅ **Projects** - Organize runs into projects
 - ✅ **Collaboration** - Share experiments with team
 - ✅ **PostgreSQL support** - Production-ready database
-- ⚠️ **WIP**: Frontend and sync are still in development
+- ⚠️ **WIP**: Sync/upload endpoints still target the old DuckDB exporter; copy folders manually
 
 **Security Note:**
 
 Always use `--session-secret` in production:
 
-```bash
-# Generate secure secret
-openssl rand -hex 32
-
-# Use it
-kobo serve --session-secret <generated_secret>
-```
+Generate a session secret with `openssl rand -hex 32` and pass it via `--session-secret`.
 
 ---
 
-### `kobo sync` - Upload to Remote Server
+### `kobo sync` - Legacy Upload Command
 
-Sync local board to remote KohakuBoard server.
+`kobo sync` still expects a legacy `board.duckdb` export and will fail on modern hybrid (KohakuVault + SQLite) boards.
 
-⚠️ **Status:** WIP - Not fully implemented yet. Server upload API is still in development.
+⚠️ **Status:** Legacy. Use manual copy/rsync until the refreshed sync API lands.
 
-**Usage:**
+**Recommended workflow today:**
 
 ```bash
-kobo sync <folder> [OPTIONS]
+# Copy run folder into the server's data-dir
+rsync -a ./kohakuboard/default/20250201_120301_xyz \\
+      server:/var/kohakuboard/default/
 ```
 
-**Arguments:**
-
-| Argument | Description |
-|----------|-------------|
-| `folder` | Path to board directory to sync |
-
-**Options:**
-
-| Option | Required | Description |
-|--------|----------|-------------|
-| `--remote`, `-r` | Yes | Remote server URL (e.g., `https://board.example.com`) |
-| `--token`, `-t` | Yes* | Authentication token (or set `KOBO_TOKEN` env var) |
-| `--project`, `-p` | Yes | Project name on remote server |
+After copying, restart or reload `kobo-serve` (or refresh `kobo open`) and the run is immediately available.
 | `--private/--public` | No | Board visibility (default: `--private`) |
 
 **Examples:**
