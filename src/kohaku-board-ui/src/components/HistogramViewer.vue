@@ -1,5 +1,7 @@
 <script setup>
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import Plotly from "plotly.js-dist-min";
+import HistogramSurfaceMini from "./HistogramSurfaceMini.vue";
 import { useSliderSync } from "@/composables/useSliderSync";
 
 const props = defineProps({
@@ -19,6 +21,34 @@ const props = defineProps({
     type: String,
     default: "global_step", // "step" or "global_step"
   },
+  flowSurfaceEnabled: {
+    type: Boolean,
+    default: false,
+  },
+  surfaceData: {
+    type: Object,
+    default: null,
+  },
+  surfaceLoading: {
+    type: Boolean,
+    default: false,
+  },
+  surfaceAxis: {
+    type: String,
+    default: "global_step",
+  },
+  surfaceNormalize: {
+    type: String,
+    default: "none",
+  },
+  surfaceAspect: {
+    type: Object,
+    default: () => ({
+      x: 1.2,
+      y: 1,
+      z: 0.85,
+    }),
+  },
 });
 
 const emit = defineEmits(["update:currentStep", "update:mode", "update:xAxis"]);
@@ -30,12 +60,39 @@ const colorscale = ref("Viridis");
 const normalize = ref("per-step"); // Default per-step for better contrast
 const showSettings = ref(false);
 const xAxisType = ref(props.xAxis);
+const surfaceModeActive = computed(
+  () => viewMode.value === "flow" && props.flowSurfaceEnabled,
+);
+const shouldShowSurface = computed(
+  () =>
+    surfaceModeActive.value &&
+    props.surfaceData &&
+    Array.isArray(props.surfaceData.matrix) &&
+    props.surfaceData.matrix.length > 0,
+);
+const surfacePlotHeight = computed(() => Math.max(props.height - 140, 220));
+const surfaceAxisLabel = computed(() => {
+  if (props.surfaceAxis === "relative_walltime") {
+    const stats = props.surfaceData?.axis_stats;
+    const span =
+      stats && Number.isFinite(stats.max) && Number.isFinite(stats.min)
+        ? stats.max - stats.min
+        : 0;
+    const unit = resolveRelativeTimeUnit(span);
+    return `Time (${unit.label})`;
+  }
+  return getAxisTitle(props.surfaceAxis || "global_step");
+});
+const surfaceDensityLabel = computed(() =>
+  props.surfaceNormalize && props.surfaceNormalize !== "none"
+    ? "Normalized Density"
+    : "Density",
+);
 const DEFAULT_RELATIVE_UNIT = {
   scale: 1,
   label: "Seconds",
   suffix: "s",
 };
-const MAX_COLUMN_UNITS = 12;
 
 function resolveRelativeTimeUnit(spanSeconds) {
   if (!Number.isFinite(spanSeconds) || spanSeconds <= 0) {
@@ -101,80 +158,58 @@ function formatAxisValue(value, axisType, unit) {
   return Math.round(value).toString();
 }
 
-function buildAxisGeometry(axisValues) {
-  if (!axisValues || axisValues.length === 0) {
-    return {
-      normalizedX: [],
-      columnCenters: [],
-      columnWidths: [],
-      totalWidth: 0,
-    };
-  }
-
-  const diffs = [];
-  for (let i = 0; i < axisValues.length - 1; i++) {
-    const diff = Math.abs(axisValues[i + 1] - axisValues[i]);
-    if (diff > 0) {
-      diffs.push(diff);
-    }
-  }
-
-  const minDiff =
-    diffs.length > 0 ? Math.max(Math.min(...diffs), Number.EPSILON) : 1;
-
-  const columnWidths = axisValues.map((value, idx) => {
-    let diff;
-    if (idx < axisValues.length - 1) {
-      diff = Math.abs(axisValues[idx + 1] - value);
-    } else {
-      diff = diffs.length > 0 ? diffs[diffs.length - 1] : minDiff;
-    }
-    let units = diff > 0 ? Math.round(diff / minDiff) : 1;
-    if (!Number.isFinite(units) || units <= 0) units = 1;
-    return Math.min(Math.max(units, 1), MAX_COLUMN_UNITS);
-  });
-
-  const normalizedX = [];
-  const columnCenters = [];
-  let cursor = 0;
-
-  columnWidths.forEach((width) => {
-    for (let r = 0; r < width; r++) {
-      normalizedX.push(cursor + r + 0.5);
-    }
-    columnCenters.push(cursor + width / 2);
-    cursor += width;
-  });
-
-  return {
-    normalizedX,
-    columnCenters,
-    columnWidths,
-    totalWidth: cursor,
-  };
-}
-
-function buildTickInfo(axisValues, columnCenters, axisType, unit) {
+function buildTickInfo(axisValues, axisType, unit) {
   if (!axisValues || axisValues.length === 0) {
     return { tickvals: [], ticktext: [] };
   }
   const desiredTicks = Math.min(6, axisValues.length);
-  const step = Math.max(1, Math.floor(axisValues.length / desiredTicks));
+  const denominator = Math.max(1, desiredTicks - 1);
+  const step =
+    axisValues.length > 1
+      ? Math.max(1, Math.floor((axisValues.length - 1) / denominator))
+      : 1;
   const tickvals = [];
   const ticktext = [];
 
   for (let i = 0; i < axisValues.length; i += step) {
-    tickvals.push(columnCenters[i]);
+    const value = axisValues[i];
+    tickvals.push(value);
     if (axisType === "relative_walltime") {
       ticktext.push(
-        formatRelativeTickValue(axisValues[i], unit || DEFAULT_RELATIVE_UNIT),
+        formatRelativeTickValue(value, unit || DEFAULT_RELATIVE_UNIT),
       );
     } else {
-      ticktext.push(Math.round(axisValues[i]).toString());
+      ticktext.push(Math.round(value).toString());
     }
   }
 
+  const lastValue = axisValues[axisValues.length - 1];
+  if (tickvals[tickvals.length - 1] !== lastValue) {
+    tickvals.push(lastValue);
+    ticktext.push(
+      axisType === "relative_walltime"
+        ? formatRelativeTickValue(lastValue, unit || DEFAULT_RELATIVE_UNIT)
+        : Math.round(lastValue).toString(),
+    );
+  }
+
   return { tickvals, ticktext };
+}
+
+function computeAxisRange(axisValues) {
+  if (!axisValues || axisValues.length === 0) {
+    return [0, 1];
+  }
+  const min = Math.min(...axisValues);
+  const max = Math.max(...axisValues);
+  if (!Number.isFinite(min) || !Number.isFinite(max)) {
+    return [0, 1];
+  }
+  if (min === max) {
+    return [min - 0.5, max + 0.5];
+  }
+  const padding = (max - min) * 0.05 || 0.5;
+  return [min - padding, max + padding];
 }
 
 // Watch for prop changes and update viewMode (for global settings)
@@ -235,6 +270,26 @@ watch(
   },
 );
 
+watch(surfaceModeActive, (active) => {
+  if (active) {
+    if (plotDiv.value) {
+      Plotly.purge(plotDiv.value);
+    }
+  } else if (viewMode.value === "flow") {
+    createPlot();
+  }
+});
+
+watch(
+  () => props.surfaceData,
+  () => {
+    if (surfaceModeActive.value && plotDiv.value) {
+      Plotly.purge(plotDiv.value);
+    }
+  },
+  { deep: true },
+);
+
 watch(viewMode, (newMode) => {
   emit("update:mode", newMode); // Emit to parent to save
   createPlot();
@@ -293,6 +348,13 @@ function setupResizeObserver() {
 }
 
 function createPlot() {
+  if (surfaceModeActive.value) {
+    if (plotDiv.value) {
+      Plotly.purge(plotDiv.value);
+    }
+    return;
+  }
+
   if (!plotDiv.value) return;
 
   const isDark = document.documentElement.classList.contains("dark");
@@ -375,9 +437,40 @@ function createDistributionFlowPlot(colors) {
       ? props.histogramData.filter((_, idx) => idx % rate === 0)
       : props.histogramData;
 
-  const axisValues = sampledData.map((entry) =>
-    getAxisValue(entry, xAxisType.value),
+  if (!sampledData.length) return;
+  const referenceEntry = sampledData.find(
+    (entry) => Array.isArray(entry.bins) && entry.bins.length > 1,
   );
+  if (!referenceEntry) {
+    console.warn("[HistogramViewer] Flow mode requires histogram bins");
+    return;
+  }
+
+  const binEdges = referenceEntry.bins;
+  const binCenters = binEdges.slice(0, -1).map((bin, i) => {
+    return (bin + binEdges[i + 1]) / 2;
+  });
+  const expectedBinCount = binEdges.length;
+
+  const filteredEntries = [];
+  const axisValues = [];
+  sampledData.forEach((entry) => {
+    if (
+      !Array.isArray(entry.counts) ||
+      entry.counts.length !== expectedBinCount - 1 ||
+      !Array.isArray(entry.bins) ||
+      entry.bins.length !== expectedBinCount
+    ) {
+      return;
+    }
+    filteredEntries.push(entry);
+    axisValues.push(getAxisValue(entry, xAxisType.value));
+  });
+
+  if (!filteredEntries.length) {
+    console.warn("[HistogramViewer] No histogram entries with matching bins");
+    return;
+  }
 
   const axisSpan =
     axisValues.length > 1
@@ -388,38 +481,26 @@ function createDistributionFlowPlot(colors) {
       ? resolveRelativeTimeUnit(axisSpan)
       : null;
 
-  const axisGeometry = buildAxisGeometry(axisValues);
+  const zMatrix = Array.from({ length: binCenters.length }, () => []);
+  const customDataMatrix = Array.from({ length: binCenters.length }, () => []);
 
-  const allBins = sampledData[0].bins; // Use first entry's bins
-  const binCenters = allBins.slice(0, -1).map((bin, i) => {
-    return (bin + allBins[i + 1]) / 2;
-  });
-
-  const zMatrix = Array(binCenters.length)
-    .fill(null)
-    .map(() => []);
-  const customDataMatrix = Array(binCenters.length)
-    .fill(null)
-    .map(() => []);
-
-  sampledData.forEach((entry, entryIdx) => {
-    const widthUnits = axisGeometry.columnWidths[entryIdx];
+  filteredEntries.forEach((entry, entryIdx) => {
+    const counts = entry.counts || [];
     const formattedValue = formatAxisValue(
       axisValues[entryIdx],
       xAxisType.value,
       axisUnit,
     );
 
-    for (let binIdx = 0; binIdx < entry.counts.length; binIdx++) {
-      const value = entry.counts[binIdx];
-      for (let r = 0; r < widthUnits; r++) {
-        zMatrix[binIdx].push(value);
-        customDataMatrix[binIdx].push(formattedValue);
-      }
+    for (let binIdx = 0; binIdx < counts.length; binIdx++) {
+      const value = counts[binIdx];
+      zMatrix[binIdx].push(value);
+      customDataMatrix[binIdx].push(formattedValue);
     }
   });
 
-  const columnCount = axisGeometry.normalizedX.length;
+  const columnCount = axisValues.length;
+  if (columnCount === 0) return;
   let normalizedZ = zMatrix;
   if (normalize.value === "per-step") {
     const numBins = binCenters.length;
@@ -445,9 +526,12 @@ function createDistributionFlowPlot(colors) {
     );
   }
 
+  const tickInfo = buildTickInfo(axisValues, xAxisType.value, axisUnit);
+  const xRange = computeAxisRange(axisValues);
+
   const trace = {
     type: "heatmapgl",
-    x: axisGeometry.normalizedX,
+    x: axisValues,
     y: binCenters,
     z: normalizedZ,
     customdata: customDataMatrix,
@@ -465,24 +549,22 @@ function createDistributionFlowPlot(colors) {
   const yMin = Math.min(...binCenters);
   const yMax = Math.max(...binCenters);
 
-  const tickInfo = buildTickInfo(
-    axisValues,
-    axisGeometry.columnCenters,
-    xAxisType.value,
-    axisUnit,
-  );
+  const tickConfig =
+    tickInfo.tickvals.length > 0
+      ? {
+          tickmode: "array",
+          tickvals: tickInfo.tickvals,
+          ticktext: tickInfo.ticktext,
+        }
+      : {};
 
   const layout = {
     xaxis: {
       gridcolor: colors.grid,
       color: colors.text,
       title: getAxisTitle(xAxisType.value, axisUnit),
-      range: axisGeometry.normalizedX.length
-        ? [-0.5, axisGeometry.totalWidth + 0.5]
-        : [0, 1],
-      tickmode: "array",
-      tickvals: tickInfo.tickvals,
-      ticktext: tickInfo.ticktext,
+      range: xRange,
+      ...tickConfig,
       fixedrange: false,
     },
     yaxis: {
@@ -546,9 +628,32 @@ function resetZoom() {
       rate > 1
         ? props.histogramData.filter((_, idx) => idx % rate === 0)
         : props.histogramData;
-    const axisValues = sampledData.map((entry) =>
-      getAxisValue(entry, xAxisType.value),
+
+    const referenceEntry = sampledData.find(
+      (entry) => Array.isArray(entry.bins) && entry.bins.length > 1,
     );
+    if (!referenceEntry) return;
+
+    const binEdges = referenceEntry.bins;
+    const binCenters = binEdges
+      .slice(0, -1)
+      .map((bin, i) => (bin + binEdges[i + 1]) / 2);
+    const expectedBinCount = binEdges.length;
+
+    const axisValues = [];
+    sampledData.forEach((entry) => {
+      if (
+        Array.isArray(entry.counts) &&
+        entry.counts.length === expectedBinCount - 1 &&
+        Array.isArray(entry.bins) &&
+        entry.bins.length === expectedBinCount
+      ) {
+        axisValues.push(getAxisValue(entry, xAxisType.value));
+      }
+    });
+
+    if (!axisValues.length) return;
+
     const axisSpan =
       axisValues.length > 1
         ? Math.max(...axisValues) - Math.min(...axisValues)
@@ -557,31 +662,27 @@ function resetZoom() {
       xAxisType.value === "relative_walltime"
         ? resolveRelativeTimeUnit(axisSpan)
         : null;
-    const axisGeometry = buildAxisGeometry(axisValues);
-    const tickInfo = buildTickInfo(
-      axisValues,
-      axisGeometry.columnCenters,
-      xAxisType.value,
-      axisUnit,
-    );
-
-    const allBins = sampledData[0].bins;
-    const binCenters = allBins
-      .slice(0, -1)
-      .map((bin, i) => (bin + allBins[i + 1]) / 2);
+    const tickInfo = buildTickInfo(axisValues, xAxisType.value, axisUnit);
+    const xRange = computeAxisRange(axisValues);
 
     const yMin = Math.min(...binCenters);
     const yMax = Math.max(...binCenters);
 
-    // Only reset axes, keep height unchanged
-    Plotly.relayout(plotDiv.value, {
-      "xaxis.range": axisGeometry.normalizedX.length
-        ? [-0.5, axisGeometry.totalWidth + 0.5]
-        : [0, 1],
-      "xaxis.tickvals": tickInfo.tickvals,
-      "xaxis.ticktext": tickInfo.ticktext,
+    const relayoutUpdate = {
+      "xaxis.range": xRange,
       "yaxis.range": [yMin, yMax],
-    });
+    };
+    if (tickInfo.tickvals.length > 0) {
+      relayoutUpdate["xaxis.tickmode"] = "array";
+      relayoutUpdate["xaxis.tickvals"] = tickInfo.tickvals;
+      relayoutUpdate["xaxis.ticktext"] = tickInfo.ticktext;
+    } else {
+      relayoutUpdate["xaxis.tickmode"] = "auto";
+      relayoutUpdate["xaxis.tickvals"] = null;
+      relayoutUpdate["xaxis.ticktext"] = null;
+    }
+
+    Plotly.relayout(plotDiv.value, relayoutUpdate);
     console.log(
       "[HistogramViewer] Reset flow ranges, y=[" + yMin + "," + yMax + "]",
     );
@@ -605,13 +706,43 @@ defineExpose({
       v-if="histogramData && histogramData.length > 0"
       class="flex flex-col h-full"
     >
-      <div ref="plotDiv" class="flex-1 relative">
-        <!-- Shift indicator -->
-        <div
-          v-if="isShiftPressed && viewMode === 'single'"
-          class="absolute top-2 right-2 bg-blue-500 text-white px-2 py-1 rounded text-xs font-bold z-10"
-        >
-          SYNC MODE
+      <div class="flex-1 min-h-0">
+        <div v-if="surfaceModeActive" class="h-full flex flex-col gap-2">
+          <div
+            class="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400"
+          >
+            3D Surface View
+          </div>
+          <div v-if="shouldShowSurface" class="flex-1 min-h-[200px]">
+            <HistogramSurfaceMini
+              :surface-data="props.surfaceData"
+              :height="surfacePlotHeight"
+              :axis-label="surfaceAxisLabel"
+              value-label="Bin Value"
+              :density-label="surfaceDensityLabel"
+              :aspect="props.surfaceAspect"
+            />
+          </div>
+          <div
+            v-else
+            class="flex-1 min-h-[200px] flex items-center justify-center rounded-lg border border-dashed border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900"
+          >
+            <el-skeleton
+              v-if="props.surfaceLoading"
+              :rows="3"
+              animated
+              class="w-full px-6"
+            />
+            <el-empty v-else description="Surface data unavailable" />
+          </div>
+        </div>
+        <div v-else ref="plotDiv" class="flex-1 relative">
+          <div
+            v-if="isShiftPressed && viewMode === 'single'"
+            class="absolute top-2 right-2 bg-blue-500 text-white px-2 py-1 rounded text-xs font-bold z-10"
+          >
+            SYNC MODE
+          </div>
         </div>
       </div>
 
@@ -641,7 +772,7 @@ defineExpose({
     <el-empty v-else description="No histogram data" />
 
     <!-- Histogram settings dialog -->
-    <el-dialog v-model="showSettings" title="Histogram Settings" width="400px">
+    <el-dialog v-model="showSettings" title="Histogram Settings" width="520px">
       <el-form label-width="140px">
         <el-form-item label="View Mode">
           <el-select v-model="viewMode" class="w-full">

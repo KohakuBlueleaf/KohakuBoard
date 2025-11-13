@@ -1,4 +1,14 @@
 <script setup>
+import {
+  computed,
+  nextTick,
+  onMounted,
+  onUnmounted,
+  onUpdated,
+  reactive,
+  ref,
+  watch,
+} from "vue";
 import LinePlot from "./LinePlot.vue";
 import MediaViewer from "./MediaViewer.vue";
 import HistogramViewer from "./HistogramViewer.vue";
@@ -8,6 +18,10 @@ const props = defineProps({
   cardId: String,
   sparseData: Object,
   availableMetrics: Array,
+  availableHistograms: {
+    type: Array,
+    default: () => [],
+  },
   initialConfig: Object,
   experimentId: String,
   project: String, // Optional: if provided, use runs API instead of experiments API
@@ -22,6 +36,10 @@ const props = defineProps({
   },
   runColors: Object, // Map of run_id -> color (for multi-run mode)
   runNames: Object, // Map of run_id -> name (for multi-run mode)
+  forcedHeight: {
+    type: Number,
+    default: null,
+  },
 });
 
 const emit = defineEmits(["update:config", "remove"]);
@@ -34,7 +52,13 @@ console.log(`[${props.cardId}] Hover sync props:`, {
 
 // Direct reference to props
 const cfg = props.initialConfig;
-const localHeight = ref(cfg.height);
+const initialHeight =
+  typeof props.forcedHeight === "number" && Number.isFinite(props.forcedHeight)
+    ? props.forcedHeight
+    : cfg.height;
+const localHeight = ref(
+  typeof initialHeight === "number" ? initialHeight : 360,
+);
 const localWidth = ref(cfg.widthPercent);
 const isEditingTitle = ref(false);
 const editedTitle = ref(cfg.title);
@@ -42,18 +66,40 @@ const isResizingWidth = ref(false);
 const previewWidth = ref(null);
 const showSettings = ref(false);
 const plotRef = ref(null);
+const surfaceAspectForm = reactive({
+  x: 1.2,
+  y: 1,
+  z: 0.85,
+});
+
+watch(
+  () => props.initialConfig.surfaceAspect,
+  (val) => {
+    surfaceAspectForm.x = val?.x ?? 1.2;
+    surfaceAspectForm.y = val?.y ?? 1;
+    surfaceAspectForm.z = val?.z ?? 0.85;
+  },
+  { immediate: true, deep: true },
+);
 
 // Sync when parent updates (only if actually different)
 watch(
-  () => props.initialConfig.height,
-  (h, oldH) => {
-    if (h !== undefined && h !== localHeight.value) {
+  () => [props.initialConfig.height, props.forcedHeight],
+  ([height, forced]) => {
+    const target =
+      typeof forced === "number" && Number.isFinite(forced) ? forced : height;
+    if (
+      typeof target === "number" &&
+      Number.isFinite(target) &&
+      target !== localHeight.value
+    ) {
       console.log(
-        `[${props.cardId}] Height prop changed: ${localHeight.value} → ${h}`,
+        `[${props.cardId}] Height prop changed: ${localHeight.value} → ${target}`,
       );
-      localHeight.value = h;
+      localHeight.value = target;
     }
   },
+  { immediate: true },
 );
 watch(
   () => props.initialConfig.widthPercent,
@@ -79,46 +125,259 @@ onUpdated(() => {
   console.log(`[${props.cardId}] Component updated/re-rendered`);
 });
 
-const cardType = computed(() => props.initialConfig.type || "line");
+const cardType = computed(() => {
+  const raw = props.initialConfig.type || "line";
+  return raw === "histogram_surface" ? "histogram" : raw;
+});
+const histogramFlowMode = computed(() => {
+  if (props.initialConfig.histogramMode !== "flow") {
+    return "single";
+  }
+  return props.initialConfig.histogramFlowSurface ? "surface" : "heatmap";
+});
+const histogramFlowSelection = ref(histogramFlowMode.value);
+
+watch(
+  histogramFlowMode,
+  (mode) => {
+    if (mode && mode !== histogramFlowSelection.value) {
+      histogramFlowSelection.value = mode;
+    }
+  },
+  { immediate: true },
+);
 const mediaData = ref(null);
 const histogramData = ref(null);
+const histogramSurfaceData = ref(null);
+const histogramSurfaceLoading = ref(false);
 const tableData = ref(null);
+const surfaceData = ref(null);
 const currentStepIndex = ref(0);
 const isCardLoading = ref(false);
 
-// Fetch non-scalar data based on type
-watch(
-  cardType,
-  async (type) => {
-    isCardLoading.value = true;
-    try {
-      // Use runs API if project is provided, otherwise use experiments API
-      const baseUrl = props.project
-        ? `/api/projects/${props.project}/runs/${props.experimentId}`
-        : `/api/experiments/${props.experimentId}`;
+function serializeSurfaceAspect(aspect) {
+  const fallback = { x: 1.2, y: 1, z: 0.85 };
+  if (!aspect) return `${fallback.x}|${fallback.y}|${fallback.z}`;
+  const x = Number.isFinite(aspect.x) ? aspect.x : fallback.x;
+  const y = Number.isFinite(aspect.y) ? aspect.y : fallback.y;
+  const z = Number.isFinite(aspect.z) ? aspect.z : fallback.z;
+  return `${x}|${y}|${z}`;
+}
 
-      if (type === "media" && props.initialConfig.mediaName) {
-        const res = await fetch(
-          `${baseUrl}/media/${props.initialConfig.mediaName}`,
-        );
-        const data = await res.json();
-        mediaData.value = data.data;
-      } else if (type === "histogram" && props.initialConfig.histogramName) {
-        const res = await fetch(
-          `${baseUrl}/histograms/${props.initialConfig.histogramName}`,
-        );
-        const data = await res.json();
-        histogramData.value = data.data;
-      } else if (type === "table" && props.initialConfig.tableName) {
-        const res = await fetch(
-          `${baseUrl}/tables/${props.initialConfig.tableName}`,
-        );
-        const data = await res.json();
-        tableData.value = data.data;
-      }
-    } finally {
-      isCardLoading.value = false;
+function shallowEqualDeps(a, b) {
+  if (!a || !b) return false;
+  const keys = Object.keys(a);
+  for (const key of keys) {
+    if (!Object.is(a[key], b[key])) {
+      return false;
     }
+  }
+  return true;
+}
+
+function resolveBaseUrl() {
+  return props.project
+    ? `/api/projects/${props.project}/runs/${props.experimentId}`
+    : `/api/experiments/${props.experimentId}`;
+}
+
+async function hydrateCardArtifacts() {
+  const type = cardType.value;
+
+  mediaData.value = null;
+  histogramData.value = null;
+  histogramSurfaceData.value = null;
+  histogramSurfaceLoading.value = false;
+  tableData.value = null;
+  surfaceData.value = null;
+  if (!props.experimentId) return;
+
+  const baseUrl = resolveBaseUrl();
+
+  isCardLoading.value = true;
+  try {
+    if (type === "media" && props.initialConfig.mediaName) {
+      const res = await fetch(
+        `${baseUrl}/media/${props.initialConfig.mediaName}`,
+      );
+      const data = await res.json();
+      mediaData.value = data.data;
+    } else if (type === "histogram" && props.initialConfig.histogramName) {
+      const res = await fetch(
+        `${baseUrl}/histograms/${props.initialConfig.histogramName}`,
+      );
+      const data = await res.json();
+      histogramData.value = data.data;
+      if (props.initialConfig.histogramFlowSurface) {
+        await loadHistogramSurfaceData(baseUrl);
+      }
+    } else if (
+      type === "histogram_surface" &&
+      props.initialConfig.histogramName
+    ) {
+      const params = new URLSearchParams();
+      const axisParam =
+        props.initialConfig.surfaceAxis ||
+        props.initialConfig.histogramXAxis ||
+        "global_step";
+      const normalizeParam = props.initialConfig.surfaceNormalize || "per-step";
+      params.set("axis", axisParam);
+      params.set("normalize", normalizeParam);
+      if (props.initialConfig.surfaceBins != null) {
+        params.set("bins", props.initialConfig.surfaceBins);
+      }
+      if (props.initialConfig.surfaceDownsample != null) {
+        params.set("downsample", props.initialConfig.surfaceDownsample);
+      }
+      const query = params.toString();
+      const url = `${baseUrl}/histograms/${props.initialConfig.histogramName}/surface${
+        query ? `?${query}` : ""
+      }`;
+      const res = await fetch(url);
+      if (!res.ok) {
+        throw new Error(
+          `[${props.cardId}] Surface fetch failed (${res.status})`,
+        );
+      }
+      surfaceData.value = await res.json();
+    } else if (type === "table" && props.initialConfig.tableName) {
+      const res = await fetch(
+        `${baseUrl}/tables/${props.initialConfig.tableName}`,
+      );
+      const data = await res.json();
+      tableData.value = data.data;
+    }
+  } catch (error) {
+    console.error(
+      `[${props.cardId}] Failed to load card artifacts for ${type}:`,
+      error,
+    );
+  } finally {
+    isCardLoading.value = false;
+  }
+}
+
+async function loadHistogramSurfaceData(baseUrl, overrides = {}) {
+  if (!props.initialConfig.histogramName) {
+    histogramSurfaceData.value = null;
+    return;
+  }
+
+  const resolvedBaseUrl = baseUrl || resolveBaseUrl();
+
+  histogramSurfaceLoading.value = true;
+  try {
+    const params = new URLSearchParams();
+    const axisParam =
+      overrides.axis ||
+      props.initialConfig.surfaceAxis ||
+      props.initialConfig.histogramXAxis ||
+      "global_step";
+    const normalizeParam =
+      overrides.normalize || props.initialConfig.surfaceNormalize || "none";
+    params.set("axis", axisParam);
+    params.set("normalize", normalizeParam);
+
+    const downsampleValue =
+      overrides.downsample ??
+      props.initialConfig.surfaceDownsample ??
+      props.initialConfig.downsampleRate;
+    if (
+      downsampleValue !== undefined &&
+      downsampleValue !== null &&
+      downsampleValue !== ""
+    ) {
+      params.set("downsample", downsampleValue);
+    }
+
+    const query = params.toString();
+    const surfaceUrl = `${resolvedBaseUrl}/histograms/${props.initialConfig.histogramName}/surface${
+      query ? `?${query}` : ""
+    }`;
+    const res = await fetch(surfaceUrl);
+    if (!res.ok) {
+      throw new Error(`Surface fetch failed (${res.status})`);
+    }
+    histogramSurfaceData.value = await res.json();
+  } catch (error) {
+    console.error(`[${props.cardId}] Failed to load histogram surface:`, error);
+    histogramSurfaceData.value = null;
+  } finally {
+    histogramSurfaceLoading.value = false;
+  }
+}
+
+async function handleSurfaceAxisChange(axis) {
+  emitConfig({ surfaceAxis: axis });
+  await loadHistogramSurfaceData(undefined, { axis });
+}
+
+async function handleSurfaceNormalizeChange(mode) {
+  emitConfig({ surfaceNormalize: mode });
+  await loadHistogramSurfaceData(undefined, { normalize: mode });
+}
+
+function handleSurfaceAspectChange(aspect) {
+  emitConfig({ surfaceAspect: aspect });
+}
+
+async function handleHistogramFlowModeChange(mode) {
+  if (!mode) return;
+  const nextMode =
+    typeof mode === "string" ? mode : mode?.target?.value || mode;
+  const currentMode = histogramFlowMode.value;
+  if (nextMode === currentMode) return;
+
+  if (nextMode === "single") {
+    emitConfig({
+      histogramMode: "single",
+      histogramFlowSurface: undefined,
+    });
+    return;
+  }
+
+  emitConfig({
+    histogramMode: "flow",
+    histogramFlowSurface: nextMode === "surface" ? true : undefined,
+  });
+
+  if (nextMode === "surface") {
+    await loadHistogramSurfaceData(undefined, {});
+  }
+}
+
+let lastHydrationDeps = null;
+watch(
+  () => ({
+    cardType: cardType.value,
+    mediaName: props.initialConfig.mediaName || null,
+    histogramName: props.initialConfig.histogramName || null,
+    tableName: props.initialConfig.tableName || null,
+    histogramXAxis: props.initialConfig.histogramXAxis || null,
+    downsampleRate:
+      props.initialConfig.downsampleRate === undefined
+        ? null
+        : props.initialConfig.downsampleRate,
+    histogramMode: props.initialConfig.histogramMode || null,
+    surfaceAxis: props.initialConfig.surfaceAxis || null,
+    surfaceNormalize: props.initialConfig.surfaceNormalize || null,
+    surfaceBins:
+      props.initialConfig.surfaceBins === undefined
+        ? null
+        : props.initialConfig.surfaceBins,
+    surfaceDownsample:
+      props.initialConfig.surfaceDownsample === undefined
+        ? null
+        : props.initialConfig.surfaceDownsample,
+    surfaceAspect: serializeSurfaceAspect(props.initialConfig.surfaceAspect),
+    histogramFlowSurface: props.initialConfig.histogramFlowSurface ? 1 : 0,
+  }),
+  (deps) => {
+    if (lastHydrationDeps && shallowEqualDeps(deps, lastHydrationDeps)) {
+      return;
+    }
+    lastHydrationDeps = { ...deps };
+    hydrateCardArtifacts();
   },
   { immediate: true },
 );
@@ -347,7 +606,14 @@ function saveTitle() {
 }
 
 function emitConfig(updates = {}) {
-  const newConfig = { ...props.initialConfig, ...updates };
+  const newConfig = { ...props.initialConfig };
+  Object.entries(updates).forEach(([key, value]) => {
+    if (value === undefined) {
+      delete newConfig[key];
+    } else {
+      newConfig[key] = value;
+    }
+  });
   console.log(`[${props.cardId}] emitConfig:`, updates, "→", newConfig);
   console.log(`[${props.cardId}] Emitting update:config to parent`);
   emit("update:config", { id: props.cardId, config: newConfig });
@@ -629,7 +895,7 @@ function startResizeRight(e) {
             >
           </div>
           <div
-            class="flex gap-0.5 border-t border-gray-100 dark:border-gray-700 pt-2"
+            class="flex flex-wrap items-center gap-1 border-t border-gray-100 dark:border-gray-700 pt-2"
           >
             <el-button size="small" @click.stop="resetView" title="Reset View">
               <i class="i-ep-refresh-left"></i>
@@ -719,6 +985,12 @@ function startResizeRight(e) {
           :initial-mode="props.initialConfig.histogramMode || 'single'"
           :downsample-rate="props.initialConfig.downsampleRate || -1"
           :x-axis="props.initialConfig.histogramXAxis || 'global_step'"
+          :flow-surface-enabled="!!props.initialConfig.histogramFlowSurface"
+          :surface-data="histogramSurfaceData"
+          :surface-loading="histogramSurfaceLoading"
+          :surface-axis="props.initialConfig.surfaceAxis || 'global_step'"
+          :surface-normalize="props.initialConfig.surfaceNormalize || 'none'"
+          :surface-aspect="props.initialConfig.surfaceAspect"
           @update:current-step="(s) => emitConfig({ currentStep: s })"
           @update:mode="(m) => emitConfig({ histogramMode: m })"
           @update:x-axis="(x) => emitConfig({ histogramXAxis: x })"
@@ -779,41 +1051,63 @@ function startResizeRight(e) {
       append-to-body
     >
       <el-form label-width="150px">
-        <el-divider content-position="left">Data Selection</el-divider>
-        <el-form-item label="X-Axis">
-          <el-select
-            :model-value="props.initialConfig.xMetric"
-            @change="(v) => emitConfig({ xMetric: v })"
-            class="w-full"
-          >
-            <el-option
-              v-for="m in availableMetrics"
-              :key="m"
-              :label="m"
-              :value="m"
-            />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="Y-Axis">
-          <el-select
-            :model-value="props.initialConfig.yMetrics"
-            @change="(v) => emitConfig({ yMetrics: v })"
-            multiple
-            collapse-tags
-            collapse-tags-tooltip
-            class="w-full"
-            placeholder="Select metrics"
-          >
-            <el-option
-              v-for="m in availableMetrics.filter(
-                (x) => x !== props.initialConfig.xMetric,
-              )"
-              :key="m"
-              :label="m"
-              :value="m"
-            />
-          </el-select>
-        </el-form-item>
+        <template v-if="cardType === 'line'">
+          <el-divider content-position="left">Data Selection</el-divider>
+          <el-form-item label="X-Axis">
+            <el-select
+              :model-value="props.initialConfig.xMetric"
+              @change="(v) => emitConfig({ xMetric: v })"
+              class="w-full"
+            >
+              <el-option
+                v-for="m in availableMetrics"
+                :key="m"
+                :label="m"
+                :value="m"
+              />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="Y-Axis">
+            <el-select
+              :model-value="props.initialConfig.yMetrics"
+              @change="(v) => emitConfig({ yMetrics: v })"
+              multiple
+              collapse-tags
+              collapse-tags-tooltip
+              class="w-full"
+              placeholder="Select metrics"
+            >
+              <el-option
+                v-for="m in availableMetrics.filter(
+                  (x) => x !== props.initialConfig.xMetric,
+                )"
+                :key="m"
+                :label="m"
+                :value="m"
+              />
+            </el-select>
+          </el-form-item>
+        </template>
+
+        <template v-else-if="cardType === 'histogram'">
+          <el-divider content-position="left">Histogram Data</el-divider>
+          <el-form-item label="Histogram">
+            <el-select
+              :model-value="props.initialConfig.histogramName"
+              class="w-full"
+              filterable
+              placeholder="Select a histogram"
+              @change="(v) => emitConfig({ histogramName: v })"
+            >
+              <el-option
+                v-for="hist in props.availableHistograms"
+                :key="hist"
+                :label="hist"
+                :value="hist"
+              />
+            </el-select>
+          </el-form-item>
+        </template>
 
         <template v-if="plotConfig">
           <el-divider content-position="left">Axis Range</el-divider>
@@ -922,6 +1216,135 @@ function startResizeRight(e) {
           <el-form-item label="Show Markers">
             <el-switch v-model="plotConfig.showMarkers" />
           </el-form-item>
+        </template>
+
+        <template v-if="cardType === 'histogram'">
+          <el-divider content-position="left">Histogram Flow</el-divider>
+          <el-form-item label="Flow Mode">
+            <el-radio-group
+              v-model="histogramFlowSelection"
+              size="small"
+              @change="handleHistogramFlowModeChange"
+            >
+              <el-radio-button label="single">Per-Step</el-radio-button>
+              <el-radio-button label="heatmap">Flow Heatmap</el-radio-button>
+              <el-radio-button label="surface">3D Surface</el-radio-button>
+            </el-radio-group>
+          </el-form-item>
+
+          <template v-if="histogramFlowSelection !== 'single'">
+            <el-form-item label="Flow X-Axis">
+              <el-radio-group
+                size="small"
+                :model-value="
+                  props.initialConfig.histogramXAxis || 'global_step'
+                "
+                @change="(axis) => emitConfig({ histogramXAxis: axis })"
+              >
+                <el-radio-button label="step">Training Step</el-radio-button>
+                <el-radio-button label="global_step"
+                  >Global Step</el-radio-button
+                >
+                <el-radio-button label="relative_walltime">
+                  Relative Time
+                </el-radio-button>
+              </el-radio-group>
+            </el-form-item>
+            <el-form-item label="Flow Downsample">
+              <div class="flex items-center gap-2 w-full">
+                <el-input-number
+                  :model-value="props.initialConfig.downsampleRate ?? -1"
+                  :min="-1"
+                  :max="500"
+                  :step="1"
+                  class="w-full"
+                  @change="(val) => emitConfig({ downsampleRate: val })"
+                />
+                <span class="text-xs text-gray-500 dark:text-gray-400">
+                  -1 = adaptive
+                </span>
+              </div>
+            </el-form-item>
+          </template>
+
+          <template v-if="histogramFlowSelection === 'surface'">
+            <el-divider content-position="left">3D Surface</el-divider>
+            <el-form-item label="Surface Axis">
+              <el-radio-group
+                size="small"
+                :model-value="
+                  props.initialConfig.surfaceAxis ||
+                  props.initialConfig.histogramXAxis ||
+                  'global_step'
+                "
+                @change="handleSurfaceAxisChange"
+              >
+                <el-radio-button label="step">Training Step</el-radio-button>
+                <el-radio-button label="global_step">
+                  Global Step
+                </el-radio-button>
+                <el-radio-button label="relative_walltime">
+                  Relative Time
+                </el-radio-button>
+              </el-radio-group>
+            </el-form-item>
+            <el-form-item label="Surface Normalize">
+              <el-radio-group
+                size="small"
+                :model-value="props.initialConfig.surfaceNormalize || 'none'"
+                @change="handleSurfaceNormalizeChange"
+              >
+                <el-radio-button label="none">None</el-radio-button>
+                <el-radio-button label="per-step">Per Step</el-radio-button>
+                <el-radio-button label="global">Global</el-radio-button>
+              </el-radio-group>
+            </el-form-item>
+            <el-form-item label="Aspect Ratio">
+              <div
+                class="flex items-center gap-3 text-xs text-gray-500 dark:text-gray-300"
+              >
+                <label class="flex items-center gap-1">
+                  x
+                  <el-input-number
+                    v-model.number="surfaceAspectForm.x"
+                    size="small"
+                    :min="0.3"
+                    :max="3"
+                    :step="0.1"
+                    @change="
+                      () => handleSurfaceAspectChange({ ...surfaceAspectForm })
+                    "
+                  />
+                </label>
+                <label class="flex items-center gap-1">
+                  y
+                  <el-input-number
+                    v-model.number="surfaceAspectForm.y"
+                    size="small"
+                    :min="0.3"
+                    :max="3"
+                    :step="0.1"
+                    @change="
+                      () => handleSurfaceAspectChange({ ...surfaceAspectForm })
+                    "
+                  />
+                </label>
+                <label class="flex items-center gap-1">
+                  z
+                  <el-input-number
+                    v-model.number="surfaceAspectForm.z"
+                    size="small"
+                    :min="0.3"
+                    :max="3"
+                    :step="0.1"
+                    @change="
+                      () => handleSurfaceAspectChange({ ...surfaceAspectForm })
+                    "
+                  />
+                </label>
+              </div>
+            </el-form-item>
+          </template>
         </template>
       </el-form>
     </el-dialog>

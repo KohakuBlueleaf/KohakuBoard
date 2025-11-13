@@ -825,7 +825,8 @@ function ensureNonScalarDefaults(summary, startingCardId = nextCardId.value) {
       if (card.config.type === "table" && card.config.tableName) {
         existingTables.add(card.config.tableName);
       } else if (
-        card.config.type === "histogram" &&
+        (card.config.type === "histogram" ||
+          card.config.type === "histogram_surface") &&
         card.config.histogramName
       ) {
         existingHistograms.add(card.config.histogramName);
@@ -1230,7 +1231,9 @@ const paginatedCards = computed(() => {
 
   for (const card of allCards) {
     const isWebGL =
-      card.config.type === "line" || card.config.type === "histogram";
+      card.config.type === "line" ||
+      card.config.type === "histogram" ||
+      card.config.type === "histogram_surface";
 
     if (isWebGL) {
       webglCount++;
@@ -1535,6 +1538,8 @@ const availableChartValues = computed(() => {
   } else if (newChartType.value === "histogram") {
     // Get available histograms from summary
     return availableSummary.value.available_data?.histograms || [];
+  } else if (newChartType.value === "histogram_surface") {
+    return availableSummary.value.available_data?.histograms || [];
   }
   return [];
 });
@@ -1603,6 +1608,18 @@ function confirmAddChart() {
       type: "histogram",
       histogramName: newChartValue.value,
       currentStep: 0,
+    };
+  } else if (newChartType.value === "histogram_surface") {
+    config = {
+      ...baseConfig,
+      type: "histogram",
+      histogramName: newChartValue.value,
+      histogramMode: "flow",
+      histogramFlowSurface: true,
+      surfaceAxis: "global_step",
+      surfaceNormalize: "none",
+      surfaceAspect: { x: 1.2, y: 1, z: 0.85 },
+      downsampleRate: -1,
     };
   }
 
@@ -1828,8 +1845,9 @@ function removeCard(id) {
         `[removeCard] Marked table ${cardToRemove.config.tableName} as removed`,
       );
     } else if (
-      cardToRemove?.config?.type === "histogram" &&
-      cardToRemove.config.histogramName
+      cardToRemove?.config?.histogramName &&
+      (cardToRemove.config.type === "histogram" ||
+        cardToRemove.config.type === "histogram_surface")
     ) {
       removedHistograms.value.add(cardToRemove.config.histogramName);
       console.log(
@@ -2149,10 +2167,11 @@ function onDragEnd(evt) {
         :project="route.params.project"
         :sparse-data="sparseData"
         :available-metrics="availableMetrics"
-        :initial-config="{
-          ...card.config,
-          height: isMobile ? defaultCardHeight : card.config.height,
-        }"
+        :available-histograms="
+          availableSummary?.available_data?.histograms || []
+        "
+        :initial-config="card.config"
+        :forced-height="isMobile ? defaultCardHeight : null"
         :tab-name="activeTab"
         :hover-sync-enabled="hoverSyncEnabled"
         @update:config="updateCard"
@@ -2180,6 +2199,7 @@ function onDragEnd(evt) {
             <el-option label="Media Viewer" value="media" />
             <el-option label="Table Viewer" value="table" />
             <el-option label="Histogram" value="histogram" />
+            <el-option label="3D Histogram Surface" value="histogram_surface" />
           </el-select>
         </el-form-item>
 
@@ -2240,6 +2260,25 @@ function onDragEnd(evt) {
         <!-- Histogram: Single-select dropdown -->
         <el-form-item
           v-if="newChartType === 'histogram'"
+          label="Select Histogram"
+        >
+          <el-select
+            v-model="newChartValue"
+            class="w-full"
+            placeholder="Choose a histogram"
+            filterable
+          >
+            <el-option
+              v-for="hist in availableChartValues"
+              :key="hist"
+              :label="hist"
+              :value="hist"
+            />
+          </el-select>
+        </el-form-item>
+
+        <el-form-item
+          v-if="newChartType === 'histogram_surface'"
           label="Select Histogram"
         >
           <el-select
