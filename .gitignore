@@ -3,6 +3,8 @@
 !src/kohakuboard*
 !docs/kohakuboard/
 !docs/kohakuboard/**
+!src/kohaku-board-ui/
+!src/kohaku-board-ui/**
 
 *.backup*
 .DS_store
