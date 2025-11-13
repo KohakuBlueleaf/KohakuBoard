@@ -128,12 +128,14 @@ src/kobo/
 │   │   ├── media.py          # Media (images, videos, audio)
 │   │   ├── table.py          # Structured data
 │   │   └── histogram.py      # Distribution tracking
-│   └── storage/              # Storage backends
-│       ├── base.py           # Abstract interface
-│       ├── hybrid.py         # Lance + SQLite (default)
-│       ├── lance.py          # Lance-only backend
-│       ├── sqlite.py         # SQLite-only backend
-│       └── duckdb.py         # DuckDB backend
+│   └── storage/              # Storage components
+│       ├── hybrid.py         # KohakuVault ColumnVault + SQLite metadata
+│       ├── columnar.py       # ColumnVault metric helpers
+│       ├── columnar_histogram.py  # Histogram-specific column stores
+│       ├── sqlite.py         # Metadata/tables/tensors (SQLite)
+│       ├── tensor.py         # Tensor KV store helpers
+│       ├── memory.py         # In-memory drop-in implementation
+│       └── base.py           # Legacy Parquet interface (unused, kept for refs)
 ├── api/                      # FastAPI backend (visualization server)
 │   ├── routes/
 │   │   ├── boards.py         # Board listing and metadata
@@ -164,10 +166,10 @@ src/kobo/
    - Handle both writes (client) and reads (server)
    - Each backend in separate file
 
-4. **Data types** (Media, Table, Histogram):
-   - Self-contained in `client/types/`
-   - Support serialization/deserialization
-   - Work with all storage backends
+4. **Data types** (Media, Table, Histogram, TensorLog, KernelDensity):
+   - Reside in `client/types/`
+   - Provide serialization/deserialization logic
+   - Work with both on-disk and in-memory storage implementations
 
 ---
 
@@ -295,8 +297,8 @@ kobo open ./kohakuboard
 # Or with live reload
 kobo open ./kohakuboard --reload
 
-# For remote mode:
-kobo serve
+# For remote mode (authenticated server):
+kobo-serve --data-dir ./kohakuboard --port 48889
 
 # Backend available at:
 # http://localhost:48889
@@ -354,7 +356,7 @@ Title: "Queue overflow when logging 50+ histograms per step"
 Environment:
 - OS: Ubuntu 22.04
 - Python: 3.10.12
-- Storage: hybrid (Lance + SQLite)
+- Storage: hybrid (KohakuVault ColumnVault + SQLite)
 
 Steps:
 1. Create board: Board(name="test")
@@ -584,7 +586,7 @@ npm run dev
    - Ensure code follows style guidelines
    - Run `black src/kobo/` for Python formatting
    - Run `npm run format` for frontend formatting
-   - Test with multiple storage backends (hybrid, duckdb, parquet)
+   - Test both on-disk (hybrid) and memory-mode storage paths
    - Verify performance (no regression in logging latency)
 
 2. **Submitting PR:**
@@ -610,9 +612,8 @@ npm run dev
 
 **Client Library:**
 - Non-blocking logging architecture (multiprocessing queue + background writer)
-- Rich data types (scalars, images, videos, tables, histograms)
-- Hybrid storage backend (Lance + SQLite)
-- Alternative backends (DuckDB, Parquet)
+- Rich data types (scalars, images, videos, tables, histograms, tensors, KDE)
+- Hybrid storage backend (KohakuVault ColumnVault + SQLite metadata)
 - Graceful shutdown with queue draining
 - Output capture (stdout/stderr)
 - Content-addressed media storage (SHA-256 deduplication)
@@ -638,14 +639,13 @@ npm run dev
 - Responsive design
 
 **CLI Tool:**
-- `kobo open` - Local board viewer
-- `kobo serve` - Start backend server
+- `kobo open` - Local board viewer (no auth)
+- `kobo-serve` - Authenticated server (still stabilizing)
+- Manual copy/rsync workflow for sharing runs
 - Browser auto-launch option
 
-### 🚧 In Progress
-
-- Remote server mode with authentication
-- Sync protocol for uploading local boards to remote
+- Remote server mode with authentication (kohakuboard_server)
+- New sync protocol to replace manual copy/rsync flow
 - Project management (group related boards)
 - Run comparison UI (side-by-side metrics)
 - Real-time streaming (live updates while training)

@@ -28,7 +28,7 @@ for epoch in range(10):
         board.step()  # Once per optimizer step
         board.log(loss=loss.item())  # Non-blocking, <0.1ms
 
-# log will be saved under ./kohakuboard with sqlite/lance format
+# logs are stored under ./kohakuboard using KohakuVault column stores + SQLite metadata
 ```
 
 
@@ -150,8 +150,8 @@ python train.py              # Logs to ./kohakuboard/
 # View results (no server required!)
 kobo open ./kohakuboard --browser
 
-# Or start server for team sharing
-kobo serve --port 48889
+# Optional server for team sharing (requires kohakuboard_server)
+kobo-serve --port 48889
 ```
 
 **No server setup, no configuration, no hassle.**
@@ -198,9 +198,9 @@ for epoch in range(10):
 # Local viewer (no server)
 kobo open ./kohakuboard --browser
 
-# Or start server
-kobo serve --port 48889
-# Access at http://localhost:48889
+# Or launch the authenticated server (requires kohakuboard_server)
+kobo-serve --port 48889
+# Drop/copy board folders into the configured data dir to share runs
 ```
 
 ---
@@ -360,6 +360,16 @@ Vue 3 Frontend (WebGL Charts)
 }
 ```
 
+### Manual Sync / Remote Sharing
+
+Both the training-side package (`kohakuboard`) and the optional server (`kohakuboard_server`) read the exact same directory layout. To move a run between machines:
+
+1. Copy the entire board folder (`{base_dir}/{project}/{board_id}`) using `cp`, `rsync`, or any file transfer tool.
+2. Drop it into the destination data directory (the folder you pass to `kobo open ...` or the directory configured via `KOHAKU_BOARD_DATA_DIR` / `--data-dir` on `kobo-serve`).
+3. Restart the viewer or refresh the UI. The new run is immediately available.
+
+No export/import step is required because metrics, metadata, tensors, and media already live in KohakuVault + SQLite files. The legacy `kobo sync` command still expects a DuckDB export and will fail on modern boards—use manual copy until the new sync API lands.
+
 ---
 
 ## CLI Tool
@@ -368,11 +378,11 @@ Vue 3 Frontend (WebGL Charts)
 # Open local viewer (no server)
 kobo open ./kohakuboard --browser
 
-# Start backend server
-kobo serve --port 48889 --host 0.0.0.0
+# Start authenticated server (kohakuboard_server package)
+kobo-serve --port 48889 --host 0.0.0.0
 
-# Sync to remote (WIP)
-kobo sync board_id -r https://kohakuboard.example.com
+# Manual sync (recommended today): copy the entire board folder into the server's data dir
+# (kobo sync is still wired to the legacy DuckDB exporter and will error on modern boards)
 ```
 
 ---
@@ -382,8 +392,8 @@ kobo sync board_id -r https://kohakuboard.example.com
 ### Basic Usage
 
 ```python
-# All boards now use KohakuVault + SQLite (no backend parameter needed)
-board = Board(name="my-experiment")
+# All boards use KohakuVault + SQLite (no backend parameter needed)
+board = Board(name="my-experiment", project="vision")
 ```
 
 ### Advanced Options
@@ -393,8 +403,14 @@ board = Board(
     name="experiment",
     board_id="custom-id",           # Auto-generated if not provided
     config={"lr": 0.001},           # Hyperparameters
+    project="custom-project",       # Sub-directory inside base_dir
     base_dir="./my-boards",         # Custom directory
     capture_output=True,            # Capture stdout/stderr
+    remote_url="https://board.example.com",  # Optional future sync target
+    remote_token="...",             # Token for remote sync (WIP)
+    sync_enabled=False,             # Enable when remote endpoints are ready
+    memory_mode=False,              # Keep data in RAM (requires sync to persist)
+    annotation="debug-run",         # Suffix appended to run directory name
 )
 ```
 
@@ -419,11 +435,20 @@ with Board(name="experiment") as board:
 
 ```python
 Board(
-    name: str,                      # Human-readable name
-    board_id: str | None = None,    # Auto-generated if not provided
-    config: dict | None = None,     # Hyperparameters, etc.
-    base_dir: Path | None = None,   # Default: ./kohakuboard
-    capture_output: bool = True,    # Capture stdout/stderr
+    name: str | None = None,
+    board_id: str | None = None,
+    config: dict | None = None,
+    project: str | None = None,
+    base_dir: str | Path | None = None,
+    capture_output: bool = True,
+    remote_url: str | None = None,
+    remote_token: str | None = None,
+    remote_project: str | None = None,
+    sync_enabled: bool = False,
+    sync_interval: int = 10,
+    memory_mode: bool = False,
+    *,
+    annotation: str | None = None,
 )
 ```
 
@@ -432,9 +457,10 @@ Board(
 **`board.step()`** - Increment global_step
 
 ```python
-for epoch in range(10):
-    board.step()  # global_step += 1
-    # ... train and log
+for batch_idx, batch in enumerate(train_loader):
+    loss = train_step(batch)
+    board.step()  # Increment ONCE per optimizer step
+    board.log(**{"train/loss": loss, "train/lr": scheduler.get_last_lr()[0]})
 ```
 
 **`board.log(**metrics)`** - Log data (non-blocking)
@@ -443,7 +469,10 @@ for epoch in range(10):
 board.log(
     loss=0.5,
     accuracy=0.95,
-    learning_rate=0.001,
+    learning_rate=0.001,            # Scalars
+    sample=Media(image_array),      # Images/video/audio
+    predictions=Table(rows),        # Tables (optionally with Media)
+    grad_norm=Histogram(values),    # Histograms
 )
 
 # Namespaces (creates tabs in UI)
@@ -451,6 +480,12 @@ board.log(**{
     "train/loss": 0.5,
     "val/accuracy": 0.95
 })
+
+# Tensor + KDE payloads (specialized viewers)
+board.log(
+    attention_tensor=TensorLog(tensor),
+    density=KernelDensity(values, grid_size=256),
+)
 ```
 
 **`board.flush()`** - Force flush (blocks until complete)
@@ -549,10 +584,11 @@ kobo open ./kohakuboard --browser
 ### Remote Mode (WIP)
 
 ```bash
-# Docker deployment
-docker-compose -f docker-compose.kohakuboard.yml up -d
+# Run the authenticated server (still stabilizing)
+kobo-serve --data-dir /var/kohakuboard --db sqlite:///kohakuboard.db
 
-# Access at http://localhost:28081
+# Share boards by copying folders into /var/kohakuboard/<project>/
+# Restart/reload the server to pick up new runs
 ```
 
 See [docs/kohakuboard/](./docs/kohakuboard/) for complete deployment guides.
@@ -568,7 +604,7 @@ See [docs/kohakuboard/](./docs/kohakuboard/) for complete deployment guides.
 | **Offline** | ❌ No | ✅ Yes | ✅ Yes | ✅ Yes |
 | **File-Based** | ❌ No | ✅ Yes | ❌ No | ✅ Yes |
 | **Non-Blocking** | ❌ No | ❌ No | ❌ No | ✅ Yes |
-| **SQL Queries** | ❌ No | ❌ No | ✅ Yes | ✅ Yes (DuckDB) |
+| **Columnar Reads** | ❌ No | ❌ No | ✅ Yes | ✅ Yes (KohakuVault ColumnVault) |
 | **WebGL Charts** | ❌ No | ❌ No | ❌ No | ✅ Yes |
 | **100K+ Points** | Slow | Slow | Slow | **Fast** |
 | **Self-Hosted** | Limited | ✅ Yes | ✅ Yes | ✅ Yes |
@@ -582,6 +618,7 @@ See [docs/kohakuboard/](./docs/kohakuboard/) for complete deployment guides.
 - [API Reference](./docs/kohakuboard/api.md) - Complete API documentation
 - [Architecture](./docs/kohakuboard/architecture.md) - System design and internals
 - [CLI Guide](./docs/kohakuboard/cli.md) - Command-line tool usage
+- [Usage Manual](./docs/kohakuboard/usage-manual.md) - Day-to-day operations checklist
 - [Examples](./examples/) - Real-world usage patterns
 
 ---
