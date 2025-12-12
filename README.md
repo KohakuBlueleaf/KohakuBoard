@@ -17,7 +17,6 @@ pip install -e .
 ```python
 from kohakuboard.client import Board
 
-# Create board
 board = Board(name="my-experiment", config={"lr": 0.001, "batch_size": 32})
 
 # Training loop
@@ -27,6 +26,7 @@ for epoch in range(10):
 
         board.step()  # Once per optimizer step
         board.log(loss=loss.item())  # Non-blocking, <0.1ms
+        # Alternative: move board.step() after board.log() for 0-indexed steps
 
 # logs are stored under ./kohakuboard using KohakuVault column stores + SQLite metadata
 ```

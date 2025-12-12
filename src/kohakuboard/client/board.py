@@ -895,20 +895,9 @@ class Board:
         self.queue.put(message)
 
     def step(self, increment: int = 1):
-        """Explicit step increment
-
-        This sets the global_step. All logs between step() calls
-        belong to the previous global_step value.
-
-        Args:
-            increment: Step increment (default: 1)
-
-        Example:
-            >>> for epoch in range(100):
-            ...     board.step()  # global_step = 0, 1, 2, ...
-            ...     for batch in train_loader:
-            ...         loss = train_step(batch)
-            ...         board.log(loss=loss)  # All batches share same global_step
+        """
+        This increments global_step.
+        All logs belong to the current global_step value.
         """
         self._global_step += increment
 
