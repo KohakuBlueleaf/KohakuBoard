@@ -64,7 +64,7 @@ board = Board(
         "max_epochs": 10,
         "model": "bert-base-uncased"
     },
-    
+
 )
 ```
 
@@ -432,14 +432,13 @@ for batch_idx, batch in enumerate(train_loader):
 **Two Step Tracking Systems:**
 
 1. **`_step` (auto-increment):**
+   - Internal sequential counter, as an implementation detail
+   - Used for ordering logs - not for user display
    - Increments on every `log()` call (unless `auto_step=False`)
-   - Internal sequential counter
-   - Used for ordering logs
 
 2. **`_global_step` (user-controlled):**
    - Controlled via `board.step()`
-   - Used for grouping (e.g., all batches in epoch)
-   - Used for charting/aggregation
+   - This is the timepoint for visualizing logs
 
 ---
 
