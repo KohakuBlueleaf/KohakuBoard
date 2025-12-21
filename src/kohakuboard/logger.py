@@ -1,126 +1,181 @@
-"""Loguru-based logging implementation for KohakuBoard (similar to KohakuHub)"""
+"""Native logging implementation for KohakuBoard with colored output
 
-import os
-import sys
+Uses standard library logging to avoid affecting downstream users.
+Provides custom colored formatting and pretty traceback printing.
+"""
+
 import logging
+import sys
 import traceback as tb
-from enum import Enum
 from pathlib import Path
-from typing import Optional
-
-from loguru import logger
-
-from kohakuboard.config import cfg
 
 
-class LogLevel(Enum):
-    """Log levels mapping to loguru levels."""
+# ANSI color codes
+class Colors:
+    RESET = "\033[0m"
+    BOLD = "\033[1m"
+    DIM = "\033[2m"
 
-    DEBUG = "DEBUG"
-    INFO = "INFO"
-    SUCCESS = "SUCCESS"
-    WARNING = "WARNING"
-    ERROR = "ERROR"
-    CRITICAL = "CRITICAL"
-    TRACE = "TRACE"
+    # Foreground colors
+    BLACK = "\033[30m"
+    RED = "\033[31m"
+    GREEN = "\033[32m"
+    YELLOW = "\033[33m"
+    BLUE = "\033[34m"
+    MAGENTA = "\033[35m"
+    CYAN = "\033[36m"
+    WHITE = "\033[37m"
+
+    # Bright foreground colors
+    BRIGHT_BLACK = "\033[90m"
+    BRIGHT_RED = "\033[91m"
+    BRIGHT_GREEN = "\033[92m"
+    BRIGHT_YELLOW = "\033[93m"
+    BRIGHT_BLUE = "\033[94m"
+    BRIGHT_MAGENTA = "\033[95m"
+    BRIGHT_CYAN = "\033[96m"
+    BRIGHT_WHITE = "\033[97m"
+
+    # Background colors
+    BG_RED = "\033[41m"
+    BG_WHITE = "\033[47m"
 
 
-class InterceptHandler(logging.Handler):
-    """Logger Interceptor: Redirects standard library logs to Loguru."""
+# Custom log levels (between standard levels)
+SUCCESS_LEVEL = 25  # Between INFO(20) and WARNING(30)
+TRACE_LEVEL = 5  # Below DEBUG(10)
 
-    def emit(self, record: logging.LogRecord) -> None:
-        # Get Level Name and API name from LogRecord
-        try:
-            level = logger.level(record.levelname).name
-            api_name = record.name.upper()
-            # For XXX.YYY format, only use XXX
-            if "." in api_name:
-                api_name = api_name.split(".")[0]
-        except ValueError:
-            level = record.levelno
+logging.addLevelName(SUCCESS_LEVEL, "SUCCESS")
+logging.addLevelName(TRACE_LEVEL, "TRACE")
 
-        frame, depth = logging.currentframe(), 2
-        while frame and frame.f_code.co_filename == logging.__file__:
-            frame = frame.f_back
-            depth += 1
 
-        logger.bind(api_name=api_name).opt(depth=depth, exception=record.exc_info).log(
-            level, record.getMessage()
-        )
+# Level colors mapping
+LEVEL_COLORS = {
+    "TRACE": Colors.BRIGHT_BLACK,
+    "DEBUG": Colors.BRIGHT_BLACK,
+    "INFO": Colors.BRIGHT_CYAN,
+    "SUCCESS": Colors.BRIGHT_GREEN,
+    "WARNING": Colors.BRIGHT_YELLOW,
+    "ERROR": Colors.BRIGHT_RED,
+    "CRITICAL": f"{Colors.BG_RED}{Colors.WHITE}{Colors.BOLD}",
+}
+
+
+class ColoredFormatter(logging.Formatter):
+    """Custom formatter with colors and comprehensive information"""
+
+    def __init__(self, use_color: bool = True):
+        super().__init__()
+        self.use_color = use_color
+
+    def format(self, record: logging.LogRecord) -> str:
+        # Get API name from record (default to module name)
+        api_name = getattr(record, "api_name", record.name.split(".")[0].upper())
+        if len(api_name) > 8:
+            api_name = api_name[:8]
+
+        # Format timestamp
+        timestamp = self.formatTime(record, "%H:%M:%S")
+        msecs = f"{record.msecs:03.0f}"
+
+        # Get level name and color
+        level_name = record.levelname
+        level_color = LEVEL_COLORS.get(level_name, Colors.WHITE)
+
+        if self.use_color:
+            # Colored format: | time | api_name | level | message
+            line = (
+                f"{Colors.CYAN}{timestamp}.{msecs}{Colors.RESET} | "
+                f"{Colors.BRIGHT_MAGENTA}{api_name: <8}{Colors.RESET} | "
+                f"{level_color}{level_name: <8}{Colors.RESET} | "
+                f"{record.getMessage()}"
+            )
+        else:
+            # Plain format for file output
+            line = (
+                f"{timestamp}.{msecs} | "
+                f"{api_name: <8} | "
+                f"{level_name: <8} | "
+                f"{record.getMessage()}"
+            )
+
+        return line
 
 
 class Logger:
-    """Loguru-based logger"""
+    """Custom logger wrapper with colored output and pretty tracebacks"""
 
     def __init__(self, api_name: str = "APP"):
-        """Initialize logger with API name.
-
-        Args:
-            api_name: Name of the API/module (e.g., "AUTH", "API", "SYNC")
-        """
-        # For XXX.YYY format, only use XXX
+        # Normalize api_name
         if "." in api_name:
             api_name = api_name.split(".")[0]
-
         self.api_name = api_name.upper()
-        self._logger = logger.bind(api_name=self.api_name)
 
-    def _log(self, level: LogLevel, message: str):
-        """Internal log method."""
-        match level:
-            case LogLevel.DEBUG:
-                self._logger.debug(message)
-            case LogLevel.INFO:
-                self._logger.info(message)
-            case LogLevel.SUCCESS:
-                self._logger.success(message)
-            case LogLevel.WARNING:
-                self._logger.warning(message)
-            case LogLevel.ERROR:
-                self._logger.error(message)
-            case LogLevel.CRITICAL:
-                self._logger.critical(message)
-            case LogLevel.TRACE:
-                self._logger.trace(message)
-            case _:
-                self._logger.log(level, message)
+        # Get or create the underlying logger
+        # Use kohakuboard namespace to avoid conflicts
+        self._logger = logging.getLogger(f"kohakuboard.{self.api_name}")
+        self._logger.setLevel(TRACE_LEVEL)
 
-    def debug(self, message: str):
-        self._log(LogLevel.DEBUG, message)
+        # Prevent propagation to root logger
+        self._logger.propagate = False
 
-    def info(self, message: str):
-        self._log(LogLevel.INFO, message)
-
-    def success(self, message: str):
-        self._log(LogLevel.SUCCESS, message)
-
-    def warning(self, message: str):
-        self._log(LogLevel.WARNING, message)
-
-    def error(self, message: str):
-        self._log(LogLevel.ERROR, message)
-
-    def critical(self, message: str):
-        self._log(LogLevel.CRITICAL, message)
+    def _log(self, level: int, message: str):
+        """Internal log method with api_name injection"""
+        self._logger.log(level, message, extra={"api_name": self.api_name})
 
     def trace(self, message: str):
-        self._log(LogLevel.TRACE, message)
+        self._log(TRACE_LEVEL, message)
 
-    def exception(self, message: str, exc: Optional[Exception] = None):
-        """Log exception with formatted traceback.
+    def debug(self, message: str):
+        self._log(logging.DEBUG, message)
+
+    def info(self, message: str):
+        self._log(logging.INFO, message)
+
+    def success(self, message: str):
+        self._log(SUCCESS_LEVEL, message)
+
+    def warning(self, message: str):
+        self._log(logging.WARNING, message)
+
+    def error(self, message: str):
+        self._log(logging.ERROR, message)
+
+    def critical(self, message: str):
+        self._log(logging.CRITICAL, message)
+
+    def exception(self, message: str | Exception, exc: Exception | None = None):
+        """Log exception with pretty formatted traceback
 
         Args:
-            message: Error message
-            exc: Exception object (if None, uses sys.exc_info())
+            message: Error message or Exception object
+            exc: Exception object (if message is string)
         """
+        # Handle case where message is the exception
+        if isinstance(message, Exception):
+            exc = message
+            message = str(exc)
+
         self.error(message)
-        self._print_formatted_traceback(exc)
+        self._print_pretty_traceback(exc)
 
-    def _print_formatted_traceback(self, exc: Optional[Exception] = None):
-        """Print formatted traceback as tables.
+    def _print_pretty_traceback(self, exc: Exception | None = None):
+        """Print formatted traceback with pretty box formatting
 
-        Args:
-            exc: Exception object (if None, uses sys.exc_info())
+        Format:
+        ==========================================
+        File: /path/to/file.py
+        Line: 42
+        Method: some_function()
+        Code: x = broken_code()
+        ------------------------------------------
+        ...more frames...
+        ==========================================
+        File: /path/to/error.py
+        Line: 100
+        Position:     ^^^^^^^^^^^
+        Error: ValueError: something went wrong
+        ==========================================
         """
         if exc is None:
             exc_type, exc_value, exc_tb = sys.exc_info()
@@ -134,64 +189,102 @@ class Logger:
 
         # Extract traceback frames
         frames = tb.extract_tb(exc_tb)
+        if not frames:
+            return
 
-        # Print header
-        self.trace(f"{'=' * 50}")
-        self.trace("TRACEBACK")
-        self.trace(f"{'=' * 50}")
+        # Build traceback string
+        separator = "=" * 50
+        thin_sep = "-" * 50
 
-        # Print stack frames as tables
-        for i, frame in enumerate(frames, 1):
-            self._print_frame_table(i, frame, is_last=(i == len(frames)))
+        lines = [separator, "TRACEBACK", separator]
 
-        # Print final error table
-        self._print_error_table(exc_type, exc_value, frames[-1] if frames else None)
+        # Print each frame
+        for i, frame in enumerate(frames):
+            is_last = i == len(frames) - 1
 
-        self.trace(f"{'=' * 50}")
+            lines.append(f"File: {frame.filename}")
+            lines.append(f"Line: {frame.lineno}")
+            if frame.name:
+                lines.append(f"Method: {frame.name}()")
+            if frame.line:
+                lines.append(f"Code: {frame.line.strip()}")
 
-    def _print_frame_table(self, index: int, frame: tb.FrameSummary, is_last: bool):
-        """Print single stack frame as a table.
+            if not is_last:
+                lines.append(thin_sep)
 
-        Args:
-            index: Frame index
-            frame: Frame summary
-            is_last: Whether this is the last frame (error location)
+        # Final error section
+        lines.append(separator)
+        last_frame = frames[-1]
+        lines.append(f"File: {last_frame.filename}")
+        lines.append(f"Line: {last_frame.lineno}")
+
+        # Try to show position indicator if we have the code line
+        if last_frame.line:
+            code_line = last_frame.line
+            stripped = code_line.strip()
+
+            # Try to find error position from exception message
+            # This is a heuristic - works for many common errors
+            position_indicator = self._get_position_indicator(
+                code_line, stripped, exc_value
+            )
+            if position_indicator:
+                lines.append(f"Code: {stripped}")
+                lines.append(f"Position: {position_indicator}")
+            else:
+                lines.append(f"Code: {stripped}")
+
+        lines.append(f"Error: {exc_type.__name__}: {exc_value}")
+        lines.append(separator)
+
+        # Log each line as trace
+        for line in lines:
+            self.trace(line)
+
+    def _get_position_indicator(
+        self, original_line: str, stripped_line: str, exc_value: BaseException | None
+    ) -> str | None:
+        """Try to generate a position indicator (^^^) for the error location
+
+        Returns indicator string or None if position cannot be determined
         """
-        self.trace(f"┌─ Frame #{index} {' (ERROR HERE)' if is_last else ''}")
-        self.trace(f"│ File: {frame.filename}")
-        self.trace(f"│ Line: {frame.lineno}")
-        if frame.name:
-            self.trace(f"│ In: {frame.name}()")
-        if frame.line:
-            self.trace(f"│ Code: {frame.line.strip()}")
-        self.trace(f"└{'─' * 99}")
+        if exc_value is None:
+            return None
 
-    def _print_error_table(
-        self, exc_type, exc_value, last_frame: Optional[tb.FrameSummary]
-    ):
-        """Print final error details as a table.
+        error_msg = str(exc_value)
 
-        Args:
-            exc_type: Exception type
-            exc_value: Exception value
-            last_frame: Last stack frame (error location)
-        """
-        self.trace(" EXCEPTION DETAILS ")
-        self.trace(f"┌{'─' * 99}")
-        self.trace(f"│ Type: {exc_type.__name__}")
-        self.trace(f"│ Message: {str(exc_value)}")
-        if last_frame:
-            self.trace(f"│ Location: {last_frame.filename}:{last_frame.lineno}")
-            if last_frame.line:
-                self.trace(f"│ Code: {last_frame.line.strip()}")
-        self.trace(f"└{'─' * 99}")
+        # Try to find a variable/attribute name mentioned in error
+        # Common patterns: "'xxx' is not defined", "has no attribute 'xxx'"
+        import re
+
+        patterns = [
+            r"name '(\w+)' is not defined",
+            r"has no attribute '(\w+)'",
+            r"'(\w+)' is undefined",
+            r"cannot find '(\w+)'",
+        ]
+
+        for pattern in patterns:
+            match = re.search(pattern, error_msg)
+            if match:
+                name = match.group(1)
+                # Find position in stripped line
+                pos = stripped_line.find(name)
+                if pos >= 0:
+                    indicator = " " * pos + "^" * len(name)
+                    return indicator
+
+        return None
 
 
 class _NullLogger:
-    """No-op logger used to suppress output."""
+    """No-op logger used to suppress output"""
 
     def __init__(self, api_name: str = "NULL"):
         self.api_name = api_name
+
+    def trace(self, message: str) -> None:
+        pass
 
     def debug(self, message: str) -> None:
         pass
@@ -211,91 +304,87 @@ class _NullLogger:
     def critical(self, message: str) -> None:
         pass
 
-    def trace(self, message: str) -> None:
-        pass
-
-    def exception(self, message: str, exc: Optional[Exception] = None) -> None:
+    def exception(self, message: str | Exception, exc: Exception | None = None) -> None:
         pass
 
 
 class LoggerFactory:
-    """Factory to create loguru loggers."""
+    """Factory to create and manage loggers"""
 
-    _loggers = {}
-    _file_only_names = set()  # Track api_names that should not go to stdout
-    _dropped_names = set()
-    _dropped_names = set()
+    _loggers: dict[str, Logger | _NullLogger] = {}
+    _handlers_initialized: bool = False
+    _console_handler: logging.Handler | None = None
+    _file_handler: logging.Handler | None = None
+    _file_only_names: set[str] = set()
+    _dropped_names: set[str] = set()
 
     @classmethod
     def init_logger_settings(
-        cls, log_file: Optional[Path] = None, file_only: bool = False
+        cls, log_file: Path | None = None, file_only: bool = False, level: str = "DEBUG"
     ):
-        """Initialize logger settings.
+        """Initialize logger settings
 
         Args:
-            log_file: Optional log file path (if None, no file logging)
+            log_file: Optional log file path
             file_only: If True, log ONLY to file, not stdout
+            level: Minimum log level (DEBUG, INFO, WARNING, ERROR)
         """
-        # Remove default handler
-        logger.remove()
+        # Get the kohakuboard parent logger
+        parent_logger = logging.getLogger("kohakuboard")
+        parent_logger.setLevel(TRACE_LEVEL)
+        parent_logger.propagate = False
 
-        # Configure colors
-        logger.level("DEBUG", color="<fg #666666>")
-        logger.level("INFO", color="<fg #09D0EF>")
-        logger.level("SUCCESS", color="<fg #66FF00>")
-        logger.level("WARNING", color="<fg #FFEB2A>")
-        logger.level("ERROR", color="<fg #FF160C>")
-        logger.level("CRITICAL", color="<white><bg #FF160C><bold>")
-        logger.level("TRACE", color="<fg #999999>")
+        # Remove existing handlers
+        parent_logger.handlers.clear()
 
-        # Format: | time | name | level | message
-        # Fixed widths: api_name=8, level=8
-        log_format = (
-            "<cyan>{time:HH:mm:ss.SSS}</cyan> | "
-            "<fg #FF00CD>{extra[api_name]: <8}</fg #FF00CD> | "
-            "<level>{level: <8}</level> | "
-            "{message}"
-        )
+        # Parse level
+        log_level = getattr(logging, level.upper(), logging.DEBUG)
+        if level.upper() == "TRACE":
+            log_level = TRACE_LEVEL
+        elif level.upper() == "SUCCESS":
+            log_level = SUCCESS_LEVEL
 
-        # Add stdout logger (unless file_only)
-        # Filter out api_names that are registered as file-only
+        # Add console handler (unless file_only)
         if not file_only:
-            logger.add(
-                sys.stderr,
-                format=log_format,
-                level="DEBUG",
-                colorize=True,
-                filter=lambda record: record["extra"].get("api_name")
-                not in cls._file_only_names
-                and record["extra"].get("api_name") not in cls._dropped_names,
-            )
+            console_handler = logging.StreamHandler(sys.stderr)
+            console_handler.setLevel(log_level)
+            console_handler.setFormatter(ColoredFormatter(use_color=True))
 
-        # Add file logger if specified
+            # Add filter to exclude file-only and dropped loggers
+            console_handler.addFilter(cls._create_console_filter())
+
+            parent_logger.addHandler(console_handler)
+            cls._console_handler = console_handler
+
+        # Add file handler if specified
         if log_file:
             log_file.parent.mkdir(parents=True, exist_ok=True)
-            logger.add(
-                log_file,
-                format=log_format,
-                level="DEBUG",
-                rotation="10 MB",
-                retention="7 days",
-                colorize=False,  # No ANSI codes in files
-            )
+            file_handler = logging.FileHandler(log_file, encoding="utf-8")
+            file_handler.setLevel(log_level)
+            file_handler.setFormatter(ColoredFormatter(use_color=False))
+            parent_logger.addHandler(file_handler)
+            cls._file_handler = file_handler
 
-        # Intercept standard library logs
-        logger_name_list = [name for name in logging.root.manager.loggerDict]
-        for logger_name in logger_name_list:
-            _logger = logging.getLogger(logger_name)
-            _logger.setLevel(logging.INFO)
-            _logger.handlers = []
-            if "." not in logger_name:
-                _logger.addHandler(InterceptHandler())
-            else:
-                _logger.propagate = True
+        cls._handlers_initialized = True
 
     @classmethod
-    def get_logger(cls, api_name: str, *, drop: bool = False) -> Logger:
-        """Get or create logger for API name.
+    def _create_console_filter(cls):
+        """Create filter for console output"""
+
+        class ConsoleFilter(logging.Filter):
+            def filter(self, record: logging.LogRecord) -> bool:
+                api_name = getattr(record, "api_name", "")
+                if api_name in cls._file_only_names:
+                    return False
+                if api_name in cls._dropped_names:
+                    return False
+                return True
+
+        return ConsoleFilter()
+
+    @classmethod
+    def get_logger(cls, api_name: str, *, drop: bool = False) -> Logger | _NullLogger:
+        """Get or create logger for API name
 
         Args:
             api_name: Name of the API/module
@@ -304,13 +393,22 @@ class LoggerFactory:
         Returns:
             Logger instance
         """
+        # Initialize handlers if not done
+        if not cls._handlers_initialized:
+            cls.init_logger_settings()
+
+        # Normalize name
+        if "." in api_name:
+            api_name = api_name.split(".")[0]
+        api_name = api_name.upper()
+
         if drop:
             cls._dropped_names.add(api_name)
             cls._loggers[api_name] = _NullLogger(api_name)
             return cls._loggers[api_name]
 
+        # Check if previously dropped, recreate if needed
         if api_name in cls._loggers and isinstance(cls._loggers[api_name], _NullLogger):
-            # Previously dropped, recreate real logger
             cls._loggers[api_name] = Logger(api_name)
             cls._dropped_names.discard(api_name)
             return cls._loggers[api_name]
@@ -322,28 +420,32 @@ class LoggerFactory:
         return cls._loggers[api_name]
 
 
-def init_logger_settings(log_file: Optional[Path] = None, file_only: bool = False):
-    """Initialize logger settings.
+def init_logger_settings(
+    log_file: Path | None = None, file_only: bool = False, level: str = "DEBUG"
+):
+    """Initialize logger settings
 
     Args:
         log_file: Optional log file path
         file_only: If True, log ONLY to file, not stdout
+        level: Minimum log level
     """
-    LoggerFactory.init_logger_settings(log_file, file_only)
+    LoggerFactory.init_logger_settings(log_file, file_only, level)
 
 
 def get_logger(
     api_name: str,
     file_only: bool = False,
-    log_file: Optional[Path] = None,
+    log_file: Path | None = None,
     drop: bool = False,
-) -> Logger:
-    """Get logger for specific API.
+) -> Logger | _NullLogger:
+    """Get logger for specific API
 
     Args:
         api_name: Name of the API/module
         file_only: If True, log ONLY to file (no stdout)
         log_file: Log file path (required if file_only=True)
+        drop: If True, create a null logger that drops all messages
 
     Returns:
         Logger instance
@@ -352,18 +454,13 @@ def get_logger(
         return LoggerFactory.get_logger(api_name, drop=True)
 
     if file_only and log_file:
-        # Create a separate logger instance with file-only configuration
         return create_file_only_logger(log_file, api_name)
     else:
-        # Use shared logger configuration
         return LoggerFactory.get_logger(api_name, drop=False)
 
 
 def create_file_only_logger(log_file: Path, api_name: str = "WORKER") -> Logger:
-    """Create a logger instance that writes ONLY to file.
-
-    Uses bind() + filter to route messages to file only.
-    Also adds a filter to BLOCK this api_name from stdout.
+    """Create a logger instance that writes ONLY to file
 
     Args:
         log_file: Path to log file
@@ -372,37 +469,39 @@ def create_file_only_logger(log_file: Path, api_name: str = "WORKER") -> Logger:
     Returns:
         Logger instance with file-only handler
     """
-    log_file.parent.mkdir(parents=True, exist_ok=True)
+    # Normalize name
+    if "." in api_name:
+        api_name = api_name.split(".")[0]
+    api_name = api_name.upper()
 
-    # Format (same as main logger)
-    log_format = (
-        "<cyan>{time:HH:mm:ss.SSS}</cyan> | "
-        "<fg #FF00CD>{extra[api_name]: <8}</fg #FF00CD> | "
-        "<level>{level: <8}</level> | "
-        "{message}"
-    )
+    log_file.parent.mkdir(parents=True, exist_ok=True)
 
     # Register this api_name as file-only (exclude from stdout)
     LoggerFactory._file_only_names.add(api_name)
 
-    # Add file handler filtered to ONLY this api_name
-    logger.add(
-        log_file,
-        format=log_format,
-        level="DEBUG",
-        rotation="10 MB",
-        retention="7 days",
-        colorize=False,  # No ANSI codes in log files
-        filter=lambda record: record["extra"].get("api_name") == api_name,
-    )
+    # Create dedicated logger for this file
+    file_logger_name = f"kohakuboard.{api_name}.file"
+    underlying = logging.getLogger(file_logger_name)
+    underlying.setLevel(TRACE_LEVEL)
+    underlying.propagate = False
+
+    # Remove existing handlers
+    underlying.handlers.clear()
+
+    # Add file handler
+    file_handler = logging.FileHandler(log_file, encoding="utf-8")
+    file_handler.setLevel(TRACE_LEVEL)
+    file_handler.setFormatter(ColoredFormatter(use_color=False))
+    underlying.addHandler(file_handler)
 
     # Create Logger wrapper
-    file_logger = Logger(api_name)
+    logger_instance = Logger(api_name)
+    logger_instance._logger = underlying
 
-    return file_logger
+    return logger_instance
 
 
-# Initialize default logger settings (stdout only for server)
+# Initialize default logger settings (stdout only)
 init_logger_settings()
 
 # Pre-create common loggers
