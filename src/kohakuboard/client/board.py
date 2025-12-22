@@ -188,18 +188,11 @@ class Board:
         self.logger = get_logger("BOARD")
 
         # Add file handler to board logger (in addition to stdout)
-        # Note: loguru is global, so this adds a handler that ALL loggers will use
-        # But we filter it to only log BOARD messages to board.log
-        self._log_handler_id = None
+        self._log_handler_id: int | None = None
         if not self.memory_mode:
-            self._log_handler_id = self.logger._logger.add(
+            self._log_handler_id = self.logger.add_file_handler(
                 self.board_dir / "logs" / "board.log",
-                format="<cyan>{time:HH:mm:ss.SSS}</cyan> | <fg #FF00CD>{extra[api_name]: <8}</fg #FF00CD> | <level>{level: <8}</level> | {message}",
                 level="DEBUG",
-                rotation="10 MB",
-                retention="7 days",
-                colorize=False,  # No ANSI color codes in log files
-                filter=lambda record: record["extra"].get("api_name") == "BOARD",
             )
 
         # Save board metadata (may be in-memory only)

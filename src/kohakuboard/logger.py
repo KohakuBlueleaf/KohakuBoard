@@ -5,6 +5,7 @@ Provides custom colored formatting and pretty traceback printing.
 """
 
 import logging
+import re
 import sys
 import traceback as tb
 from pathlib import Path
@@ -118,6 +119,65 @@ class Logger:
 
         # Prevent propagation to root logger
         self._logger.propagate = False
+
+        # Track file handlers added to this logger
+        self._file_handlers: dict[int, logging.Handler] = {}
+        self._handler_id_counter = 0
+
+    def add_file_handler(
+        self,
+        log_file: Path,
+        level: str = "DEBUG",
+        rotation_bytes: int | None = None,
+    ) -> int:
+        """Add a file handler to this logger
+
+        Args:
+            log_file: Path to log file
+            level: Minimum log level for this handler
+            rotation_bytes: Max file size before rotation (not implemented in stdlib)
+
+        Returns:
+            Handler ID that can be used to remove it later
+        """
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+
+        file_handler = logging.FileHandler(log_file, encoding="utf-8")
+
+        # Parse level
+        log_level = getattr(logging, level.upper(), logging.DEBUG)
+        if level.upper() == "TRACE":
+            log_level = TRACE_LEVEL
+        elif level.upper() == "SUCCESS":
+            log_level = SUCCESS_LEVEL
+
+        file_handler.setLevel(log_level)
+        file_handler.setFormatter(ColoredFormatter(use_color=False))
+
+        self._logger.addHandler(file_handler)
+
+        # Track handler for later removal
+        handler_id = self._handler_id_counter
+        self._handler_id_counter += 1
+        self._file_handlers[handler_id] = file_handler
+
+        return handler_id
+
+    def remove_file_handler(self, handler_id: int) -> bool:
+        """Remove a file handler by ID
+
+        Args:
+            handler_id: ID returned from add_file_handler
+
+        Returns:
+            True if handler was found and removed
+        """
+        handler = self._file_handlers.pop(handler_id, None)
+        if handler:
+            self._logger.removeHandler(handler)
+            handler.close()
+            return True
+        return False
 
     def _log(self, level: int, message: str):
         """Internal log method with api_name injection"""
@@ -255,8 +315,6 @@ class Logger:
 
         # Try to find a variable/attribute name mentioned in error
         # Common patterns: "'xxx' is not defined", "has no attribute 'xxx'"
-        import re
-
         patterns = [
             r"name '(\w+)' is not defined",
             r"has no attribute '(\w+)'",
@@ -282,6 +340,22 @@ class _NullLogger:
 
     def __init__(self, api_name: str = "NULL"):
         self.api_name = api_name
+        self._handler_id_counter = 0
+
+    def add_file_handler(
+        self,
+        log_file: Path,
+        level: str = "DEBUG",
+        rotation_bytes: int | None = None,
+    ) -> int:
+        """No-op file handler addition"""
+        handler_id = self._handler_id_counter
+        self._handler_id_counter += 1
+        return handler_id
+
+    def remove_file_handler(self, handler_id: int) -> bool:
+        """No-op file handler removal"""
+        return False
 
     def trace(self, message: str) -> None:
         pass

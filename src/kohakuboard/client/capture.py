@@ -4,7 +4,6 @@ import atexit
 import re
 import sys
 from pathlib import Path
-from typing import Optional
 
 from kohakuboard.logger import get_logger
 
@@ -26,7 +25,7 @@ class OutputCapture:
 
         self.original_stdout = sys.stdout
         self.original_stderr = sys.stderr
-        self.file_handle: Optional[object] = None
+        self.file_handle: object | None = None
         self.active = False
 
     def start(self):
