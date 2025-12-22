@@ -116,9 +116,8 @@ class Logger:
         # Use kohakuboard namespace to avoid conflicts
         self._logger = logging.getLogger(f"kohakuboard.{self.api_name}")
         self._logger.setLevel(TRACE_LEVEL)
-
-        # Prevent propagation to root logger
-        self._logger.propagate = False
+        # propagate=True (default) sends messages to parent "kohakuboard" logger
+        # which has the handlers. Parent has propagate=False to isolate from root.
 
         # Track file handlers added to this logger
         self._file_handlers: dict[int, logging.Handler] = {}

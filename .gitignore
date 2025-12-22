@@ -6,6 +6,7 @@
 !src/kohaku-board-ui/
 !src/kohaku-board-ui/**
 
+kboards/
 *.backup*
 .DS_store
 *_old.*
