@@ -28,6 +28,7 @@ lint-reports/
 data/
 !src/kohakuboard/data/
 !src/kohakuboard/data/**
+src/kohakuboard/static/
 **/public/docs
 
 # Byte-compiled / optimized / DLL files
