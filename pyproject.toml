@@ -59,4 +59,4 @@ kobo-serve = "kohakuboard_server.cli:cli"
 package-dir = {"" = "src"}
 
 [tool.setuptools.package-data]
-kohakuboard = ["data/friendly_words/*.txt"]
+kohakuboard = ["data/friendly_words/*.txt", "static/**/*"]
