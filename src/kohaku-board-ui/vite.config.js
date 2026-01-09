@@ -6,6 +6,28 @@ import AutoImport from 'unplugin-auto-import/vite'
 import Components from 'unplugin-vue-components/vite'
 import { ElementPlusResolver } from 'unplugin-vue-components/resolvers'
 import { fileURLToPath, URL } from 'node:url'
+import { cpSync, rmSync } from 'node:fs'
+import { resolve } from 'node:path'
+
+// Plugin to copy build output to multiple directories
+function copyToMultipleOutputs(additionalOutputs) {
+  return {
+    name: 'copy-to-multiple-outputs',
+    closeBundle() {
+      const primaryOut = resolve(__dirname, 'dist')
+      for (const dest of additionalOutputs) {
+        const destPath = resolve(__dirname, dest)
+        try {
+          rmSync(destPath, { recursive: true, force: true })
+          cpSync(primaryOut, destPath, { recursive: true })
+          console.log(`✓ Copied build to ${dest}`)
+        } catch (err) {
+          console.error(`✗ Failed to copy to ${dest}:`, err.message)
+        }
+      }
+    }
+  }
+}
 
 export default defineConfig({
   plugins: [
@@ -26,12 +48,17 @@ export default defineConfig({
       resolvers: [ElementPlusResolver()],
       dts: 'src/components.d.ts',
       dirs: ['src/components']
-    })
+    }),
+    copyToMultipleOutputs(['../kohakuboard/static'])
   ],
   resolve: {
     alias: {
       '@': fileURLToPath(new URL('./src', import.meta.url))
     }
+  },
+  build: {
+    outDir: 'dist',
+    emptyOutDir: true
   },
   server: {
     port: 5175,
