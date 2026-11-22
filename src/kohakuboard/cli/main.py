@@ -14,7 +14,8 @@ from typing import Any
 
 import numpy as np
 
-from kohakuboard._rs import SCHEMA_VERSION, version as rs_version
+from kohakuboard._rs import SCHEMA_VERSION
+from kohakuboard._rs import version as rs_version
 from kohakuboard.errors import KohakuBoardError
 from kohakuboard.reader import ProjectReader, RunReader
 
@@ -242,7 +243,10 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
         projects = reader.list_projects(refresh=False)
         runs = reader.list_runs(refresh=False)
 
-    print(f"catalog:         indexed {len(runs)} runs across {len(projects)} projects (updated={updated})")
+    print(
+        f"catalog:         indexed {len(runs)} runs across {len(projects)} projects "
+        f"(updated={updated})"
+    )
     corrupt = 0
     for r in runs:
         try:
@@ -265,7 +269,7 @@ def _delegate_optional(module_name: str, func_name: str, extra: str, argv: list[
     except ModuleNotFoundError:
         print(
             f"This command requires optional package '{module_name}'. "
-            f"Install with: pip install \"kohakuboard[{extra}]\"",
+            f'Install with: pip install "kohakuboard[{extra}]"',
             file=sys.stderr,
         )
         return 2
@@ -320,17 +324,21 @@ def build_parser() -> argparse.ArgumentParser:
     p_doc.set_defaults(func=_cmd_doctor)
 
     for web_cmd in ("open", "serve"):
-        p_web = sub.add_parser(web_cmd, help=f"Web server command (requires kohakuboard[web])")
+        p_web = sub.add_parser(web_cmd, help="Web server command (requires kohakuboard[web])")
         p_web.add_argument("rest", nargs=argparse.REMAINDER)
         p_web.set_defaults(
-            func=lambda a, c=web_cmd: _delegate_optional("kohakuboard_web.cli", f"run_{c}", "web", a.rest)
+            func=lambda a, c=web_cmd: _delegate_optional(
+                "kohakuboard_web.cli", f"run_{c}", "web", a.rest
+            )
         )
 
     for tui_cmd in ("tui", "watch"):
-        p_tui = sub.add_parser(tui_cmd, help=f"Terminal UI command (requires kohakuboard[tui])")
+        p_tui = sub.add_parser(tui_cmd, help="Terminal UI command (requires kohakuboard[tui])")
         p_tui.add_argument("rest", nargs=argparse.REMAINDER)
         p_tui.set_defaults(
-            func=lambda a, c=tui_cmd: _delegate_optional("kohakuboard.tui", f"run_{c}", "tui", a.rest)
+            func=lambda a, c=tui_cmd: _delegate_optional(
+                "kohakuboard.tui", f"run_{c}", "tui", a.rest
+            )
         )
 
     return parser

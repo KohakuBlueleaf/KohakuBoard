@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from kohakuboard import errors
-from kohakuboard._rs import SCHEMA_VERSION, version as _rs_version
+from kohakuboard._rs import SCHEMA_VERSION
+from kohakuboard._rs import version as _rs_version
 from kohakuboard.client import (
     Artifact,
     Board,

@@ -39,7 +39,7 @@ def _require_active(action: str) -> Board:
     if board is None:
         raise ConfigError(
             f"Cannot call kohakuboard.{action}(): project/board has not been initialized. "
-            f"Call kohakuboard.init(...) first, or call .{action}() directly on a Board(...) instance."
+            f"Call kohakuboard.init(...) first, or call .{action}() on a Board(...) instance."
         )
     return board
 

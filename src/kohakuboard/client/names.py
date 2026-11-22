@@ -51,7 +51,5 @@ def validate_run_id(run_id: str) -> str:
 def validate_slug(value: str, field_name: str) -> str:
     """Validate project or annotation slugs against path traversal and invalid chars."""
     if not _SLUG_RE.match(value) or ".." in value:
-        raise ValueError(
-            f"{field_name} must be 1..64 safe path chars without '..', got {value!r}"
-        )
+        raise ValueError(f"{field_name} must be 1..64 safe path chars without '..', got {value!r}")
     return value

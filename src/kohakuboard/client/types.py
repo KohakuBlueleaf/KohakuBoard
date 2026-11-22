@@ -224,7 +224,9 @@ class Histogram:
         if has_pre and (self.counts is None or self.edges is None):
             raise ConfigError("Precomputed Histogram requires both `edges` and `counts`")
         if self.precision not in ("exact", "compact"):
-            raise ConfigError(f"Histogram precision must be 'exact' or 'compact', got {self.precision!r}")
+            raise ConfigError(
+                f"Histogram precision must be 'exact' or 'compact', got {self.precision!r}"
+            )
 
     def to_raw_f32_bytes(self) -> bytes:
         arr = np.ascontiguousarray(_to_numpy(self.values).ravel(), dtype="<f4")
@@ -249,7 +251,9 @@ class KernelDensity:
         has_raw = self.values is not None
         has_pre = self.grid is not None or self.density is not None
         if has_raw and has_pre:
-            raise ConfigError("KernelDensity accepts either `values` or `(grid, density)`, not both")
+            raise ConfigError(
+                "KernelDensity accepts either `values` or `(grid, density)`, not both"
+            )
         if not has_raw and not has_pre:
             raise ConfigError("KernelDensity requires either `values` or `(grid, density)`")
         if has_pre and (self.grid is None or self.density is None):

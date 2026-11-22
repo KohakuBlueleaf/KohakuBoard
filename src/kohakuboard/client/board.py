@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import atexit
+import contextlib
 import json
 import os
 import platform
@@ -79,10 +80,8 @@ def _cleanup_active_boards() -> None:
     for ref in list(_ACTIVE_BOARDS):
         board = ref()
         if board is not None and not board.closed:
-            try:
+            with contextlib.suppress(Exception):
                 board.finish(exit_code=exit_code, state=final_state)
-            except Exception:  # noqa: BLE001
-                pass
 
 
 def _register_board(board: Board) -> weakref.ref[Board]:
@@ -224,7 +223,9 @@ class Board:
 
         should_resume = False
         if mode == "local":
-            base = Path(dir) if dir is not None else Path(os.environ.get("KOBO_DIR", "./kohakuboard"))
+            base = (
+                Path(dir) if dir is not None else Path(os.environ.get("KOBO_DIR", "./kohakuboard"))
+            )
             project_dir = base / self.project
             existing = _find_existing_run_dir(project_dir, self.run_id)
             dir_name = f"{self.run_id}_{self.annotation}" if self.annotation else self.run_id
@@ -239,7 +240,9 @@ class Board:
                     while existing is not None:
                         self.run_id = generate_run_id()
                         existing = _find_existing_run_dir(project_dir, self.run_id)
-                    dir_name = f"{self.run_id}_{self.annotation}" if self.annotation else self.run_id
+                    dir_name = (
+                        f"{self.run_id}_{self.annotation}" if self.annotation else self.run_id
+                    )
                     self.run_dir = project_dir / dir_name
                 else:
                     self.run_dir = existing
@@ -247,7 +250,8 @@ class Board:
             else:
                 if resume == "must":
                     raise RunNotFoundError(
-                        f"Cannot resume run '{self.run_id}' in {project_dir}: run directory not found"
+                        f"Cannot resume run '{self.run_id}' in {project_dir}: "
+                        "run directory not found"
                     )
                 self.run_dir = project_dir / dir_name
             run_dir_arg: str | None = str(self.run_dir)
@@ -275,7 +279,7 @@ class Board:
                 overflow=overflow,
                 system_metrics_interval_ms=sysmon_ms,
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             raise translate_rs_error(exc) from exc
 
         self._step = self._engine.initial_last_step
@@ -315,10 +319,8 @@ class Board:
     def _emit_console_line(self, ts_ms: int, stream: str, line: str) -> None:
         if self._closed or self._engine is None:
             return
-        try:
+        with contextlib.suppress(Exception):
             self._engine.log_lines([(ts_ms, max(self._step, 0), stream, line)])
-        except Exception:  # noqa: BLE001
-            pass
 
     def step(self, increment: int = 1, *, value: int | None = None) -> int:
         """Advance `global_step` (or set it explicitly via `value=`) and seal pending commits."""
@@ -382,9 +384,7 @@ class Board:
         scalars: list[tuple[str, float]] = []
         rich: list[tuple[str, Any]] = []
         for k, v in items:
-            if type(v) is float or type(v) is int:
-                scalars.append((k, float(v)))
-            elif isinstance(v, _SCALAR_TYPES):
+            if type(v) is float or type(v) is int or isinstance(v, _SCALAR_TYPES):
                 scalars.append((k, float(v)))
             else:
                 rich.append((k, v))
@@ -394,7 +394,7 @@ class Board:
                 engine.log_scalars(cur_step, cur_gstep, ts_ms, scalars)
             if rich:
                 self._log_rich_items(engine, cur_step, cur_gstep, ts_ms, rich)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             raise translate_rs_error(exc) from exc
 
     def _log_rich_items(
@@ -469,8 +469,12 @@ class Board:
                     else:
                         grid = [float(x) for x in value.grid or ()]
                         dens = [float(x) for x in value.density or ()]
-                        r_min = float(value.range[0]) if value.range else (min(grid) if grid else 0.0)
-                        r_max = float(value.range[1]) if value.range else (max(grid) if grid else 1.0)
+                        r_min = (
+                            float(value.range[0]) if value.range else (min(grid) if grid else 0.0)
+                        )
+                        r_max = (
+                            float(value.range[1]) if value.range else (max(grid) if grid else 1.0)
+                        )
                         bw_val = 0.0 if value.bandwidth == "auto" else float(value.bandwidth)
                         engine.log_kde_precomputed(
                             step,
@@ -591,7 +595,7 @@ class Board:
         self.config.update(patch)
         try:
             engine.patch_config(json.dumps(patch, default=str))
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             raise translate_rs_error(exc) from exc
 
     def summary_update(self, patch: dict[str, float]) -> None:
@@ -601,8 +605,10 @@ class Board:
         engine = self._require_open()
         clean = {str(k): float(v) for k, v in patch.items()}
         try:
-            engine.patch_summary(max(self._step, 0), self._global_step, int(time.time() * 1000), clean)
-        except Exception as exc:  # noqa: BLE001
+            engine.patch_summary(
+                max(self._step, 0), self._global_step, int(time.time() * 1000), clean
+            )
+        except Exception as exc:
             raise translate_rs_error(exc) from exc
 
     def add_tags(self, *tags: str) -> None:
@@ -615,7 +621,7 @@ class Board:
                 self.tags.append(t)
         try:
             engine.patch_meta(add_tags=list(tags))
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             raise translate_rs_error(exc) from exc
 
     def set_notes(self, markdown: str) -> None:
@@ -626,7 +632,7 @@ class Board:
         self.notes = markdown
         try:
             engine.patch_meta(notes=markdown)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             raise translate_rs_error(exc) from exc
 
     def define_metric(
@@ -645,7 +651,7 @@ class Board:
         engine = self._require_open()
         try:
             engine.define_metric(pattern, step_metric=step_metric, summary=summary, hidden=hidden)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             raise translate_rs_error(exc) from exc
 
     def alert(
@@ -669,7 +675,7 @@ class Board:
                 title,
                 text,
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             raise translate_rs_error(exc) from exc
 
     def progress(
@@ -692,7 +698,7 @@ class Board:
                 unit,
                 int(time.time() * 1000),
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             raise translate_rs_error(exc) from exc
 
     def snapshot(self) -> dict[str, Any]:
@@ -714,7 +720,7 @@ class Board:
         engine = self._require_open()
         try:
             engine.flush(max(1, int(timeout * 1000)))
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             raise translate_rs_error(exc) from exc
 
     def finish(
@@ -741,13 +747,15 @@ class Board:
             final_state = state or ("finished" if exit_code == 0 else "crashed")
             try:
                 self._engine.finish(final_state, int(exit_code), max(1, int(timeout * 1000)))
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 raise translate_rs_error(exc) from exc
 
     def __enter__(self) -> Board:
         return self
 
-    def __exit__(self, exc_type: type[BaseException] | None, exc: BaseException | None, tb: Any) -> None:
+    def __exit__(
+        self, exc_type: type[BaseException] | None, exc: BaseException | None, tb: Any
+    ) -> None:
         if exc_type is None:
             self.finish(exit_code=0, state="finished")
         elif issubclass(exc_type, KeyboardInterrupt):

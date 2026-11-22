@@ -33,7 +33,7 @@ class RunReader:
         self._run_dir = Path(run_dir)
         try:
             self._rs = _RunReader(str(self._run_dir))
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             raise translate_rs_error(exc) from exc
         self._closed = False
 

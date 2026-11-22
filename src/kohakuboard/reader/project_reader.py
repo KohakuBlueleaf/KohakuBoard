@@ -77,7 +77,7 @@ class ProjectReader:
         self._default_project = project
         try:
             self._catalog = _Catalog(str(self._data_dir))
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             raise translate_rs_error(exc) from exc
 
     @property
@@ -88,7 +88,7 @@ class ProjectReader:
         """Incrementally update `.catalog.db` (or rebuild from scratch) and return updated count."""
         try:
             return self._catalog.refresh(force_rebuild)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             raise translate_rs_error(exc) from exc
 
     def list_projects(self, *, refresh: bool = True) -> list[ProjectSummary]:
