@@ -1,11 +1,12 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
-build-backend = "setuptools.build_meta"
+requires = ["maturin>=1.9,<2.0"]
+build-backend = "maturin"
 
 [project]
 name = "kohakuboard"
-version = "0.0.1"
-description = "High efficiency Local/self-hosted ML Experiment Tracking System"
+# maturin reads the version from Cargo.toml.
+dynamic = ["version"]
+description = "Local-first, zero-overhead ML experiment tracking backed by Rust and KohakuVault"
 authors = [
     { name = "Shih-Ying Yeh(KohakuBlueLeaf)", email = "apolloyeh0123@gmail.com" },
 ]
@@ -13,50 +14,73 @@ license = { text = "Apache-2.0" }
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "aiofiles",
-    "aiohttp",
-    "bcrypt",
-    "boto3",
-    "cachetools",
-    "click>=8.0",
-    "click-completion",
-    "cryptography>=46.0",
-    "duckdb",
-    "fastapi",
-    "fsspec",
-    "httpx",
-    "kohakuvault",
-    "numpy",
-    "orjson",
-    "pandas",
-    "peewee",
-    "psycopg2-binary",
-    "pydantic[email]",
-    "python-multipart",
-    "pytz",
-    "pyyaml",
-    "questionary",
-    "requests",
-    "rich",
-    "toml",
-    "tqdm",
-    "uvicorn",
-    "pillow",
+    "numpy>=1.24",
 ]
-urls = { "Homepage" = "https://github.com/KohakuBlueleaf/KohakuBoard" }
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Rust",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+]
+
+[project.urls]
+Homepage = "https://github.com/KohakuBlueleaf/KohakuBoard"
+Repository = "https://github.com/KohakuBlueleaf/KohakuBoard"
 
 [project.optional-dependencies]
-inspector = [
-    "customtkinter>=5.2.2",
-    "matplotlib>=3.5.0",
+tui = ["kohakutui>=0.2.0"]
+web = ["kohakuboard-web"]
+server = ["kohakuboard-web[server]"]
+all = ["kohakutui>=0.2.0", "kohakuboard-web"]
+dev = [
+    "maturin>=1.9,<2.0",
+    "pytest>=8",
+    "pytest-xdist>=3.6",
+    "pytest-timeout>=2.3",
+    "black>=25.0",
+    "ruff>=0.9",
+    "pillow>=10",
+    "kohakuvault>=1.1.0",
 ]
 
 [project.scripts]
-kobo = "kohakuboard.cli:cli"
-kobo-serve = "kohakuboard_server.cli:cli"
+kobo = "kohakuboard.cli.main:main"
 
-[tool.setuptools]
-package-dir = {"" = "src"}
+[tool.maturin]
+python-source = "src"
+module-name = "kohakuboard._rs"
+features = ["python"]
+include = [
+    "src/kohakuboard/**/*.pyi",
+    "src/kohakuboard/py.typed",
+    "src/kohakuboard/data/friendly_words/*.txt",
+]
 
-[tool.setuptools.package-data]
-kohakuboard = ["data/friendly_words/*.txt", "static/**/*"]
+[tool.black]
+line-length = 100
+target-version = ["py310"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+src = ["src", "tests", "scripts"]
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "B", "BLE", "UP", "SIM", "PERF", "RUF100", "PLC0415"]
+ignore = ["B905", "PERF203"]
+
+[tool.ruff.lint.pycodestyle]
+max-doc-length = 100
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+timeout = 60
+timeout_method = "thread"
+markers = [
+    "serial: asserts timing or throughput bounds; runs outside xdist",
+]
