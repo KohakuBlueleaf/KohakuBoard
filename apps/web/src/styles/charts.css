@@ -1,0 +1,94 @@
+/* uPlot warm-stone / warm-obsidian theme overrides & v1-style card resize handles */
+.uplot {
+  font-family: var(--font-sans) !important;
+  color: var(--v2-ink);
+}
+.uplot .u-wrap {
+  background: transparent;
+}
+.uplot .u-cursor-x,
+.uplot .u-cursor-y {
+  border-color: color-mix(in srgb, var(--kt-color-iolite) 55%, transparent) !important;
+}
+.uplot .u-select {
+  background: color-mix(in srgb, var(--kt-color-iolite) 14%, transparent) !important;
+}
+.uplot .u-legend {
+  display: none !important;
+}
+
+.kobo-chart-progress {
+  height: 2px;
+  width: 100%;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--v2-line) 70%, transparent);
+}
+.kobo-chart-progress__bar {
+  height: 100%;
+  background: linear-gradient(90deg, var(--kt-color-aquamarine), var(--kt-color-iolite));
+  transition: width 120ms linear;
+}
+
+/* Independent card width/height resize handles (ported & refined from KohakuBoard v1) */
+.kobo-card-wrapper {
+  position: relative;
+  min-width: 220px;
+  transition: box-shadow 120ms ease;
+}
+.kobo-card-wrapper.is-drop-target {
+  outline: 2px solid var(--kt-color-iolite);
+  outline-offset: 2px;
+  border-radius: 0.75rem;
+}
+.kobo-resize-right {
+  position: absolute;
+  top: 10px;
+  bottom: 14px;
+  right: -3px;
+  width: 7px;
+  cursor: col-resize;
+  z-index: 15;
+  border-radius: 4px;
+}
+.kobo-resize-right:hover,
+.kobo-card-wrapper.is-resizing-w .kobo-resize-right {
+  background: color-mix(in srgb, var(--kt-color-iolite) 45%, transparent);
+}
+.kobo-resize-bottom {
+  position: absolute;
+  left: 12px;
+  right: 14px;
+  bottom: -3px;
+  height: 7px;
+  cursor: row-resize;
+  z-index: 15;
+  border-radius: 4px;
+}
+.kobo-resize-bottom:hover,
+.kobo-card-wrapper.is-resizing-h .kobo-resize-bottom {
+  background: color-mix(in srgb, var(--kt-color-iolite) 45%, transparent);
+}
+.kobo-resize-corner {
+  position: absolute;
+  right: -2px;
+  bottom: -2px;
+  width: 14px;
+  height: 14px;
+  cursor: nwse-resize;
+  z-index: 16;
+  border-radius: 0 0 0.75rem 0;
+}
+.kobo-resize-corner::after {
+  content: "";
+  position: absolute;
+  right: 3px;
+  bottom: 3px;
+  width: 6px;
+  height: 6px;
+  border-right: 2px solid var(--v2-line-strong);
+  border-bottom: 2px solid var(--v2-line-strong);
+  border-radius: 0 0 2px 0;
+}
+.kobo-resize-corner:hover::after {
+  border-color: var(--kt-color-iolite);
+}

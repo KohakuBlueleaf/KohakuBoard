@@ -1,0 +1,22 @@
+{
+  "name": "kohakuboard-web-ui",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "pinia": "^3.0.1",
+    "uplot": "^1.6.31",
+    "vue": "^3.5.13"
+  },
+  "devDependencies": {
+    "@iconify-json/carbon": "^1.2.8",
+    "@vitejs/plugin-vue": "^5.2.3",
+    "unocss": "^66.1.0",
+    "vite": "^6.2.6"
+  }
+}

@@ -1,0 +1,208 @@
+/*
+ * KohakuTerrarium v2 Gemstone Terrarium surfaces — adapted for KohakuBoard.
+ * Five warm-stone / warm-obsidian levels:
+ *   chrome  tab strip; active tab fuses seamlessly into canvas via outward corner curves
+ *   rail    left navigation rail
+ *   canvas  workspace background
+ *   panel   side regions (runs sidebar, inspector), edged by --v2-line-strong
+ *   card    chart cards, tables, metric sections
+ *   float   tooltips, command palette, popovers
+ */
+:root {
+  --font-sans: "Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", "Fira Code", ui-monospace, SFMono-Regular, Consolas, monospace;
+
+  --kt-fs-micro: 0.65rem;
+  --kt-fs-caption: 0.75rem;
+  --kt-fs-body: 0.85rem;
+  --kt-fs-emphasis: 0.95rem;
+  --kt-fs-title: 1.05rem;
+  --kt-fs-h2: 1.2rem;
+  --kt-fs-h1: 1.45rem;
+}
+
+.kt-v2 {
+  --v2-chrome: #e3ddd5;
+  --v2-rail: #dcd5cb;
+  --v2-canvas: #fbfaf8;
+  --v2-panel: #f2eee8;
+  --v2-card: #ffffff;
+  --v2-card-shadow: 0 1px 2px rgb(40 34 28 / 0.05);
+  --v2-float: #ffffff;
+  --v2-line: #e5dfd7;
+  --v2-line-strong: #cdc5ba;
+  --v2-tab-hover: rgb(36 33 29 / 0.07);
+  --v2-ink: #24211d;
+  --v2-ink-2: #6c655d;
+  --v2-ink-3: #8f8880;
+}
+
+html.dark .kt-v2 {
+  --v2-chrome: #1a1816;
+  --v2-rail: #161412;
+  --v2-canvas: #221f1d;
+  --v2-panel: #2a2724;
+  --v2-card: #2a2724;
+  --v2-card-shadow: none;
+  --v2-float: #2e2b28;
+  --v2-line: #3a3632;
+  --v2-line-strong: #4a4540;
+  --v2-tab-hover: rgb(255 255 255 / 0.05);
+  --v2-ink: #f3efe9;
+  --v2-ink-2: #a39a91;
+  --v2-ink-3: #6f6760;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  font-family: var(--font-sans);
+  font-size: 15px;
+  color: var(--v2-ink);
+  background: var(--v2-canvas);
+  -webkit-font-smoothing: antialiased;
+}
+
+button {
+  background: transparent;
+  border: none;
+  color: inherit;
+  font: inherit;
+  padding: 0;
+}
+
+.kt-v2-chrome {
+  background: var(--v2-chrome);
+}
+.kt-v2-rail {
+  background: var(--v2-rail);
+}
+.kt-v2-canvas {
+  background: var(--v2-canvas);
+}
+.kt-v2-panel {
+  background: var(--v2-panel);
+}
+.kt-v2-card {
+  background: var(--v2-card);
+  border: 1px solid var(--v2-line);
+  border-radius: 0.75rem;
+  box-shadow: var(--v2-card-shadow);
+}
+.kt-v2-float {
+  background: var(--v2-float);
+  border: 1px solid var(--v2-line);
+  border-radius: 0.5rem;
+  box-shadow: 0 8px 24px rgb(30 24 18 / 0.16);
+}
+.kt-v2-line {
+  border-color: var(--v2-line);
+}
+.kt-v2-edge {
+  border-color: var(--v2-line-strong);
+}
+
+/* Fused tab strip: active tab becomes canvas tone with outward bottom curves */
+.kt-v2-tab {
+  position: relative;
+  border-radius: 0.625rem 0.625rem 0 0;
+  transition: background 120ms ease;
+}
+.kt-v2-tab:hover {
+  background: var(--v2-tab-hover);
+}
+.kt-v2-tab--active,
+.kt-v2-tab--active:hover {
+  background: var(--v2-canvas);
+}
+.kt-v2-tab--active::before,
+.kt-v2-tab--active::after {
+  content: "";
+  position: absolute;
+  bottom: 0;
+  width: 0.625rem;
+  height: 0.625rem;
+  pointer-events: none;
+}
+.kt-v2-tab--active::before {
+  left: -0.625rem;
+  background: radial-gradient(circle at 0 0, transparent 0.625rem, var(--v2-canvas) 0.65rem);
+}
+.kt-v2-tab--active::after {
+  right: -0.625rem;
+  background: radial-gradient(circle at 100% 0, transparent 0.625rem, var(--v2-canvas) 0.65rem);
+}
+
+.kt-row:hover {
+  background: var(--v2-tab-hover);
+}
+.kt-row--on,
+.kt-row--on:hover {
+  background: color-mix(in srgb, var(--kt-color-iolite) 10%, transparent);
+}
+
+.kt-splitter-h {
+  width: 5px;
+  cursor: col-resize;
+  background: transparent;
+  position: relative;
+  flex-shrink: 0;
+}
+.kt-splitter-h::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 2px;
+  width: 1px;
+  background: var(--v2-line-strong);
+}
+.kt-splitter-h:hover::after {
+  width: 3px;
+  left: 1px;
+  background: var(--kt-color-iolite);
+}
+
+.kt-splitter-v {
+  height: 5px;
+  cursor: row-resize;
+  background: transparent;
+  position: relative;
+  flex-shrink: 0;
+}
+.kt-splitter-v::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 2px;
+  height: 1px;
+  background: var(--v2-line-strong);
+}
+.kt-splitter-v:hover::after {
+  height: 3px;
+  top: 1px;
+  background: var(--kt-color-iolite);
+}
+
+::-webkit-scrollbar {
+  width: 7px;
+  height: 7px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--v2-line-strong);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--v2-ink-3);
+}
