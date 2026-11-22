@@ -1,1 +1,0 @@
-"""KohakuBoard Server API endpoints"""
