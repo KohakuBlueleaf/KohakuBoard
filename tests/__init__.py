@@ -1,0 +1,1 @@
+"""KohakuBoard test suite."""

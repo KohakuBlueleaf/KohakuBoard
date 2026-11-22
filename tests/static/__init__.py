@@ -1,0 +1,1 @@
+"""Static contract tests."""
