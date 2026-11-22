@@ -28,6 +28,7 @@ __pycache__/
 *.so
 *.pyd
 *.dll
+*.pdb
 build/
 dist/
 *.egg-info/
