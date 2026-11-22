@@ -4,9 +4,10 @@ plans/
 .claude/
 
 # Local experiment data & scratch
-kohakuboard/
-kboards/
-runs/
+/kohakuboard/
+/kohakuboard_examples/
+/kboards/
+/runs/
 *.db
 *.db-wal
 *.db-shm
