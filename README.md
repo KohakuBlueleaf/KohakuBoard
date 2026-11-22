@@ -1,752 +1,167 @@
 # KohakuBoard
 
-High-performance ML experiment tracking with **zero training overhead**.
+> **V2 WIP:** KohakuBoard v2 is currently under active development. The Rust core, Python logging SDK, offline SWMR readers, and base `kobo` CLI are implemented; web UI, terminal UI, and remote sync are still in progress.
 
-[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/KohakuBlueleaf/KohakuBoard)
+**Local-first, zero-overhead ML experiment tracking backed by Rust and [KohakuVault](https://github.com/KohakuBlueleaf/KohakuVault).**
 
-> **Part of [KohakuHub](https://github.com/KohakuBlueleaf/KohakuHub)** - Self-hosted AI Infrastructure
+KohakuBoard v2 is a ground-up rewrite designed to feel as ergonomic as Weights & Biases while keeping your training loop completely unblocked and your experiment data stored locally in portable, inspectable SQLite files.
+
+## Key Capabilities
+
+- **~2.5 μs scalar hot path:** `board.log(...)` pushes onto a bounded Rust `crossbeam-channel` (`block` or `drop_oldest`); all SQLite/KohakuVault I/O, histogram binning, `rustfft` Gaussian KDE, PNG/WebP/JPEG encoding, `blake3` hashing, and gzip tensor compression run off-GIL on a dedicated Rust OS thread.
+- **Single-file `run.db` + lazy `blobs.db` (powered by [KohakuVault 1.2](https://github.com/KohakuBlueleaf/KohakuVault)):**
+  - Every scalar metric is stored as one atomic 32-byte fixed-width `ScalarRow` (`step`, `global_step`, `ts_ms`, `value`) column in bounded `ColumnVault` BLOB blocks — preserving IEEE-754 `NaN`/`±Inf` verbatim, eliminating cross-column SWMR tearing, and supporting 1,000+ metrics in **one file** (zero FD explosion).
+  - Media and tensors are deduplicated by `blake3` hash inside a lazy `blobs.db` (`KVault`) that is only created when binary payloads are logged.
+  - Captured `stdout`/`stderr` streams are indexed into `TextVault` with SQLite FTS5 BM25 full-text search.
+  - Rebuildable `{data_dir}/.catalog.db` indexes projects/runs for sub-millisecond listing and live-PID crash detection.
+- **Newest-first reverse-paged binary chunk framing:** Ready for zero-copy JS `Float64Array` / NumPy `np.frombuffer` progressive rendering — first 8,192 newest points arrive in milliseconds while full lossless history loads backward to step 0.
+- **DDP & lifecycle safe:** `rank_zero_only=True` automatically turns non-zero `RANK`/`LOCAL_RANK` workers into zero-overhead no-ops; `resume="allow"|"must"` continues interrupted runs seamlessly; no `with` block required — `atexit` + a non-destructive chained `sys.excepthook` + Rust `Drop` flush everything and record exact `finished` / `interrupted` / `crashed` state automatically.
+- **Minimal runtime footprint:** Base `kohakuboard` depends only on `numpy>=1.24` (and ships a single `abi3-py310` native extension `kohakuboard._rs`).
+
+---
+
+## Installation
+
+From source (requires Rust toolchain + Python 3.10+):
+
+```bash
+pip install maturin numpy
+maturin develop --release
+```
+
+With development/test tools:
+
+```bash
+uv pip install -e ".[dev]"
+```
 
 ---
 
 ## Quick Start
 
-```bash
-pip install -e .
-```
+### 1. Drop-in logging (no `with` block required)
+
+Use either the W&B-style module API (`kobo.init` / `kobo.log`) or a plain `Board(...)` handle (`with Board(...)` is also supported for scoped multi-run loops):
 
 ```python
-from kohakuboard.client import Board
+import kohakuboard as kobo
+from kohakuboard import Artifact, Histogram, KernelDensity, Media, Table, TensorLog
 
-board = Board(name="my-experiment", config={"lr": 0.001, "batch_size": 32})
-
-# Training loop
-for epoch in range(10):
-    for data, target in train_loader:
-        loss = train_step(data, target)
-
-        board.step()  # Once per optimizer step
-        board.log(loss=loss.item())  # Non-blocking, <0.1ms
-        # Alternative: move board.step() after board.log() for 0-indexed steps
-
-# logs are stored under ./kohakuboard using KohakuVault column stores + SQLite metadata
-```
-
-
----
-
-|![1761752427584](image/README/1761752427584.png)|![1761752450957](image/README/1761752450957.png)|
-|-|-|
-
-**Join our community:** https://discord.gg/xWYrkyvJ2s
-
----
-
-## Why KohakuBoard?
-
-### KohakuBoard's Advantages
-
-- **Zero Training Overhead** - Non-blocking logging returns in <0.1ms
-- **Local-First** - No server required during training, view results instantly
-- **High Throughput** - 20,000+ metrics/second sustained
-- **Rich Data Types** - Scalars, images, videos, tables, histograms
-- **WebGL Visualization** - Handle 100K+ datapoints smoothly
-- **Self-Hosted** - Your data stays on your infrastructure
-
----
-
-## Features
-
-### Non-Blocking Architecture
-
-**Background Writer Process** ensures training never waits:
-
-```
-Training Script          Background Process
-     │                          │
-     ├─ board.log(loss=0.5)     │
-     │  └─> Queue.put()         │
-     │      (<0.1ms return!)    │
-     │                          ├─ Queue.get()
-     ├─ Continue training...    ├─ Batch write
-     │                          └─ Flush to disk
-```
-
-**Performance:**
-- Log call latency: **<0.1ms**
-- Throughput: **20,000+ metrics/sec**
-- Queue capacity: **50,000 messages**
-- Memory overhead: **~100-200 MB**
-
-### Rich Data Types
-
-**Unified API** for all data types - no step inflation:
-
-```python
-board.log(
-    loss=0.5,                           # Scalar
-    sample_img=Media(image),            # Image
-    predictions=Table(results),         # Table
-    gradients=Histogram(grads)          # Histogram
+kobo.init(
+    name="dit-xl-stage1",
+    project="vision",
+    group="lr-3e-4",
+    tags=["bf16", "baseline"],
+    config={"lr": 3e-4, "batch_size": 128, "layers": 24},
 )
-# All logged at SAME step with 1 queue message!
+kobo.define_metric("eval/*", step_metric="global_step", summary="min")
+
+for step in range(1_000):
+    kobo.log({"train/loss": 1.0 / (step + 1), "train/lr": 3e-4})
+
+    if step % 200 == 0:
+        kobo.log(
+            {
+                "samples": Media(rgb_array, caption=f"step {step}", format="webp"),
+                "grad/norm": Histogram(grad_array, bins=64, precision="exact"),
+                "grad/kde": KernelDensity(grad_array, num_points=256),
+                "eval/table": Table(
+                    columns=["prompt", "score", "preview"],
+                    rows=[["amber terrarium", 0.94, Media(rgb_array)]],
+                ),
+                "debug/attn": TensorLog(attn_tensor, compress=True),
+                "ckpt": Artifact(f"step-{step}", kind="checkpoint", path="model.safetensors"),
+            },
+            commit=False,
+        )
+
+kobo.alert("Finished", "Stage 1 converged cleanly", level="info")
+# kobo.finish() is optional at process exit — atexit + Rust Drop flushes automatically.
 ```
 
-**Supported Types:**
-- **Scalars** - Metrics, learning rates, accuracies
-- **Media** - Images (PNG/JPG), videos (MP4), audio (WAV)
-- **Tables** - Structured data with embedded images
-- **Histograms** - Weight/gradient distributions with compression (99.8% size reduction)
+Prefer an explicit handle (or multiple concurrent runs in one process)?
 
-### Three-Tier SQLite Storage Architecture
+```python
+from kohakuboard import Board
 
-**Powered by [KohakuVault](https://github.com/KohakuBlueleaf/KohakuVault)** - A high-performance storage library with dual interfaces over SQLite:
-
-```
-Three Specialized SQLite Implementations:
-
-1. KohakuVault KVault        2. KohakuVault ColumnVault     3. Standard SQLite
-   (K-V Store)                   (Columnar Storage)             (Relational)
-   ├─ Media blobs                ├─ Metrics                     ├─ Media metadata
-   ├─ B+Tree index on K          ├─ Histograms                  ├─ Tables
-   ├─ Content-addressable        ├─ Blob-based columnar         └─ Step info
-   └─ .cache() for bulk ops      └─ Dynamic chunk growth
+board = Board(name="ablation-b", project="vision", config={"lr": 1e-4})
+board.log({"train/loss": 0.42})
 ```
 
-**Why KohakuVault?**
-- **Zero dependencies** - Single SQLite file, no external services
-- **Simple deployment** - Just .db files, no infrastructure
-- **Dual-interface design** - Dict-like for blobs, list-like for sequences
-- **High performance** - Native speed with Pythonic API
-- **Memory efficient** - Streaming support, dynamic chunk growth
-- **True SWMR** - Multiple readers, single writer via SQLite WAL
+### 2. Read runs offline (or live via SWMR) in Python
 
-**Why Three Tiers?**
-- **KVault**: Optimized for blob storage with B+Tree index, content-addressable
-- **ColumnVault**: Optimized for append-heavy time-series with columnar layout
-- **Standard SQLite**: Optimized for structured metadata with ACID guarantees
+```python
+from kohakuboard import ProjectReader, RunReader
 
-### Advanced Visualization
+with ProjectReader("./kohakuboard", project="vision") as proj:
+    for run in proj.list_runs(group="lr-3e-4", sort="summary.train/loss"):
+        print(run.run_id, run.name, run.state, run.summary.get("train/loss"))
 
-**WebGL-Based Charts** powered by Plotly.js:
-- Handle **100K+ datapoints** smoothly
-- Configurable smoothing (EMA, MA, Gaussian)
-- X-axis selection (step, global_step, any metric)
-- Multi-metric overlays
-- Dark/light mode
-- Responsive design
+with RunReader("./kohakuboard/vision/<run_dir>") as run:
+    steps, gsteps, ts_ms, values = run.scalar("train/loss")  # zero-copy-style NumPy views
+    hits = run.search_logs("NaN", limit=20)                  # TextVault FTS5 BM25 search
+    hists = run.histograms("grad/norm")
+    tensor = run.read_tensor(run.tensors("debug/attn")[0])
+```
 
-**Rich Viewers:**
-- **Histogram Navigator** - Step-by-step distribution exploration
-- **Media Viewer** - Image grids, video playback
-- **Table Viewer** - Structured data with embedded images
-- **Dashboard** - Customizable metric layouts
-
-### Local-First Workflow
+### 3. Inspect from the CLI (`kobo`)
 
 ```bash
-# Train locally
-python train.py              # Logs to ./kohakuboard/
-
-# View results (no server required!)
-kobo open ./kohakuboard --browser
-
-# Optional server for team sharing (requires kohakuboard_server)
-kobo-serve --port 48889
-```
-
-**No server setup, no configuration, no hassle.**
-
----
-
-## Quick Start
-
-### Installation
-
-```bash
-pip install -e .
-```
-
-### Basic Usage
-
-```python
-from kohakuboard.client import Board
-
-# Create board - automatically saves on program exit
-board = Board(name="my-experiment", config={"lr": 0.001, "batch_size": 32})
-
-# Training loop
-for epoch in range(10):
-    for batch_idx, (data, target) in enumerate(train_loader):
-        loss = train_step(data, target)
-
-        # Increment step once per optimizer step (not per epoch!)
-        board.step()
-
-        # Log metrics (non-blocking, returns in <0.1ms)
-        board.log(loss=loss.item(), lr=optimizer.param_groups[0]['lr'])
-
-    # Log validation at end of epoch
-    val_loss = validate(model, val_loader)
-    board.log(**{"val/loss": val_loss})
-
-# That's it! No .finish() needed - auto-cleanup via atexit
-```
-
-### View Results
-
-```bash
-# Local viewer (no server)
-kobo open ./kohakuboard --browser
-
-# Or launch the authenticated server (requires kohakuboard_server)
-kobo-serve --port 48889
-# Drop/copy board folders into the configured data dir to share runs
+kobo ls ./kohakuboard --project vision
+kobo info ./kohakuboard/vision/<run_dir>
+kobo logs ./kohakuboard/vision/<run_dir> --search "NaN" --tail 50
+kobo export ./kohakuboard/vision/<run_dir> --format csv --out metrics.csv
+kobo doctor ./kohakuboard --reindex
 ```
 
 ---
 
-## Complete Example
-
-```python
-from kohakuboard.client import Board, Histogram, Table, Media
-import torch
-
-# Create board with hyperparameters
-board = Board(
-    name="cifar10-resnet18",
-    config={"lr": 0.001, "batch_size": 128, "epochs": 100, "optimizer": "AdamW"}
-)
-
-# Training loop
-for epoch in range(100):
-    model.train()
-    for data, target in train_loader:
-        optimizer.zero_grad()
-        output = model(data)
-        loss = criterion(output, target)
-        loss.backward()
-        optimizer.step()
-
-        # Step once per optimizer step
-        board.step()
-
-        # Log scalars (non-blocking, <0.1ms)
-        board.log(loss=loss.item(), lr=optimizer.param_groups[0]['lr'])
-
-    # Validation
-    model.eval()
-    val_loss, correct, predictions_table = 0, 0, []
-
-    with torch.no_grad():
-        for batch_idx, (data, target) in enumerate(val_loader):
-            output = model(data)
-            val_loss += criterion(output, target).item()
-            pred = output.argmax(dim=1)
-            correct += (pred == target).sum().item()
-
-            # Sample predictions for table (first batch only)
-            if batch_idx == 0:
-                for i in range(min(8, len(data))):
-                    predictions_table.append({
-                        "image": Media(data[i].cpu().numpy()),
-                        "true": class_names[target[i]],
-                        "pred": class_names[pred[i]],
-                        "correct": "✓" if pred[i] == target[i] else "✗"
-                    })
-
-    # Log validation (scalars + table + histograms - all at same step!)
-    hist_data = {f"grad/{n}": Histogram(p.grad) for n, p in model.named_parameters() if p.grad is not None}
-    board.log(**{
-        "val/loss": val_loss / len(val_loader),
-        "val/accuracy": correct / len(val_loader.dataset),
-        "val/predictions": Table(predictions_table),
-        **hist_data
-    })
-
-# No .finish() needed - automatic cleanup when script exits
-```
-
----
-
-## Architecture
-
-### Client (Training Script)
-
-```
-Main Process (Training)          Background Writer Process
-       │                                   │
-       ├─ board.log(loss=0.5)              │
-       │  └─> Queue.put()                  │
-       │      (returns instantly!)         │
-       │                                   ├─ Queue.get()
-       │                                   ├─ Process batch
-       ├─ Continue training...             ├─ Write to storage
-       │                                   └─ Flush to disk
-```
-
-**Key Features:**
-- **Non-blocking**: `log()` returns in <0.1ms
-- **Message Queue**: 50,000 message capacity
-- **Writer Process**: Background process drains queue
-- **Storage Layer**: Three-tier SQLite architecture (KohakuVault KVault + ColumnVault + Standard SQLite)
-- **Graceful Shutdown**: atexit hooks + signal handlers ensure no data loss
-
-### Backend (Visualization Server)
-
-```
-FastAPI Backend (Port 48889)
-    ↓ Read-only connections
-Board Files (./kohakuboard/)
-    ├── {board_id}/
-    │   ├── metadata.json
-    │   ├── data/           ← SQL/columnar queries here
-    │   │   ├── metrics/    ← KohakuVault DB files
-    │   │   └── metadata.db ← SQLite database
-    │   └── media/
-    │       └── *.png, *.mp4
-        ↓ REST API
-Vue 3 Frontend (WebGL Charts)
-```
-
-**Key Features:**
-- **Zero-copy serving**: Reads files directly (no database)
-- **Concurrent reads**: Multiple connections supported
-- **Fast queries**: Columnar storage for metrics
-- **Static serving**: Media files served directly
-
----
-
-## Data Model
-
-### Directory Structure
-
-```
-./kohakuboard/
-└── {board_id_timestamp}/
-    ├── metadata.json           # Board info, config, timestamps
-    ├── data/                   # Storage backend files
-    │   ├── metrics/            # (hybrid) KohakuVault columnar files
-    │   │   ├── train__loss.db
-    │   │   ├── val__accuracy.db
-    │   │   └── ...
-    │   ├── metadata.db         # (hybrid) SQLite metadata
-    │   └── histograms/
-    │       ├── gradients_i32.db  # int32 precision
-    │       └── params_u8.db      # uint8 precision (compact)
-    ├── media/                  # Content-addressed storage
-    │   ├── {name}_{idx}_{step}_{sha256}.png
-    │   ├── {name}_{idx}_{step}_{sha256}.mp4
-    │   └── {name}_{idx}_{step}_{sha256}.wav
-    └── logs/
-        ├── output.log          # Captured stdout/stderr
-        └── writer.log          # Writer process logs
-```
-
-### Metadata Schema
-
-```json
-{
-  "board_id": "20250129_150423_abc123",
-  "name": "cifar10-resnet18",
-  "config": {
-    "lr": 0.001,
-    "batch_size": 128,
-    "epochs": 100
-  },
-  "created_at": "2025-01-29T15:04:23",
-  "finished_at": "2025-01-29T18:32:45",
-  "status": "finished",
-  "version": "0.0.1"
-}
-```
-
-### Manual Sync / Remote Sharing
-
-Both the training-side package (`kohakuboard`) and the optional server (`kohakuboard_server`) read the exact same directory layout. To move a run between machines:
-
-1. Copy the entire board folder (`{base_dir}/{project}/{board_id}`) using `cp`, `rsync`, or any file transfer tool.
-2. Drop it into the destination data directory (the folder you pass to `kobo open ...` or the directory configured via `KOHAKU_BOARD_DATA_DIR` / `--data-dir` on `kobo-serve`).
-3. Restart the viewer or refresh the UI. The new run is immediately available.
-
-No export/import step is required because metrics, metadata, tensors, and media already live in KohakuVault + SQLite files. The legacy `kobo sync` command still expects a DuckDB export and will fail on modern boards—use manual copy until the new sync API lands.
-
----
-
-## CLI Tool
-
-```bash
-# Open local viewer (no server)
-kobo open ./kohakuboard --browser
-
-# Start authenticated server (kohakuboard_server package)
-kobo-serve --port 48889 --host 0.0.0.0
-
-# Manual sync (recommended today): copy the entire board folder into the server's data dir
-# (kobo sync is still wired to the legacy DuckDB exporter and will error on modern boards)
-```
-
----
-
-## Configuration
-
-### Basic Usage
-
-```python
-# All boards use KohakuVault + SQLite (no backend parameter needed)
-board = Board(name="my-experiment", project="vision")
-```
-
-### Advanced Options
-
-```python
-board = Board(
-    name="experiment",
-    board_id="custom-id",           # Auto-generated if not provided
-    config={"lr": 0.001},           # Hyperparameters
-    project="custom-project",       # Sub-directory inside base_dir
-    base_dir="./my-boards",         # Custom directory
-    capture_output=True,            # Capture stdout/stderr
-    remote_url="https://board.example.com",  # Optional future sync target
-    remote_token="...",             # Token for remote sync (WIP)
-    sync_enabled=False,             # Enable when remote endpoints are ready
-    memory_mode=False,              # Keep data in RAM (requires sync to persist)
-    annotation="debug-run",         # Suffix appended to run directory name
-)
-```
-
-**Storage Architecture:**
-- KohakuVault KVault: Media blobs (K-V table with B+Tree index)
-- KohakuVault ColumnVault: Metrics/histograms (blob-based columnar)
-- Standard SQLite: Metadata (traditional relational tables)
-
-### Context Manager
-
-```python
-with Board(name="experiment") as board:
-    board.log(loss=0.5)
-    # Automatic flush() and finish() on exit
-```
-
----
-
-## API Reference
-
-### Board
-
-```python
-Board(
-    name: str | None = None,
-    board_id: str | None = None,
-    config: dict | None = None,
-    project: str | None = None,
-    base_dir: str | Path | None = None,
-    capture_output: bool = True,
-    remote_url: str | None = None,
-    remote_token: str | None = None,
-    remote_project: str | None = None,
-    sync_enabled: bool = False,
-    sync_interval: int = 10,
-    memory_mode: bool = False,
-    *,
-    annotation: str | None = None,
-)
-```
-
-**Methods:**
-
-**`board.step()`** - Increment global_step
-
-```python
-for batch_idx, batch in enumerate(train_loader):
-    loss = train_step(batch)
-    board.step()  # Increment ONCE per optimizer step
-    board.log(**{"train/loss": loss, "train/lr": scheduler.get_last_lr()[0]})
-```
-
-**`board.log(**metrics)`** - Log data (non-blocking)
-
-```python
-board.log(
-    loss=0.5,
-    accuracy=0.95,
-    learning_rate=0.001,            # Scalars
-    sample=Media(image_array),      # Images/video/audio
-    predictions=Table(rows),        # Tables (optionally with Media)
-    grad_norm=Histogram(values),    # Histograms
-)
-
-# Namespaces (creates tabs in UI)
-board.log(**{
-    "train/loss": 0.5,
-    "val/accuracy": 0.95
-})
-
-# Tensor + KDE payloads (specialized viewers)
-board.log(
-    attention_tensor=TensorLog(tensor),
-    density=KernelDensity(values, grid_size=256),
-)
-```
-
-**`board.flush()`** - Force flush (blocks until complete)
-
-```python
-board.flush()  # Wait for all pending writes
-```
-
-**`board.finish()`** - Manual cleanup (auto-called on exit)
-
-```python
-board.finish()  # Flush buffers, close connections
-```
-
-### Data Types
-
-#### Media
-
-```python
-from kobo.client.types import Media
-
-# Images
-board.log(
-    sample_img=Media(image_array),  # numpy, PIL, torch tensor
-    prediction=Media(pred_img, caption="Predicted: cat")
-)
-
-# Video
-board.log(
-    training_video=Media("output.mp4", media_type="video")
-)
-
-# Audio (if supported)
-board.log(
-    audio_sample=Media("sample.wav", media_type="audio")
-)
-```
-
-#### Table
-
-```python
-from kobo.client.types import Table
-
-# From list of dicts
-results = Table([
-    {"name": "Alice", "score": 95, "pass": True},
-    {"name": "Bob", "score": 87, "pass": True},
-])
-board.log(student_results=results)
-
-# Tables with embedded images
-predictions = Table([
-    {"image": Media(img), "label": "cat", "confidence": 0.95},
-    {"image": Media(img2), "label": "dog", "confidence": 0.87},
-])
-board.log(val_predictions=predictions)
-```
-
-#### Histogram
-
-```python
-from kobo.client.types import Histogram
-
-# Log gradient distributions
-board.log(
-    gradients=Histogram(param.grad),
-    weights=Histogram(param.data)
-)
-
-# Precompute for efficiency (optional)
-hist = Histogram(gradients).compute_bins()
-board.log(grad_distribution=hist)
-
-# Compact precision (75% size reduction, ~1% accuracy loss)
-hist = Histogram(gradients, precision="compact")
-board.log(grad_distribution=hist)
-```
-
----
-
-## Deployment
-
-### Local Mode (Recommended)
-
-```bash
-# Install
-pip install -e .
-
-# Train
-python train.py
-
-# View results
-kobo open ./kohakuboard --browser
-```
-
-### Remote Mode (WIP)
-
-```bash
-# Run the authenticated server (still stabilizing)
-kobo-serve --data-dir /var/kohakuboard --db sqlite:///kohakuboard.db
-
-# Share boards by copying folders into /var/kohakuboard/<project>/
-# Restart/reload the server to pick up new runs
-```
-
-See [docs/kohakuboard/](./docs/kohakuboard/) for complete deployment guides.
-
----
-
-## Comparison with Alternatives
-
-| Feature | WandB | TensorBoard | MLflow | KohakuBoard |
-|---------|-------|-------------|--------|-------------|
-| **Latency** | ~10ms | ~1ms | ~5ms | **<0.1ms** |
-| **Throughput** | ~1K/sec | ~10K/sec | ~5K/sec | **20K+/sec** |
-| **Offline** | ❌ No | ✅ Yes | ✅ Yes | ✅ Yes |
-| **File-Based** | ❌ No | ✅ Yes | ❌ No | ✅ Yes |
-| **Non-Blocking** | ❌ No | ❌ No | ❌ No | ✅ Yes |
-| **Columnar Reads** | ❌ No | ❌ No | ✅ Yes | ✅ Yes (KohakuVault ColumnVault) |
-| **WebGL Charts** | ❌ No | ❌ No | ❌ No | ✅ Yes |
-| **100K+ Points** | Slow | Slow | Slow | **Fast** |
-| **Self-Hosted** | Limited | ✅ Yes | ✅ Yes | ✅ Yes |
-| **Setup** | Cloud | Local | Server | **None** |
-
----
-
-## Documentation
-
-- [Getting Started](./docs/kohakuboard/getting-started.md) - Installation and basic usage
-- [API Reference](./docs/kohakuboard/api.md) - Complete API documentation
-- [Architecture](./docs/kohakuboard/architecture.md) - System design and internals
-- [CLI Guide](./docs/kohakuboard/cli.md) - Command-line tool usage
-- [Usage Manual](./docs/kohakuboard/usage-manual.md) - Day-to-day operations checklist
-- [Examples](./examples/) - Real-world usage patterns
+## Measured Performance
+
+Reproducible via [`python examples/benchmark.py`](examples/benchmark.py) (`kohakuboard 2.0.0`, release build):
+
+| Benchmark | Workload | Linux (WSL2, Py 3.12) | Windows 11 (Py 3.13) |
+| --- | --- | --- | --- |
+| **Scalar hot path** | 100k `board.log()` × 4 scalars (400k pts) | **1.66 μs/call** (`p50=0.83 μs`, **2.41M scalars/s**) | **2.45 μs/call** (`p50=2.20 μs`, **1.63M scalars/s**) |
+| **Scalar durability** | Flush all 400k scalars to `run.db` (14.94 MiB, 39.1 B/pt) | **24.0 ms** flush (**190.1 ms** total) | **45.4 ms** flush (**290.8 ms** total) |
+| **Wide-metric scaling** | 1,000 metrics × 200 steps (200k pts, **1 file** `36.91 MiB`) | **90.6 ms** enq / **559.2 ms** total | **70.0 ms** enq / **500.3 ms** total |
+| **Newest-first first chunk** | Latest 8,192 rows of 500k series (256.2 KiB aligned frame) | **3.77 ms** | **6.77 ms** |
+| **Full lossless sweep** | All 500k rows newest-first (10 frames, 15.26 MiB) | **8.1 ms** | **21.0 ms** |
+| **Live-tail poll** | Incremental 128-row `?after=N` frame (4.2 KiB) | **0.07 ms** | **0.10 ms** |
+| **Off-GIL Histogram** | `Histogram(100k f32, 64 bins, exact)` | **0.18 ms** enq (`3.80 ms` bg) | **0.35 ms** enq (`20.11 ms` bg) |
+| **Off-GIL FFT-KDE** | `KernelDensity(100k f32, 256 pts, rustfft)` | **0.15 ms** enq (`32.58 ms` bg) | **0.14 ms** enq (`3.95 ms` bg) |
+| **Off-GIL Media (PNG / WebP)** | `Media(512×512 RGB)` + `blake3` dedup | **0.19 / 0.17 ms** enq (`23.4 / 3.6 ms` bg) | **0.56 / 0.46 ms** enq (`25.1 / 4.5 ms` bg) |
+| **Catalog & FTS5 search** | Warm `.catalog.db` refresh / 10k-line BM25 query | **0.04 ms** / **3.50 ms** | **0.59 ms** / **1.36 ms** |
 
 ---
 
 ## Examples
 
-See `examples/` directory:
+Runnable scripts live in [`examples/`](examples/README.md):
 
-- `kohakuboard_basic.py` - Simple scalar logging
-- `kohakuboard_all_media_types.py` - Images, videos, tables
-- `kohakuboard_cifar_training.py` - Complete CIFAR-10 training example
-- `kohakuboard_media_in_tables.py` - Tables with embedded images
-- `kohakuboard_histogram_logging.py` - Gradient distribution tracking
+- [`examples/quick_start.py`](examples/quick_start.py) — minimal `Board` logging + offline `ProjectReader` / `RunReader` workflow.
+- [`examples/all_features_demo.py`](examples/all_features_demo.py) — end-to-end multimodal tour (scalars + `NaN`/`Inf`, deduplicated `Media`, `Table` with embedded `Media`, `Histogram`, FFT `KernelDensity`, `TensorLog`, `Artifact`, alerts, FTS5 log search, live SWMR read, and `resume="must"`).
+- [`examples/benchmark.py`](examples/benchmark.py) — reproduces the full benchmark table above (`--quick` for a fast run).
 
 ---
 
-## Roadmap
+## Storage Layout
 
-### ✅ Complete
-
-**Client Library:**
-- Non-blocking logging architecture
-- Rich data types (scalars, media, tables, histograms)
-- Three-tier SQLite architecture (KohakuVault KVault + ColumnVault + Standard SQLite)
-- Graceful shutdown with queue draining
-- Content-addressed media storage
-
-**Backend & UI:**
-- FastAPI REST API
-- Vue 3 interface with dark/light mode
-- WebGL charts (100K+ points)
-- Histogram navigator
-- Media/table viewers
-- CLI tool (`kobo`)
-
-### 🚧 In Progress
-
-- Remote server mode with authentication
-- Sync protocol for uploading local boards
-- Project management (group related boards)
-- Run comparison UI (side-by-side metrics)
-- Real-time streaming (live updates while training)
-
-### 📋 Planned
-
-**Client Features:**
-- PyTorch Lightning integration
-- Keras callback
-- Hugging Face Trainer integration
-- Custom callback system
-
-**Backend Features:**
-- Multi-board comparison API
-- Advanced filtering (tags, date range)
-- Export to CSV/JSON
-- Aggregation queries
-
-**UI Features:**
-- Diff viewer (compare runs)
-- Scatter plots (metric vs metric)
-- Custom dashboards
-- Annotations
-- Search and filter
-
-**Infrastructure:**
-- Docker/Kubernetes deployment
-- Cloud storage backends (S3, GCS)
-- Multi-user authentication
-
+```text
+{data_dir}/
+├── .catalog.db                  # Rebuildable SQLite project/run index
+└── {project}/
+    └── {run_id}[_{annotation}]/
+        ├── run.json             # Atomic JSON manifest for fast scanning
+        ├── run.db               # KohakuVault 1.2: kb_meta + ColumnVault + TextVault + event tables
+        └── blobs.db             # Lazy blake3-deduplicated KVault (created only when blobs are logged)
+```
 
 ---
 
-## License
+## Licensing
 
-KohakuBoard is a multi-component project with different licenses:
+KohakuBoard v2 uses a 2-way license split at the package boundary:
 
-- **Client Library** (`kohakuboard`): [Apache License 2.0](src/kohakuboard/LICENSE)
-  - Free for commercial and non-commercial use
-  - Permissive license with minimal requirements
-
-- **Web UI** (`kohaku-board-ui`): [AGPL-3.0](src/kohaku-board-ui/LICENSE)
-  - Free to use and modify
-  - Source code disclosure required for network services
-
-- **Server** (`kohakuboard_server`): [Kohaku Software License 1.0](src/kohakuboard_server/LICENSE)
-  - Free for non-commercial use
-  - Free for commercial use under revenue/duration limits
-  - Commercial licenses available for larger deployments
-
-**Commercial Licensing:** For commercial licenses or exemptions, contact kohaku@kblueleaf.net
-
-See [LICENSE](./LICENSE) for complete details.
-
----
-
-## Contributing
-
-KohakuBoard is part of the KohakuHub ecosystem. We welcome contributions!
-
-**Before contributing:**
-- Read [CONTRIBUTING.md](./CONTRIBUTING.md) for code style and guidelines
-- Join our [Discord](https://discord.gg/xWYrkyvJ2s) for discussions
-- Check [open issues](https://github.com/KohakuBlueleaf/KohakuHub/issues) tagged with `kohakuboard`
-
-**Areas we need help:**
-- 🎨 Frontend (chart improvements, UI/UX)
-- 🔧 Backend (storage backends, performance)
-- 📊 Client library (framework integrations)
-- 📚 Documentation (tutorials, guides)
-- 🧪 Testing (unit tests, benchmarks)
-
----
-
-## Support
-
-- **Discord:** https://discord.gg/xWYrkyvJ2s (Use #kohakuboard channel)
-- **Issues:** https://github.com/KohakuBlueleaf/KohakuHub/issues (Tag with `kohakuboard`)
-- **Email:** kohaku@kblueleaf.net
-
----
-
-## Acknowledgments
-
-- [KohakuVault](https://github.com/KohakuBlueleaf/KohakuVault) - High-performance storage library with dual SQLite interfaces (KVault for blobs, ColumnVault for sequences)
-- [Plotly.js](https://plotly.com/javascript/) - WebGL charts
-- [Vue 3](https://vuejs.org/) - Modern UI framework
-- [FastAPI](https://fastapi.tiangolo.com/) - Backend framework
-
----
-
-**Production Ready!** Core features are stable and performant. Use in real training workflows and help us improve.
+- **`kohakuboard`** (Rust core, Python client, offline readers, TUI integration, base CLI): [Apache License 2.0](LICENSE)
+- **`kohakuboard-web`** (`packages/kohakuboard-web/`, `apps/web/`): [Kohaku Software License 1.0](packages/kohakuboard-web/LICENSE)
