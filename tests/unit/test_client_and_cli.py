@@ -10,6 +10,7 @@ import numpy as np
 import pytest
 
 from kohakuboard import Board, Histogram, KernelDensity, Media, RunReader, Table, errors
+from kohakuboard.cli.main import _delegate_optional
 from kohakuboard.cli.main import main as cli_main
 
 
@@ -40,7 +41,7 @@ def test_config_validation_and_guards(tmp_path: Path) -> None:
     with pytest.raises(errors.ConfigError):
         Board(run_id="bad/id", dir=tmp_path)
     with pytest.raises(errors.ConfigError):
-        Board(tui=True, dir=tmp_path)
+        Board(tui="invalid_mode", dir=tmp_path)
     with pytest.raises(errors.ConfigError):
         Board(mode="remote", dir=tmp_path)
     with pytest.raises(errors.ConfigError):
@@ -113,9 +114,13 @@ def test_cli_commands_end_to_end(tmp_path: Path, capsys: pytest.CaptureFixture[s
     doc_out = capsys.readouterr().out
     assert "all checks passed" in doc_out
 
-    # Optional web / TUI commands report a clean install hint when not installed.
-    assert cli_main(["tui", str(tmp_path)]) == 2
+    # Missing optional extras report a clean install hint.
+    assert _delegate_optional("_kohakuboard_missing_opt_pkg", "run_tui", "tui", []) == 2
     assert "kohakuboard[tui]" in capsys.readouterr().err
+
+    # `kobo tui` validates missing target directories without touching the terminal.
+    assert cli_main(["tui", str(tmp_path / "does_not_exist")]) == 1
+    assert "directory not found" in capsys.readouterr().err
 
 
 def test_cli_info_and_table_handle_non_finite_values(

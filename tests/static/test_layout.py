@@ -13,9 +13,12 @@ ALLOWED_LOCAL_IMPORTS: set[tuple[str, str]] = {
     ("client/types.py", "PIL"),
     ("client/types.py", "PIL.Image"),
     ("client/types.py", "torch"),
+    ("client/board.py", "kohakuboard.tui.config"),
+    ("client/board.py", "kohakuboard.tui.adapter"),
     ("cli/main.py", "kohakuboard_web"),
     ("cli/main.py", "kohakuboard_web.cli"),
     ("cli/main.py", "kohakuboard.tui"),
+    ("cli/main.py", "kohakuboard.tui.cli"),
 }
 
 
