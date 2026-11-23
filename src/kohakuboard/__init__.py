@@ -35,6 +35,7 @@ from kohakuboard.reader import (
     RunSummary,
     ScalarSlice,
 )
+from kohakuboard.tui import ChartSpec, TuiConfig
 
 __version__: str = _rs_version()
 
@@ -42,6 +43,7 @@ __all__ = [
     "SCHEMA_VERSION",
     "Artifact",
     "Board",
+    "ChartSpec",
     "Histogram",
     "KernelDensity",
     "Media",
@@ -52,6 +54,7 @@ __all__ = [
     "ScalarSlice",
     "Table",
     "TensorLog",
+    "TuiConfig",
     "__version__",
     "add_tags",
     "alert",

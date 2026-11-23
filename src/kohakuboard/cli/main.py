@@ -337,7 +337,7 @@ def build_parser() -> argparse.ArgumentParser:
         p_tui.add_argument("rest", nargs=argparse.REMAINDER)
         p_tui.set_defaults(
             func=lambda a, c=tui_cmd: _delegate_optional(
-                "kohakuboard.tui", f"run_{c}", "tui", a.rest
+                "kohakuboard.tui.cli", f"run_{c}", "tui", a.rest
             )
         )
 

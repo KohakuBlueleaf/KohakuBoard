@@ -39,6 +39,7 @@ from kohakuboard.errors import (
     RunNotFoundError,
     translate_rs_error,
 )
+from kohakuboard.tui.config import resolve_tui_config
 
 _SCALAR_TYPES = (int, float, np.integer, np.floating)
 _ACTIVE_BOARDS: set[weakref.ref[Board]] = set()
@@ -172,11 +173,7 @@ class Board:
             raise ConfigError(f"Unsupported resume policy {resume!r}")
         if overflow not in ("block", "drop_oldest"):
             raise ConfigError(f"Unsupported overflow policy {overflow!r}")
-        if tui:
-            raise ConfigError(
-                "Terminal UI integration (tui=True) is not yet available "
-                "(requires kohakuboard[tui])."
-            )
+        tui_cfg = resolve_tui_config(tui)
         _ = (remote_url, remote_token)
 
         try:
@@ -201,6 +198,7 @@ class Board:
         self._closed = False
         self._engine: _LoggerEngine | None = None
         self._capture: OutputCapture | None = None
+        self._tui: Any = None
         self._weakref: weakref.ref[Board] | None = None
         self._on_finish_callbacks: list[Callable[[Board], None]] = []
         self._step = -1
@@ -287,9 +285,31 @@ class Board:
         self._explicit_global_step = self._step >= 0 and self._global_step != self._step
         self._weakref = _register_board(self)
 
-        if capture_output:
-            self._capture = OutputCapture(self._emit_console_line)
+        tui_started = False
+        if tui_cfg is not None:
+            try:
+                from kohakuboard.tui.adapter import LiveTuiHandle  # noqa: PLC0415
+            except ModuleNotFoundError as exc:
+                raise ConfigError(
+                    'Terminal UI requires kohakutui. Install with: pip install "kohakuboard[tui]"'
+                ) from exc
+            handle = LiveTuiHandle(self, tui_cfg)
+            tui_started = handle.start()
+            self._tui = handle
+
+        route_to_tui = tui_started and tui_cfg is not None and tui_cfg.capture_stdio
+        if capture_output or route_to_tui:
+            self._capture = OutputCapture(
+                self._emit_console_line,
+                passthrough=not route_to_tui,
+                on_raw=self._tui.write_log if route_to_tui and self._tui is not None else None,
+            )
             self._capture.start()
+
+    @property
+    def tui(self) -> Any:
+        """Active `LiveTuiHandle` when `tui` is enabled, else `None`."""
+        return self._tui
 
     @property
     def disabled(self) -> bool:
@@ -734,9 +754,14 @@ class Board:
         if self._closed:
             return
         self._closed = True
+        final_state = state or ("finished" if exit_code == 0 else "crashed")
         if self._capture is not None:
             self._capture.stop()
             self._capture = None
+        if self._tui is not None:
+            with contextlib.suppress(Exception):
+                self._tui.finish(state=final_state)
+            self._tui = None
         if self._weakref is not None:
             _ACTIVE_BOARDS.discard(self._weakref)
             self._weakref = None
@@ -744,7 +769,6 @@ class Board:
             cb(self)
         self._on_finish_callbacks.clear()
         if self._engine is not None:
-            final_state = state or ("finished" if exit_code == 0 else "crashed")
             try:
                 self._engine.finish(final_state, int(exit_code), max(1, int(timeout * 1000)))
             except Exception as exc:
